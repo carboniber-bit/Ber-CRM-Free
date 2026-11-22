@@ -11,6 +11,11 @@ create table public.profiles (
 
 alter table public.profiles enable row level security;
 
+-- Projetos Supabase novos não concedem grants automaticamente.
+-- O papel authenticated precisa de SELECT/UPDATE; o RLS abaixo restringe ao próprio perfil.
+-- Nenhum grant para anon: perfis só são acessíveis com login.
+grant select, update on public.profiles to authenticated;
+
 -- Cada usuário lê apenas o próprio perfil.
 create policy "profiles_select_own"
   on public.profiles for select
