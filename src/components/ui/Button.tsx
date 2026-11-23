@@ -2,7 +2,7 @@ import type { ButtonHTMLAttributes } from 'react'
 import { cn } from '../../utils/cn'
 import { Spinner } from './Spinner'
 
-type Variant = 'primary' | 'mint' | 'ghost' | 'outline'
+type Variant = 'primary' | 'mint' | 'ghost' | 'outline' | 'danger'
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant
@@ -14,6 +14,7 @@ const variants: Record<Variant, string> = {
   mint: 'bg-mint text-bg hover:bg-mint/85',
   ghost: 'bg-transparent text-muted hover:bg-elevated hover:text-ink',
   outline: 'border border-line bg-surface text-ink hover:bg-elevated',
+  danger: 'bg-danger text-bg hover:bg-danger/85',
 }
 
 export function Button({

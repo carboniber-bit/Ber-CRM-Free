@@ -1,5 +1,12 @@
-import { useContext } from 'react'
-import { ToastContext } from '../components/ui/Toast'
+import { createContext, useContext } from 'react'
+
+export type ToastKind = 'success' | 'error' | 'info'
+
+export interface ToastContextValue {
+  toast: (message: string, kind?: ToastKind) => void
+}
+
+export const ToastContext = createContext<ToastContextValue | null>(null)
 
 export function useToast() {
   const context = useContext(ToastContext)

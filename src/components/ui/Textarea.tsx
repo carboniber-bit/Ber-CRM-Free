@@ -16,9 +16,9 @@ export function Textarea({ label, error, className, id, ...props }: TextareaProp
       <textarea
         id={textareaId}
         className={cn(
-          'min-h-24 rounded-xl border border-line bg-elevated px-3.5 py-2.5 text-sm text-ink placeholder:text-muted/60',
+          'min-h-24 rounded-xl border bg-elevated px-3.5 py-2.5 text-sm text-ink placeholder:text-muted/60',
           'focus:border-primary focus:outline-none',
-          error && 'border-danger',
+          error ? 'border-danger' : 'border-line',
           className,
         )}
         aria-invalid={error ? true : undefined}

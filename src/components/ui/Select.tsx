@@ -18,9 +18,9 @@ export function Select({ label, error, options, placeholder, className, id, ...p
       <select
         id={selectId}
         className={cn(
-          'h-11 rounded-xl border border-line bg-elevated px-3.5 text-sm text-ink',
+          'h-11 rounded-xl border bg-elevated px-3.5 text-sm text-ink',
           'focus:border-primary focus:outline-none',
-          error && 'border-danger',
+          error ? 'border-danger' : 'border-line',
           className,
         )}
         aria-invalid={error ? true : undefined}

@@ -1,20 +1,13 @@
-import { createContext, useCallback, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { CheckCircle2, Info, XCircle } from 'lucide-react'
+import { ToastContext, type ToastContextValue, type ToastKind } from '../../hooks/useToast'
 import { cn } from '../../utils/cn'
-
-export type ToastKind = 'success' | 'error' | 'info'
 
 interface ToastItem {
   id: number
   message: string
   kind: ToastKind
 }
-
-interface ToastContextValue {
-  toast: (message: string, kind?: ToastKind) => void
-}
-
-export const ToastContext = createContext<ToastContextValue | null>(null)
 
 let nextId = 1
 
@@ -41,7 +34,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     }, 4000)
   }, [])
 
-  const value = useMemo(() => ({ toast }), [toast])
+  const value = useMemo<ToastContextValue>(() => ({ toast }), [toast])
 
   return (
     <ToastContext.Provider value={value}>
