@@ -1,8 +1,12 @@
 @import "tailwindcss";
+@import "@fontsource-variable/montserrat";
 @import "@fontsource/roboto/400.css";
+@import "@fontsource/roboto/500.css";
+@import "@fontsource/roboto/700.css";
 
 @theme {
-  --font-sans: "Outfit Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Roboto", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Montserrat Variable", ui-sans-serif, system-ui, sans-serif;
 
   --color-bg: #0d0d0d;
   --color-surface: #161616;
@@ -11,6 +15,7 @@
   --color-ink: #ffffff;
   --color-muted: #a3a3a3;
 
+  --color-primary: #22c55e;
   --color-accent: #6db5ff;
   --color-lime: #fefa3d;
   --color-pink: #ff5de7;
@@ -20,6 +25,10 @@
 
 body {
   @apply bg-bg font-sans text-ink antialiased;
+}
+
+h1, h2, h3 {
+  @apply font-display;
 }
 
 .dot-grid {
