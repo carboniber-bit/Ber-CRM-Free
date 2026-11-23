@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatBRL, formatDate, formatDateTime, formatPhone, onlyDigits } from './format'
+import { formatBRL, formatDate, formatDateTime, formatPhone, localDayBoundary, onlyDigits } from './format'
 
 describe('formatBRL', () => {
   it('formata valores em reais', () => {
@@ -35,5 +35,19 @@ describe('formatDate / formatDateTime', () => {
   it('formata ISO para pt-BR', () => {
     expect(formatDate('2026-11-22T15:00:00Z')).toMatch(/22\/11\/2026/)
     expect(formatDateTime('2026-11-22T15:00:00Z')).toMatch(/22\/11\/2026/)
+  })
+})
+
+describe('localDayBoundary', () => {
+  it('converte limites do dia local para ISO UTC', () => {
+    const originalTz = process.env.TZ
+    process.env.TZ = 'America/Sao_Paulo'
+    try {
+      expect(localDayBoundary('2026-11-23')).toBe('2026-11-23T03:00:00.000Z')
+      expect(localDayBoundary('2026-11-23', true)).toBe('2026-11-24T02:59:59.999Z')
+    } finally {
+      if (originalTz === undefined) delete process.env.TZ
+      else process.env.TZ = originalTz
+    }
   })
 })

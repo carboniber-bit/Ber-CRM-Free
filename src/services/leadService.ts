@@ -1,6 +1,6 @@
 import { requireSupabase, throwDbError } from '../lib/db'
 import { computeOpportunity } from '../lib/opportunity'
-import { onlyDigits } from '../lib/format'
+import { localDayBoundary, onlyDigits } from '../lib/format'
 import {
   situationStatuses,
   STATUS_LABELS,
@@ -54,8 +54,8 @@ export async function listLeads(
   if (filters.presenceField && filters.presenceValue) {
     query = query.eq(filters.presenceField, filters.presenceValue)
   }
-  if (filters.createdFrom) query = query.gte('created_at', filters.createdFrom)
-  if (filters.createdTo) query = query.lte('created_at', `${filters.createdTo}T23:59:59`)
+  if (filters.createdFrom) query = query.gte('created_at', localDayBoundary(filters.createdFrom))
+  if (filters.createdTo) query = query.lte('created_at', localDayBoundary(filters.createdTo, true))
   if (filters.minScore !== undefined) query = query.gte('score', filters.minScore)
   if (filters.maxScore !== undefined) query = query.lte('score', filters.maxScore)
   if (filters.need) query = query.contains('needs', [filters.need])

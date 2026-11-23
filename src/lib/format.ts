@@ -28,3 +28,8 @@ export function formatDateTime(iso: string | null): string {
   if (Number.isNaN(date.getTime())) return '—'
   return date.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
 }
+
+export function localDayBoundary(date: string, endOfDay = false): string {
+  const time = endOfDay ? '23:59:59.999' : '00:00:00'
+  return new Date(`${date}T${time}`).toISOString()
+}
