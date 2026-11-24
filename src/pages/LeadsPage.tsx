@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Plus, RefreshCw, Trash2, Users } from 'lucide-react'
 import { deleteLead, listLeads } from '../services/leadService'
 import type { Lead, LeadFilters, LeadSort } from '../types/lead'
@@ -18,6 +18,7 @@ import { formatBRL, formatDate } from '../lib/format'
 const PAGE_SIZE = 20
 
 export function LeadsPage() {
+  const navigate = useNavigate()
   const { toast } = useToast()
   const [filters, setFilters] = useState<LeadFilters>({})
   const [sort, setSort] = useState<LeadSort>('created_desc')
@@ -105,7 +106,7 @@ export function LeadsPage() {
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={reload}><RefreshCw className="h-4 w-4" /> Atualizar</Button>
-          <Button variant="mint" disabled title="Formulário chega na Task 2"><Plus className="h-4 w-4" /> Novo lead</Button>
+          <Button variant="mint" onClick={() => navigate('/leads/novo')}><Plus className="h-4 w-4" /> Novo lead</Button>
         </div>
       </div>
 
@@ -127,7 +128,7 @@ export function LeadsPage() {
           description={total === 0 && !hasActiveFilters
             ? 'Cadastre o primeiro estabelecimento para começar a prospectar. Você também pode importar uma planilha CSV.'
             : 'Ajuste os filtros ou a busca para encontrar o que procura.'}
-          action={<Button variant="mint" disabled title="Formulário chega na Task 2"><Plus className="h-4 w-4" /> Cadastrar lead</Button>}
+          action={<Button variant="mint" onClick={() => navigate('/leads/novo')}><Plus className="h-4 w-4" /> Cadastrar lead</Button>}
         />
       ) : (
         <>

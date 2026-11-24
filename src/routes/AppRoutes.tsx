@@ -5,6 +5,8 @@ import { ProtectedRoute } from './ProtectedRoute'
 import { LoginPage } from '../pages/LoginPage'
 import { DashboardPage } from '../pages/DashboardPage'
 import { LeadsPage } from '../pages/LeadsPage'
+import { LeadNewPage } from '../pages/LeadNewPage'
+import { LeadEditPage } from '../pages/LeadEditPage'
 import { StatusPage } from '../pages/StatusPage'
 import { NotFoundPage } from '../pages/NotFoundPage'
 
@@ -19,6 +21,8 @@ export function AppRoutes() {
         <Route element={<AppLayout />}>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/leads" element={<LeadsPage />} />
+          <Route path="/leads/novo" element={<LeadNewPage />} />
+          <Route path="/leads/:id/editar" element={<LeadEditPage />} />
         </Route>
       </Route>
       <Route path="*" element={<NotFoundPage />} />
