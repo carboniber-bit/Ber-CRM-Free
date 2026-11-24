@@ -68,6 +68,7 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
   const requestRef = useRef(0)
   const activeRef = useRef(true)
   const statusSavingRef = useRef(false)
+  const focusOpenerRef = useRef<HTMLButtonElement | HTMLSelectElement | null>(null)
 
   const fetchLead = useCallback(async (background = false) => {
     if (!activeRef.current) return
@@ -130,6 +131,13 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
     }
   }, [leadId])
 
+  useEffect(() => {
+    if (contactOpen || pendingStatus !== null || statusSaving || refreshing) return
+    const opener = focusOpenerRef.current
+    focusOpenerRef.current = null
+    if (opener?.isConnected && !opener.disabled) opener.focus()
+  }, [contactOpen, pendingStatus, statusSaving, refreshing])
+
   const handleChecklistChanged = useCallback(() => {
     void reload(true)
   }, [reload])
@@ -177,8 +185,9 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
   const location = [lead.address, lead.district, lead.city, lead.state, lead.zip_code].filter(Boolean).join(', ')
   const statusControlsDisabled = statusSaving || contactOpen || refreshing
 
-  const requestStatusChange = (status: LeadStatus) => {
+  const requestStatusChange = (status: LeadStatus, opener: HTMLSelectElement) => {
     if (statusControlsDisabled || status === lead.status) return
+    focusOpenerRef.current = opener
     setPendingStatus(status)
   }
 
@@ -243,7 +252,7 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
             <Select
               label="Status"
               value={pendingStatus ?? lead.status}
-              onChange={(event) => requestStatusChange(event.target.value as LeadStatus)}
+              onChange={(event) => requestStatusChange(event.target.value as LeadStatus, event.currentTarget)}
               options={LEAD_STATUSES.map((status) => ({ value: status, label: STATUS_LABELS[status] }))}
               disabled={statusControlsDisabled}
               className="w-full"
@@ -259,7 +268,10 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
           <Button
             type="button"
             variant="mint"
-            onClick={() => setContactOpen(true)}
+            onClick={(event) => {
+              focusOpenerRef.current = event.currentTarget
+              setContactOpen(true)
+            }}
             disabled={statusSaving || pendingStatus !== null || refreshing}
           >
             <MessageSquare className="h-4 w-4" aria-hidden="true" /> Registrar contato
