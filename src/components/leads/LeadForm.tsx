@@ -194,7 +194,12 @@ export function LeadForm({ initial, leadId, onSaved, onCancel }: LeadFormProps) 
           <Input disabled={busy} label="Valor negociado (R$)" type="number" min="0" step="0.01" value={String(draft.negotiated_value)} error={errors.negotiated_value} onChange={(event) => set('negotiated_value', Number(event.target.value) || 0)} />
           <Input disabled={busy} label="Valor contratado (R$)" type="number" min="0" step="0.01" value={String(draft.contracted_value)} error={errors.contracted_value} onChange={(event) => set('contracted_value', Number(event.target.value) || 0)} />
           <Input disabled={busy} label="Valor recebido (R$)" type="number" min="0" step="0.01" value={String(draft.received_value)} error={errors.received_value} onChange={(event) => set('received_value', Number(event.target.value) || 0)} />
-          <Select disabled={busy} label="Status" value={draft.status} onChange={(event) => set('status', event.target.value as LeadWrite['status'])} options={LEAD_STATUSES.map((status) => ({ value: status, label: STATUS_LABELS[status] }))} />
+          <Select disabled={busy || Boolean(leadId)} label="Status" value={draft.status} onChange={(event) => set('status', event.target.value as LeadWrite['status'])} options={LEAD_STATUSES.map((status) => ({ value: status, label: STATUS_LABELS[status] }))} />
+          {leadId && (
+            <p className="text-xs text-muted sm:col-span-2">
+              Use a ficha do lead para alterar o status com confirmação. <Link to={`/leads/${leadId}`} className="text-accent hover:underline">Abrir ficha</Link>
+            </p>
+          )}
         </div>
         <Textarea disabled={busy} label="Observações" value={draft.notes ?? ''} onChange={setText('notes')} />
       </section>

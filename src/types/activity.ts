@@ -6,7 +6,7 @@ export type ActivityType = (typeof ACTIVITY_TYPES)[number]
 
 export const ACTIVITY_LABELS: Record<ActivityType, string> = {
   primeiro_contato: 'Primeiro contato',
-  mensagem: 'Mensagem enviada',
+  mensagem: 'Mensagem registrada',
   ligacao: 'Ligação realizada',
   resposta: 'Resposta recebida',
   reuniao: 'Reunião',

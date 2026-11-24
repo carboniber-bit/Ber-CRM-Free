@@ -121,11 +121,11 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
     return () => window.clearInterval(timer)
   }, [])
 
-  const updateLocalFollowup = (followup: Followup, changes: Partial<Followup>) => {
+  const updateLocalFollowup = (followup: Followup) => {
     requestRef.current += 1
     setLoadState((current) => ({
       ...current,
-      followups: current.followups.map((item) => item.id === followup.id ? { ...item, ...changes } : item),
+      followups: current.followups.map((item) => item.id === followup.id ? followup : item),
       refreshing: false,
       error: null,
     }))
@@ -166,7 +166,12 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
         rejectObsoleteMutation('complete')
         return
       }
-      await completeFollowup(latest.id, followupResult)
+      const updated = await completeFollowup(latest.id, followupResult)
+      if (!updated) {
+        rejectObsoleteMutation('complete')
+        return
+      }
+      latest = updated
     } catch (cause) {
       if (!activeRef.current) return
       const message = cause instanceof Error ? cause.message : 'Erro ao concluir follow-up.'
@@ -179,12 +184,7 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
     }
 
     if (!activeRef.current) return
-    updateLocalFollowup(latest, {
-      status: 'concluido',
-      completed_at: new Date().toISOString(),
-      result: followupResult,
-      updated_at: new Date().toISOString(),
-    })
+    updateLocalFollowup(latest)
     setCompleting(null)
     setResult('')
     toast('Follow-up concluído.')
@@ -216,7 +216,12 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
         rejectObsoleteMutation('cancel')
         return
       }
-      await cancelFollowup(latest.id)
+      const updated = await cancelFollowup(latest.id)
+      if (!updated) {
+        rejectObsoleteMutation('cancel')
+        return
+      }
+      latest = updated
     } catch (cause) {
       if (!activeRef.current) return
       const message = cause instanceof Error ? cause.message : 'Erro ao cancelar follow-up.'
@@ -230,7 +235,7 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
     }
 
     if (!activeRef.current) return
-    updateLocalFollowup(latest, { status: 'cancelado', updated_at: new Date().toISOString() })
+    updateLocalFollowup(latest)
     setCanceling(null)
     toast('Follow-up cancelado.')
     onChanged()

@@ -1,6 +1,5 @@
 import { requireSupabase, throwDbError } from '../lib/db'
 import type { Followup, FollowupList } from '../types/followup'
-import { addActivity } from './activityService'
 
 function dayBounds() {
   const start = new Date()
@@ -43,47 +42,26 @@ export async function createFollowup(
 ): Promise<Followup> {
   const client = requireSupabase()
   const { data, error } = await client
-    .from('lead_followups')
-    .insert({ lead_id: leadId, due_at: dueAt, reason, note })
-    .select()
-    .single()
+    .rpc('create_lead_followup', { p_lead_id: leadId, p_due_at: dueAt, p_reason: reason, p_note: note })
   throwDbError(error)
-  await syncNextContact(leadId)
+  if (!data) throw new Error('Não foi possível agendar o follow-up.')
   return data as Followup
 }
 
-export async function completeFollowup(id: string, result: string | null): Promise<void> {
+export async function completeFollowup(id: string, result: string | null): Promise<Followup | null> {
   const client = requireSupabase()
   const { data, error } = await client
-    .from('lead_followups')
-    .update({ status: 'concluido', completed_at: new Date().toISOString(), result })
-    .eq('id', id)
-    .eq('status', 'pendente')
-    .select()
-    .maybeSingle()
+    .rpc('complete_lead_followup', { p_followup_id: id, p_result: result })
   throwDbError(error)
-  if (!data) return
-  const followup = data as Followup
-  await addActivity(
-    followup.lead_id,
-    'follow_up',
-    result ? `Follow-up concluído: ${result}` : 'Follow-up concluído.',
-  )
-  await syncNextContact(followup.lead_id)
+  return (data as Followup | null) ?? null
 }
 
-export async function cancelFollowup(id: string): Promise<void> {
+export async function cancelFollowup(id: string): Promise<Followup | null> {
   const client = requireSupabase()
   const { data, error } = await client
-    .from('lead_followups')
-    .update({ status: 'cancelado' })
-    .eq('id', id)
-    .eq('status', 'pendente')
-    .select()
-    .maybeSingle()
+    .rpc('cancel_lead_followup', { p_followup_id: id })
   throwDbError(error)
-  if (!data) return
-  await syncNextContact((data as Followup).lead_id)
+  return (data as Followup | null) ?? null
 }
 
 export async function countOverdue(): Promise<number> {
@@ -95,19 +73,4 @@ export async function countOverdue(): Promise<number> {
     .lt('due_at', new Date().toISOString())
   throwDbError(error)
   return count ?? 0
-}
-
-export async function syncNextContact(leadId: string): Promise<void> {
-  const client = requireSupabase()
-  const { data, error } = await client
-    .from('lead_followups')
-    .select('due_at')
-    .eq('lead_id', leadId)
-    .eq('status', 'pendente')
-    .order('due_at', { ascending: true })
-    .limit(1)
-  throwDbError(error)
-  const next = data?.[0]?.due_at ?? null
-  const { error: updateError } = await client.from('leads').update({ next_contact_at: next }).eq('id', leadId)
-  throwDbError(updateError)
 }

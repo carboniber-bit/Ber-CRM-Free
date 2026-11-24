@@ -49,10 +49,13 @@ Projeto Supabase: `nuzjlizqdldhygsliwwc`
    ```
 
    Reinicie o dev server após editar.
-3. **Execute o schema**: abra o [SQL Editor](https://supabase.com/dashboard/project/nuzjlizqdldhygsliwwc/sql/new),
-   cole o conteúdo de [`supabase/migrations/0001_profiles.sql`](supabase/migrations/0001_profiles.sql)
-   e execute. Isso cria a tabela `profiles`, a trigger de criação automática de
-   perfil e as políticas RLS.
+3. **Execute o schema**: abra o [SQL Editor](https://supabase.com/dashboard/project/nuzjlizqdldhygsliwwc/sql/new)
+   e execute, nesta ordem, [`0001_profiles.sql`](supabase/migrations/0001_profiles.sql),
+   [`0002_etapa2.sql`](supabase/migrations/0002_etapa2.sql),
+   [`0003_duplicate_canonical.sql`](supabase/migrations/0003_duplicate_canonical.sql) e
+   [`0004_followup_atomic.sql`](supabase/migrations/0004_followup_atomic.sql).
+   As migrations criam as tabelas privadas, os índices, as políticas RLS e as
+   RPCs transacionais de follow-up.
 4. **Crie seu usuário**: Dashboard → Authentication → Users → *Add user* →
    informe e-mail e senha (marque *Auto Confirm User*). Não há cadastro público.
 5. Acesse `/status` no app para validar tudo, depois faça login em `/login`.
@@ -61,7 +64,7 @@ Projeto Supabase: `nuzjlizqdldhygsliwwc`
 
 - Apenas a chave **pública** (anon/publishable) é usada no frontend.
   **Nunca** coloque a `service_role` key no `.env.local` ou no código.
-- RLS ativo em `profiles`: cada usuário lê/edita somente o próprio perfil.
+- RLS ativo nas tabelas privadas: cada usuário acessa somente os próprios dados.
 - Rotas internas protegidas por sessão; sem sessão → redireciona para `/login`.
 - `.env.local` está no `.gitignore` — credenciais nunca vão para o GitHub.
 
@@ -79,7 +82,7 @@ src/
   utils/        helpers
   routes/       AppRoutes + ProtectedRoute
 supabase/
-  migrations/   0001_profiles.sql (profiles + trigger + RLS)
+  migrations/   0001–0004 (profiles, leads, CRM, duplicidades e follow-ups atômicos)
 ```
 
 Rotas: `/login` (pública) · `/status` (pública, diagnóstico) · `/` (protegida) · 404.

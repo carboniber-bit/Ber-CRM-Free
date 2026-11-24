@@ -2,7 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { requireSupabase } from '../lib/db'
 import { emptyLeadDraft, type Lead } from '../types/lead'
-import { findDuplicateCandidates } from './leadService'
+import { findDuplicateCandidates, updateLead } from './leadService'
 
 vi.mock('../lib/db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/db')>()
@@ -28,6 +28,7 @@ interface QueryCall {
 class FakeSupabase {
   readonly calls: QueryCall[] = []
   readonly leads: StoredLead[]
+  readonly updates: Array<Record<string, unknown>> = []
   error: { message: string } | null = null
 
   constructor(leads: StoredLead[]) {
@@ -55,6 +56,20 @@ class FakeQuery implements PromiseLike<QueryResult> {
   select(columns: string): this {
     this.selectColumns = columns
     return this
+  }
+
+  update(values: Record<string, unknown>): this {
+    this.client.updates.push(values)
+    return this
+  }
+
+  eq(): this {
+    return this
+  }
+
+  single(): Promise<QueryResult> {
+    if (this.client.error) return Promise.resolve({ data: null, error: this.client.error })
+    return Promise.resolve({ data: this.client.leads.slice(0, 1), error: null })
   }
 
   or(filter: string): this {
@@ -158,6 +173,20 @@ const noIdentifiers = {
   name: '',
   city: null,
 }
+
+describe('updateLead', () => {
+  it('não envia status ao salvar os demais campos do formulário', async () => {
+    const stored = makeStoredLead({ status: 'negociando' })
+    client = new FakeSupabase([stored])
+    vi.mocked(requireSupabase).mockReturnValue(client as unknown as SupabaseClient)
+
+    await updateLead(stored.id, { ...emptyLeadDraft(), name: stored.name, status: 'novo' })
+
+    expect(client.updates).toHaveLength(1)
+    expect(client.updates[0]).not.toHaveProperty('status')
+    expect(client.updates[0]).toHaveProperty('score')
+  })
+})
 
 describe('findDuplicateCandidates', () => {
   it.each([

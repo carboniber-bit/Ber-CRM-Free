@@ -96,9 +96,12 @@ export async function createLead(draft: LeadWrite): Promise<Lead> {
 
 export async function updateLead(id: string, draft: LeadWrite): Promise<Lead> {
   const client = requireSupabase()
+  const payload: Partial<LeadWrite> = withOpportunity(draft)
+  // A alteração de status passa pelo fluxo confirmado da ficha.
+  delete payload.status
   const { data, error } = await client
     .from('leads')
-    .update(withOpportunity(draft))
+    .update(payload)
     .eq('id', id)
     .select()
     .single()
