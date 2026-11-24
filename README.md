@@ -55,7 +55,7 @@ Projeto Supabase: `nuzjlizqdldhygsliwwc`
    [`0003_duplicate_canonical.sql`](supabase/migrations/0003_duplicate_canonical.sql) e
    [`0004_followup_atomic.sql`](supabase/migrations/0004_followup_atomic.sql).
    As migrations criam as tabelas privadas, os índices, as políticas RLS e as
-   RPCs transacionais de follow-up.
+   RPCs e triggers transacionais de follow-up.
 4. **Crie seu usuário**: Dashboard → Authentication → Users → *Add user* →
    informe e-mail e senha (marque *Auto Confirm User*). Não há cadastro público.
 5. Acesse `/status` no app para validar tudo, depois faça login em `/login`.

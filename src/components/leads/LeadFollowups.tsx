@@ -167,6 +167,7 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
         return
       }
       const updated = await completeFollowup(latest.id, followupResult)
+      if (!activeRef.current) return
       if (!updated) {
         rejectObsoleteMutation('complete')
         return
@@ -217,6 +218,7 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
         return
       }
       const updated = await cancelFollowup(latest.id)
+      if (!activeRef.current) return
       if (!updated) {
         rejectObsoleteMutation('cancel')
         return

@@ -1,5 +1,105 @@
 begin;
 
+create or replace function public.next_pending_followup(p_lead_id uuid)
+returns timestamptz
+language sql
+volatile
+security invoker
+set search_path = ''
+as $$
+  select min(pending.due_at)
+  from public.lead_followups as pending
+  where pending.lead_id = p_lead_id
+    and pending.status = 'pendente';
+$$;
+
+revoke all on function public.next_pending_followup(uuid) from public;
+grant execute on function public.next_pending_followup(uuid) to authenticated;
+
+-- As garantias valem também para DML direto autenticado.
+create or replace function public.enforce_lead_next_contact()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  new.next_contact_at := public.next_pending_followup(new.id);
+  return new;
+end;
+$$;
+
+create trigger leads_enforce_next_contact_insert
+before insert on public.leads
+for each row execute function public.enforce_lead_next_contact();
+
+create trigger leads_enforce_next_contact_update
+before update of next_contact_at on public.leads
+for each row execute function public.enforce_lead_next_contact();
+
+create or replace function public.sync_followup_next_contact()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  if TG_OP = 'DELETE' then
+    update public.leads
+    set next_contact_at = public.next_pending_followup(old.lead_id)
+    where id = old.lead_id;
+  elsif TG_OP = 'INSERT' then
+    update public.leads
+    set next_contact_at = public.next_pending_followup(new.lead_id)
+    where id = new.lead_id;
+  elsif old.lead_id is distinct from new.lead_id then
+    update public.leads
+    set next_contact_at = public.next_pending_followup(old.lead_id)
+    where id = old.lead_id;
+    update public.leads
+    set next_contact_at = public.next_pending_followup(new.lead_id)
+    where id = new.lead_id;
+  else
+    update public.leads
+    set next_contact_at = public.next_pending_followup(new.lead_id)
+    where id = new.lead_id;
+  end if;
+  return null;
+end;
+$$;
+
+create trigger lead_followups_sync_next_contact
+after insert or update or delete on public.lead_followups
+for each row execute function public.sync_followup_next_contact();
+
+create or replace function public.log_followup_completion()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  if old.status = 'pendente' and new.status = 'concluido' then
+    insert into public.lead_activities (owner_id, lead_id, user_id, type, description)
+    values (
+      new.owner_id,
+      new.lead_id,
+      (select auth.uid()),
+      'follow_up',
+      case when new.result is null or btrim(new.result) = ''
+        then 'Follow-up concluído.'
+        else 'Follow-up concluído: ' || new.result
+      end
+    );
+  end if;
+  return new;
+end;
+$$;
+
+create trigger lead_followups_log_completion
+after update of status on public.lead_followups
+for each row execute function public.log_followup_completion();
+
 create or replace function public.create_lead_followup(
   p_lead_id uuid,
   p_due_at timestamptz,
@@ -26,15 +126,6 @@ begin
   insert into public.lead_followups (lead_id, due_at, reason, note)
   values (p_lead_id, p_due_at, p_reason, p_note)
   returning * into v_followup;
-
-  update public.leads
-  set next_contact_at = (
-    select min(pending.due_at)
-    from public.lead_followups as pending
-    where pending.lead_id = p_lead_id
-      and pending.status = 'pendente'
-  )
-  where id = p_lead_id;
 
   return v_followup;
 end;
@@ -77,27 +168,6 @@ begin
     return null;
   end if;
 
-  insert into public.lead_activities (owner_id, lead_id, user_id, type, description)
-  values (
-    v_followup.owner_id,
-    v_followup.lead_id,
-    (select auth.uid()),
-    'follow_up',
-    case when p_result is null or btrim(p_result) = ''
-      then 'Follow-up concluído.'
-      else 'Follow-up concluído: ' || p_result
-    end
-  );
-
-  update public.leads
-  set next_contact_at = (
-    select min(pending.due_at)
-    from public.lead_followups as pending
-    where pending.lead_id = v_followup.lead_id
-      and pending.status = 'pendente'
-  )
-  where id = v_followup.lead_id;
-
   return v_followup;
 end;
 $$;
@@ -135,15 +205,6 @@ begin
   if not found then
     return null;
   end if;
-
-  update public.leads
-  set next_contact_at = (
-    select min(pending.due_at)
-    from public.lead_followups as pending
-    where pending.lead_id = v_followup.lead_id
-      and pending.status = 'pendente'
-  )
-  where id = v_followup.lead_id;
 
   return v_followup;
 end;

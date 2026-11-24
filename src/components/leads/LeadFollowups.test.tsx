@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastContext } from '../../hooks/useToast'
 import { cancelFollowup, completeFollowup, listByLead } from '../../services/followupService'
@@ -30,12 +30,12 @@ const toast = vi.fn()
 
 function renderFollowups() {
   const onChanged = vi.fn()
-  render(
+  const { unmount } = render(
     <ToastContext.Provider value={{ toast }}>
       <LeadFollowups leadId={followup.lead_id} refreshKey={0} onChanged={onChanged} />
     </ToastContext.Provider>,
   )
-  return { onChanged }
+  return { onChanged, unmount }
 }
 
 afterEach(cleanup)
@@ -95,5 +95,43 @@ describe('LeadFollowups mutation results', () => {
     expect(toast).not.toHaveBeenCalledWith('Follow-up cancelado.')
     expect(onChanged).not.toHaveBeenCalled()
     expect(screen.getByText('Pendente')).toBeTruthy()
+  })
+
+  it('não notifica estado obsoleto após unmount durante a conclusão', async () => {
+    let resolveMutation!: (value: Followup | null) => void
+    vi.mocked(completeFollowup).mockReturnValue(new Promise((resolve) => { resolveMutation = resolve }))
+    const { onChanged, unmount } = renderFollowups()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Concluir follow-up/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar conclusão' }))
+    await waitFor(() => expect(completeFollowup).toHaveBeenCalled())
+    unmount()
+
+    await act(async () => {
+      resolveMutation(null)
+      await Promise.resolve()
+    })
+
+    expect(toast).not.toHaveBeenCalledWith('Este follow-up não está mais pendente. Nenhuma alteração foi feita.', 'info')
+    expect(onChanged).not.toHaveBeenCalled()
+  })
+
+  it('não notifica estado obsoleto após unmount durante o cancelamento', async () => {
+    let resolveMutation!: (value: Followup | null) => void
+    vi.mocked(cancelFollowup).mockReturnValue(new Promise((resolve) => { resolveMutation = resolve }))
+    const { onChanged, unmount } = renderFollowups()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Cancelar follow-up/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar follow-up' }))
+    await waitFor(() => expect(cancelFollowup).toHaveBeenCalled())
+    unmount()
+
+    await act(async () => {
+      resolveMutation(null)
+      await Promise.resolve()
+    })
+
+    expect(toast).not.toHaveBeenCalledWith('Este follow-up não está mais pendente. Nenhuma alteração foi feita.', 'info')
+    expect(onChanged).not.toHaveBeenCalled()
   })
 })
