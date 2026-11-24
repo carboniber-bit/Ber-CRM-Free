@@ -120,12 +120,16 @@ function WhatsAppDialogContent({ open, lead, onClose, onLogged }: WhatsAppDialog
       if (!openedRef.current) {
         let popup: Window | null = null
         try {
-          popup = window.open(link, '_blank', 'noopener')
+          popup = window.open('about:blank', '_blank')
+          if (!popup) throw new Error('Popup bloqueado')
+          popup.opener = null
+          popup.location.replace(link)
         } catch {
-          popup = null
-        }
-
-        if (!popup) {
+          try {
+            popup?.close()
+          } catch {
+            // O handle já pode ter sido invalidado pelo navegador.
+          }
           setError('O navegador bloqueou a abertura do WhatsApp. Permita pop-ups e tente novamente.')
           return
         }

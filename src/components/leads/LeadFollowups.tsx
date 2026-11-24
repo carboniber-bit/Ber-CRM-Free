@@ -55,10 +55,12 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
   const activeRef = useRef(true)
   const operationRef = useRef<'complete' | 'cancel' | null>(null)
   const lastRefreshKeyRef = useRef(refreshKey)
+  const isBusy = busy !== null || loadState.loading || loadState.refreshing
 
-  const handleLoadSuccess = useCallback((request: number, followups: Followup[]) => {
-    if (!activeRef.current || request !== requestRef.current) return
+  const handleLoadSuccess = useCallback((request: number, followups: Followup[]): boolean => {
+    if (!activeRef.current || request !== requestRef.current) return false
     setLoadState({ followups, loaded: true, loading: false, refreshing: false, error: null })
+    return true
   }, [])
 
   const handleLoadError = useCallback((request: number, cause: unknown, background: boolean) => {
@@ -74,8 +76,8 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
     toast(message, 'error')
   }, [toast])
 
-  const load = useCallback(async (background = false): Promise<boolean> => {
-    if (!activeRef.current) return false
+  const load = useCallback(async (background = false): Promise<Followup[] | null> => {
+    if (!activeRef.current) return null
     const request = ++requestRef.current
     setLoadState((current) => ({
       followups: background ? current.followups : [],
@@ -87,11 +89,10 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
 
     try {
       const followups = await listByLead(leadId)
-      handleLoadSuccess(request, followups)
-      return true
+      return handleLoadSuccess(request, followups) ? followups : null
     } catch (cause) {
       handleLoadError(request, cause, background)
-      return false
+      return null
     }
   }, [handleLoadError, handleLoadSuccess, leadId])
 
@@ -112,12 +113,8 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
   useEffect(() => {
     if (lastRefreshKeyRef.current === refreshKey) return
     lastRefreshKeyRef.current = refreshKey
-    const request = ++requestRef.current
-    void listByLead(leadId).then(
-      (followups) => handleLoadSuccess(request, followups),
-      (cause: unknown) => handleLoadError(request, cause, true),
-    )
-  }, [handleLoadError, handleLoadSuccess, leadId, refreshKey])
+    void load(true)
+  }, [load, refreshKey])
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000)
@@ -125,21 +122,51 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
   }, [])
 
   const updateLocalFollowup = (followup: Followup, changes: Partial<Followup>) => {
+    requestRef.current += 1
     setLoadState((current) => ({
       ...current,
       followups: current.followups.map((item) => item.id === followup.id ? { ...item, ...changes } : item),
+      refreshing: false,
       error: null,
     }))
   }
 
+  const rejectObsoleteMutation = (action: 'complete' | 'cancel') => {
+    if (action === 'complete') {
+      setCompleting(null)
+      setResult('')
+    } else {
+      setCanceling(null)
+    }
+    setMutationError(null)
+    toast('Este follow-up não está mais pendente. Nenhuma alteração foi feita.', 'info')
+  }
+
   const complete = async (followup: Followup, followupResult: string | null) => {
-    if (operationRef.current || followup.status !== 'pendente') return
+    if (operationRef.current || isBusy) return
     operationRef.current = 'complete'
     setBusy('complete')
     setMutationError(null)
+    let latest: Followup | null = null
 
     try {
-      await completeFollowup(followup.id, followupResult)
+      const latestFollowups = await load(true)
+      if (!activeRef.current) return
+      if (!latestFollowups) {
+        setMutationError({
+          action: 'complete',
+          followup,
+          result: followupResult,
+          message: 'Não foi possível validar o estado atual do follow-up. Tente novamente.',
+        })
+        return
+      }
+      latest = latestFollowups.find((item) => item.id === followup.id) ?? null
+      if (!latest || latest.status !== 'pendente') {
+        rejectObsoleteMutation('complete')
+        return
+      }
+      await completeFollowup(latest.id, followupResult)
     } catch (cause) {
       if (!activeRef.current) return
       const message = cause instanceof Error ? cause.message : 'Erro ao concluir follow-up.'
@@ -152,7 +179,7 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
     }
 
     if (!activeRef.current) return
-    updateLocalFollowup(followup, {
+    updateLocalFollowup(latest, {
       status: 'concluido',
       completed_at: new Date().toISOString(),
       result: followupResult,
@@ -165,13 +192,31 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
   }
 
   const cancel = async (followup: Followup) => {
-    if (operationRef.current || followup.status !== 'pendente') return
+    if (operationRef.current || isBusy) return
     operationRef.current = 'cancel'
     setBusy('cancel')
     setMutationError(null)
+    let latest: Followup | null = null
 
     try {
-      await cancelFollowup(followup.id)
+      const latestFollowups = await load(true)
+      if (!activeRef.current) return
+      if (!latestFollowups) {
+        setCanceling(null)
+        setMutationError({
+          action: 'cancel',
+          followup,
+          result: null,
+          message: 'Não foi possível validar o estado atual do follow-up. Tente novamente.',
+        })
+        return
+      }
+      latest = latestFollowups.find((item) => item.id === followup.id) ?? null
+      if (!latest || latest.status !== 'pendente') {
+        rejectObsoleteMutation('cancel')
+        return
+      }
+      await cancelFollowup(latest.id)
     } catch (cause) {
       if (!activeRef.current) return
       const message = cause instanceof Error ? cause.message : 'Erro ao cancelar follow-up.'
@@ -185,7 +230,7 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
     }
 
     if (!activeRef.current) return
-    updateLocalFollowup(followup, { status: 'cancelado', updated_at: new Date().toISOString() })
+    updateLocalFollowup(latest, { status: 'cancelado', updated_at: new Date().toISOString() })
     setCanceling(null)
     toast('Follow-up cancelado.')
     onChanged()
@@ -193,31 +238,32 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
 
   const submitCompletion = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!completing || operationRef.current) return
+    if (!completing || isBusy) return
     void complete(completing, result.trim() || null)
   }
 
   const closeCompletion = () => {
-    if (operationRef.current) return
+    if (isBusy) return
     setCompleting(null)
     setResult('')
     setMutationError(null)
   }
 
   const retryMutation = () => {
-    if (!mutationError || operationRef.current) return
+    if (!mutationError || isBusy) return
     const failed = mutationError
     setMutationError(null)
     if (failed.action === 'complete') {
+      setCanceling(null)
       setCompleting(failed.followup)
       setResult(failed.result ?? '')
       void complete(failed.followup, failed.result)
       return
     }
+    setCompleting(null)
+    setResult('')
     void cancel(failed.followup)
   }
-
-  const isBusy = busy !== null || loadState.loading || loadState.refreshing
 
   return (
     <Card title="Follow-ups" dot="lime" aria-busy={isBusy}>
@@ -299,9 +345,9 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
                         {FOLLOWUP_STATUS_LABELS[followup.status]}
                       </span>
                     </div>
-                    {followup.reason && <p className="mt-1 text-xs text-muted">{followup.reason}</p>}
-                    {followup.note && <p className="mt-1 whitespace-pre-wrap text-xs text-muted">{followup.note}</p>}
-                    {followup.result && <p className="mt-1 text-xs text-muted">Resultado: {followup.result}</p>}
+                    {followup.reason && <p className="mt-1 break-words text-xs text-muted">{followup.reason}</p>}
+                    {followup.note && <p className="mt-1 whitespace-pre-wrap break-words text-xs text-muted">{followup.note}</p>}
+                    {followup.result && <p className="mt-1 break-words text-xs text-muted">Resultado: {followup.result}</p>}
                     {followup.status === 'pendente' && (
                       <div className="mt-2 flex flex-wrap gap-2">
                         <Button
@@ -311,6 +357,7 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
                           aria-label={`Concluir follow-up de ${formatDateTime(followup.due_at)}`}
                           disabled={isBusy}
                           onClick={() => {
+                            setCanceling(null)
                             setCompleting(followup)
                             setResult('')
                             setMutationError(null)
@@ -325,6 +372,8 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
                           aria-label={`Cancelar follow-up de ${formatDateTime(followup.due_at)}`}
                           disabled={isBusy}
                           onClick={() => {
+                            setCompleting(null)
+                            setResult('')
                             setMutationError(null)
                             setCanceling(followup)
                           }}
@@ -348,7 +397,7 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
             value={result}
             onChange={(event) => setResult(event.target.value)}
             placeholder="Ex.: pediu para retornar sexta"
-            disabled={busy !== null}
+            disabled={isBusy}
           />
           {mutationError?.action === 'complete' && (
             <div role="alert" className="rounded-xl border border-danger/40 bg-danger/5 p-3">
@@ -358,7 +407,7 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
                 type="button"
                 variant="outline"
                 className="mt-3"
-                disabled={busy !== null}
+                disabled={isBusy}
                 onClick={retryMutation}
               >
                 Tentar novamente
@@ -366,8 +415,8 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
             </div>
           )}
           <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" onClick={closeCompletion} disabled={busy !== null}>Voltar</Button>
-            <Button type="submit" variant="mint" loading={busy === 'complete'} disabled={busy !== null}>
+            <Button type="button" variant="ghost" onClick={closeCompletion} disabled={isBusy}>Voltar</Button>
+            <Button type="submit" variant="mint" loading={busy === 'complete'} disabled={isBusy}>
               Confirmar conclusão
             </Button>
           </div>
@@ -379,12 +428,12 @@ function LeadFollowupsContent({ leadId, refreshKey, onChanged }: LeadFollowupsPr
         title="Cancelar follow-up"
         description="Cancelar este follow-up? Ele deixará de aparecer nas listas de pendentes."
         confirmLabel="Cancelar follow-up"
-        loading={busy === 'cancel'}
+        loading={isBusy}
         onConfirm={() => {
           if (canceling) void cancel(canceling)
         }}
         onCancel={() => {
-          if (operationRef.current) return
+          if (isBusy) return
           setCanceling(null)
           setMutationError(null)
         }}
