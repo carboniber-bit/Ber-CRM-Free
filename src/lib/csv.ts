@@ -33,7 +33,10 @@ export function leadsToCsv(leads: Lead[]): string {
     PRESENCE_EXPORT[l.has_digital_menu], PRESENCE_EXPORT[l.has_digital_catalog],
     PRESENCE_EXPORT[l.has_landing_page], PRESENCE_EXPORT[l.has_business_whatsapp],
   ])
-  return Papa.unparse({ fields: [...CSV_HEADERS], data: rows }, { newline: '\n' })
+  return Papa.unparse(
+    { fields: [...CSV_HEADERS], data: rows },
+    { newline: '\n', escapeFormulae: /^(?:[\t\r]|\s*[=+\-@])/ },
+  )
 }
 
 export interface CsvParsedRow {
@@ -69,14 +72,25 @@ function parseNiche(raw: string): string | null {
   return byLabel ?? v
 }
 
+const MAX_ESTIMATED_VALUE = 9999999999.99
+
 function parseMoney(raw: string): number | null {
   const v = raw.trim()
   if (v === '') return 0
-  const normalized = v.includes(',')
-    ? v.replace(/\./g, '').replace(',', '.')
-    : v
+
+  let normalized: string
+  if (/^\d+$/.test(v) || /^\d+\.\d{1,2}$/.test(v)) {
+    normalized = v
+  } else if (/^\d+,\d{1,2}$/.test(v)) {
+    normalized = v.replace(',', '.')
+  } else {
+    const grouped = /^(\d{1,3}(?:\.\d{3})+),(\d{1,2})$/.exec(v)
+    if (!grouped) return null
+    normalized = `${grouped[1].replace(/\./g, '')}.${grouped[2]}`
+  }
+
   const n = Number(normalized)
-  return Number.isFinite(n) && n >= 0 ? n : null
+  return Number.isFinite(n) && n >= 0 && n <= MAX_ESTIMATED_VALUE ? n : null
 }
 
 const PRESENCE_COLUMNS: Array<[string, keyof LeadWrite]> = [
@@ -89,16 +103,96 @@ const PRESENCE_COLUMNS: Array<[string, keyof LeadWrite]> = [
   ['tem_whatsapp_comercial', 'has_business_whatsapp'],
 ]
 
+type CsvSourceRow = Record<string, string | string[]>
+
+function recordStartLines(text: string, delimiter: string): number[] {
+  const lines: number[] = []
+  let line = 1
+  let recordLine = 1
+  let inQuotes = false
+  let atFieldStart = true
+  let recordHasContent = false
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i]
+
+    if (char === '\r' || char === '\n') {
+      if (char === '\r' && text[i + 1] === '\n') i++
+      if (!inQuotes) {
+        if (recordHasContent) lines.push(recordLine)
+        recordLine = line + 1
+        recordHasContent = false
+        atFieldStart = true
+      }
+      line++
+      continue
+    }
+
+    if (inQuotes) {
+      if (char === '"') {
+        if (text[i + 1] === '"') i++
+        else inQuotes = false
+      }
+      continue
+    }
+
+    recordHasContent = true
+    if (atFieldStart && char === '"') {
+      inQuotes = true
+      atFieldStart = false
+    } else if (text.startsWith(delimiter, i)) {
+      atFieldStart = true
+      i += delimiter.length - 1
+    } else {
+      atFieldStart = false
+    }
+  }
+
+  if (recordHasContent) lines.push(recordLine)
+  return lines
+}
+
+function structuralErrorsByRow(parsed: Papa.ParseResult<CsvSourceRow>): Map<number, string[]> {
+  const byRow = new Map<number, string[]>()
+  for (const error of parsed.errors) {
+    if (error.type === 'Delimiter') continue
+    const row = typeof error.row === 'number'
+      ? Math.min(Math.max(error.row, 0), Math.max(parsed.data.length - 1, 0))
+      : 0
+    const messages = byRow.get(row) ?? []
+    messages.push(`Erro estrutural (${error.code}): ${error.message}`)
+    byRow.set(row, messages)
+  }
+  return byRow
+}
+
 export function parseLeadsCsv(text: string): CsvParsedRow[] {
-  const parsed = Papa.parse<Record<string, string>>(text, {
+  const parsed = Papa.parse<CsvSourceRow>(text, {
     header: true,
     skipEmptyLines: true,
     transformHeader: (h) => h.trim().toLowerCase(),
   })
+  const sourceLines = recordStartLines(text, parsed.meta.delimiter)
+  const errorsByRow = structuralErrorsByRow(parsed)
+
+  if (parsed.data.length === 0) {
+    const errors = errorsByRow.get(0) ?? []
+    return errors.length > 0
+      ? [{ line: sourceLines[0] ?? 1, draft: null, errors }]
+      : []
+  }
+
   return parsed.data.map((row, i) => {
-    const errors: string[] = []
+    const errors = [...(errorsByRow.get(i) ?? [])]
+    if (Object.prototype.hasOwnProperty.call(row, '__parsed_extra')
+      && !errors.some((message) => message.includes('TooManyFields'))) {
+      errors.push('Erro estrutural (TooManyFields): a linha contém mais campos que o cabeçalho.')
+    }
     const draft = emptyLeadDraft()
-    const get = (key: string) => (row[key] ?? '').trim()
+    const get = (key: string) => {
+      const value = row[key]
+      return (Array.isArray(value) ? value[0] ?? '' : value ?? '').trim()
+    }
 
     draft.name = get('nome')
     if (!draft.name) errors.push('Nome é obrigatório.')
@@ -114,7 +208,7 @@ export function parseLeadsCsv(text: string): CsvParsedRow[] {
     draft.website = get('site') || null
     draft.menu_url = get('cardapio_url') || null
     draft.catalog_url = get('catalogo_url') || null
-    draft.country = get('pais') || 'Brasil'
+    draft.country = get('pais') || null
     draft.state = get('estado') || null
     draft.city = get('cidade') || null
     draft.district = get('bairro') || null
@@ -138,6 +232,6 @@ export function parseLeadsCsv(text: string): CsvParsedRow[] {
       else (draft as Record<string, unknown>)[field] = presence
     }
 
-    return { line: i + 2, draft: errors.length > 0 ? null : draft, errors }
+    return { line: sourceLines[i + 1] ?? i + 2, draft: errors.length > 0 ? null : draft, errors }
   })
 }

@@ -13,6 +13,12 @@ export function normalizeWhatsAppNumber(raw: string): string | null {
   return digits
 }
 
+export function normalizePhoneForComparison(raw: string): string | null {
+  const value = raw.trim()
+  if (!value) return null
+  return normalizeWhatsAppNumber(value) ?? (onlyDigits(value) || null)
+}
+
 export function buildWhatsAppLink(raw: string, message?: string): string | null {
   const number = normalizeWhatsAppNumber(raw)
   if (!number) return null

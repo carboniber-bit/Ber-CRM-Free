@@ -23,9 +23,10 @@ interface ModalProps {
   title: string
   children: ReactNode
   wide?: boolean
+  dismissible?: boolean
 }
 
-export function Modal({ open, onClose, title, children, wide = false }: ModalProps) {
+export function Modal({ open, onClose, title, children, wide = false, dismissible = true }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -43,13 +44,22 @@ export function Modal({ open, onClose, title, children, wide = false }: ModalPro
   }, [open])
 
   useEffect(() => {
+    if (!open || dismissible) return
+    const dialog = dialogRef.current
+    if (!dialog || dialog.contains(document.activeElement)) return
+
+    const initialFocus = getFocusableElements(dialog)[0] ?? dialog
+    initialFocus.focus()
+  }, [open, dismissible])
+
+  useEffect(() => {
     if (!open) return
     const dialog = dialogRef.current
     if (!dialog) return
 
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        onClose()
+        if (dismissible) onClose()
         return
       }
       if (event.key !== 'Tab') return
@@ -76,12 +86,12 @@ export function Modal({ open, onClose, title, children, wide = false }: ModalPro
 
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [open, onClose])
+  }, [open, onClose, dismissible])
 
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/70 p-0 sm:items-center sm:p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/70 p-0 sm:items-center sm:p-4" onClick={dismissible ? onClose : undefined}>
       <div
         ref={dialogRef}
         role="dialog"
@@ -96,9 +106,11 @@ export function Modal({ open, onClose, title, children, wide = false }: ModalPro
       >
         <div className="mb-4 flex items-center justify-between gap-4">
           <h2 className="font-display text-base font-semibold text-ink">{title}</h2>
-          <button onClick={onClose} aria-label="Fechar" className="rounded-lg p-1.5 text-muted transition-colors hover:bg-elevated hover:text-ink">
-            <X className="h-4 w-4" />
-          </button>
+          {dismissible && (
+            <button onClick={onClose} aria-label="Fechar" className="rounded-lg p-1.5 text-muted transition-colors hover:bg-elevated hover:text-ink">
+              <X className="h-4 w-4" />
+            </button>
+          )}
         </div>
         {children}
       </div>

@@ -42,9 +42,9 @@ const navItems: NavItem[] = [
   { label: 'Configurações', icon: Settings, stage: 'Etapa 2' },
 ]
 
-function NavContent({ onNavigate }: { onNavigate?: () => void }) {
+function NavContent({ onNavigate, className }: { onNavigate?: () => void; className?: string }) {
   return (
-    <nav className="flex flex-col gap-1">
+    <nav className={cn('flex flex-col gap-1', className)}>
       {navItems.map(({ label, icon: Icon, to, stage }) =>
         to ? (
           <NavLink
@@ -65,12 +65,12 @@ function NavContent({ onNavigate }: { onNavigate?: () => void }) {
         ) : (
           <span
             key={label}
-            className="flex cursor-not-allowed items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-muted/50"
+            className="flex cursor-not-allowed items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-muted"
             title={`Disponível na ${stage}`}
           >
             <Icon className="h-4 w-4 shrink-0" />
             <span className="min-w-0 flex-1">{label}</span>
-            <span className="shrink-0 text-[10px] font-medium leading-none text-muted/70">{stage}</span>
+            <span className="shrink-0 text-[10px] font-medium leading-none text-muted">{stage}</span>
             <Lock className="h-3.5 w-3.5 shrink-0" />
           </span>
         ),
@@ -134,7 +134,14 @@ export function AppLayout() {
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       desktopQuery.removeEventListener('change', onDesktopChange)
-      hamburger?.focus()
+      if (
+        hamburger?.isConnected
+        && hamburger.getClientRects().length > 0
+        && !hamburger.matches(':disabled')
+        && !hamburger.closest('[inert]')
+      ) {
+        hamburger.focus()
+      }
     }
   }, [drawerOpen, closeDrawer])
 
@@ -160,13 +167,13 @@ export function AppLayout() {
             tabIndex={-1}
             className="absolute left-0 top-0 flex h-full w-64 flex-col border-r border-line bg-surface p-4"
           >
-            <div className="mb-6 flex items-center justify-between">
+            <div className="mb-6 flex shrink-0 items-center justify-between">
               <Logo className="text-ink" />
               <button ref={closeButtonRef} onClick={closeDrawer} aria-label="Fechar menu" className="rounded-lg p-1.5 text-muted hover:bg-elevated hover:text-ink">
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <NavContent onNavigate={closeDrawer} />
+            <NavContent onNavigate={closeDrawer} className="min-h-0 flex-1 overflow-y-auto" />
           </aside>
         </div>
       )}

@@ -101,7 +101,7 @@ describe('computeOpportunity', () => {
     expect(r.priority).toBe('alta')
   })
 
-  it('teto de 100 pontos', () => {
+  it('máximo atual é 90 com todos os critérios aplicáveis', () => {
     const r = computeOpportunity(base({
       niche: 'restaurante',
       has_website: 'no', has_instagram: 'yes', has_facebook: 'no',
@@ -109,11 +109,19 @@ describe('computeOpportunity', () => {
       has_business_whatsapp: 'no',
       phone: null, whatsapp: null, email: null,
     }))
-    expect(r.score).toBeLessThanOrEqual(100)
+    expect(r.score).toBe(90)
+    expect(r.reasons).toEqual([
+      'Não possui site (ausência confirmada).',
+      'Não possui cardápio digital (ausência confirmada), aplicável ao nicho.',
+      'Possui Instagram, mas não possui site — oportunidade de landing page.',
+      'Não possui catálogo digital (ausência confirmada), aplicável ao nicho.',
+      'Informações comerciais incompletas: nenhum canal de contato cadastrado.',
+      'Presença digital limitada: 6 itens confirmados como ausentes.',
+    ])
   })
 
-  it('justificativas citam apenas dados cadastrados', () => {
+  it('justificativas citam exatamente o dado confirmado', () => {
     const r = computeOpportunity(base({ has_website: 'no' }))
-    expect(r.reasons.join(' ')).toMatch(/site/i)
+    expect(r.reasons).toEqual(['Não possui site (ausência confirmada).'])
   })
 })

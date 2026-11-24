@@ -9,9 +9,13 @@ interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
   placeholder?: string
 }
 
-export function Select({ label, error, options, placeholder, className, id, ...props }: SelectProps) {
+export function Select({
+  label, error, options, placeholder, className, id, 'aria-describedby': ariaDescribedBy, ...props
+}: SelectProps) {
   const generatedId = useId()
   const selectId = id ?? generatedId
+  const errorId = `${selectId}-error`
+  const describedBy = [ariaDescribedBy, error ? errorId : undefined].filter(Boolean).join(' ') || undefined
   return (
     <div className="flex flex-col gap-1.5">
       <label htmlFor={selectId} className="text-sm font-medium text-muted">{label}</label>
@@ -25,13 +29,14 @@ export function Select({ label, error, options, placeholder, className, id, ...p
         )}
         aria-invalid={error ? true : undefined}
         {...props}
+        aria-describedby={describedBy}
       >
         {placeholder && <option value="">{placeholder}</option>}
         {options.map((option) => (
           <option key={option.value} value={option.value}>{option.label}</option>
         ))}
       </select>
-      {error && <p className="text-xs text-danger">{error}</p>}
+      {error && <p id={errorId} className="text-xs text-danger">{error}</p>}
     </div>
   )
 }

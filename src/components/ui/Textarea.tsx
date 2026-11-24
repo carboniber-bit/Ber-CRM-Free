@@ -7,9 +7,13 @@ interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
   error?: string
 }
 
-export function Textarea({ label, error, className, id, ...props }: TextareaProps) {
+export function Textarea({
+  label, error, className, id, 'aria-describedby': ariaDescribedBy, ...props
+}: TextareaProps) {
   const generatedId = useId()
   const textareaId = id ?? generatedId
+  const errorId = `${textareaId}-error`
+  const describedBy = [ariaDescribedBy, error ? errorId : undefined].filter(Boolean).join(' ') || undefined
   return (
     <div className="flex flex-col gap-1.5">
       <label htmlFor={textareaId} className="text-sm font-medium text-muted">{label}</label>
@@ -23,8 +27,9 @@ export function Textarea({ label, error, className, id, ...props }: TextareaProp
         )}
         aria-invalid={error ? true : undefined}
         {...props}
+        aria-describedby={describedBy}
       />
-      {error && <p className="text-xs text-danger">{error}</p>}
+      {error && <p id={errorId} className="text-xs text-danger">{error}</p>}
     </div>
   )
 }

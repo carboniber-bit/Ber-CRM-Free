@@ -1,16 +1,15 @@
 import { requireSupabase, throwDbError } from '../lib/db'
 import { computeOpportunity } from '../lib/opportunity'
-import { localDayBoundary, onlyDigits } from '../lib/format'
+import { formatPhone, localDayBoundary, onlyDigits } from '../lib/format'
+import { normalizePhoneForComparison, normalizeWhatsAppNumber } from '../lib/whatsapp'
 import {
   situationStatuses,
-  STATUS_LABELS,
   type Lead,
   type LeadFilters,
   type LeadSort,
   type LeadStatus,
   type LeadWrite,
 } from '../types/lead'
-import { addActivity } from './activityService'
 
 function normalizeDraft(draft: LeadWrite): LeadWrite {
   const cleaned = { ...draft }
@@ -37,6 +36,8 @@ const SORTS: Record<LeadSort, { column: string; ascending: boolean }> = {
   score_asc: { column: 'score', ascending: true },
 }
 
+const DUPLICATE_CANDIDATE_LIMIT = 100
+
 export async function listLeads(
   filters: LeadFilters,
   sort: LeadSort,
@@ -51,6 +52,7 @@ export async function listLeads(
   if (filters.city) query = query.ilike('city', filters.city)
   if (filters.district) query = query.ilike('district', filters.district)
   if (filters.status) query = query.eq('status', filters.status)
+  if (filters.priority) query = query.eq('priority', filters.priority)
   if (filters.presenceField && filters.presenceValue) {
     query = query.eq(filters.presenceField, filters.presenceValue)
   }
@@ -72,6 +74,7 @@ export async function listLeads(
   const from = page * pageSize
   const { data, error, count } = await query
     .order(column, { ascending })
+    .order('id', { ascending: true })
     .range(from, from + pageSize - 1)
   throwDbError(error)
   return { leads: (data ?? []) as Lead[], total: count ?? 0 }
@@ -105,17 +108,17 @@ export async function updateLead(id: string, draft: LeadWrite): Promise<Lead> {
 
 export async function deleteLead(id: string): Promise<void> {
   const client = requireSupabase()
-  const { error } = await client.from('leads').delete().eq('id', id)
+  const { data, error } = await client.from('leads').delete().eq('id', id).select('id').maybeSingle()
   throwDbError(error)
+  if (!data) {
+    throw new Error('Não foi possível excluir o lead: registro não encontrado ou acesso negado.')
+  }
 }
 
 export async function setLeadStatus(id: string, status: LeadStatus): Promise<Lead> {
   const client = requireSupabase()
-  const current = await getLead(id)
-  if (current.status === status) return current
   const { data, error } = await client.from('leads').update({ status }).eq('id', id).select().single()
   throwDbError(error)
-  await addActivity(id, 'mudanca_status', `De "${STATUS_LABELS[current.status]}" para "${STATUS_LABELS[status]}".`)
   return data as Lead
 }
 
@@ -124,22 +127,75 @@ export async function findDuplicateCandidates(
   excludeId?: string,
 ): Promise<Lead[]> {
   const client = requireSupabase()
-  const { data, error } = await client.from('leads').select('*')
-  throwDbError(error)
-  const leads = (data ?? []) as Lead[]
-  const phone = onlyDigits(input.phone ?? '')
-  const whatsapp = onlyDigits(input.whatsapp ?? '')
-  const cnpj = onlyDigits(input.cnpj ?? '')
+  const phone = normalizePhoneForComparison(input.phone ?? '')
+  const whatsapp = normalizePhoneForComparison(input.whatsapp ?? '')
+  const cnpj = onlyDigits(input.cnpj ?? '') || null
   const name = input.name.trim().toLowerCase()
   const city = (input.city ?? '').trim().toLowerCase()
+  const identifierFilters = new Set<string>()
 
-  return leads.filter((lead) => {
-    if (excludeId && lead.id === excludeId) return false
-    if (phone && onlyDigits(lead.phone ?? '') === phone) return true
-    if (whatsapp && onlyDigits(lead.whatsapp ?? '') === whatsapp) return true
+  const addIdentifierFilter = (column: string, value: string | null) => {
+    if (value) identifierFilters.add(`${column}.eq.${JSON.stringify(value)}`)
+  }
+
+  for (const [column, raw] of [['phone', input.phone], ['whatsapp', input.whatsapp]] as const) {
+    const canonical = normalizePhoneForComparison(raw ?? '')
+    if (!canonical) continue
+    const brazilNumber = normalizeWhatsAppNumber(raw ?? '')
+    const domestic = brazilNumber?.startsWith('55') ? brazilNumber.slice(2) : canonical
+    addIdentifierFilter(column, raw?.trim() || null)
+    addIdentifierFilter(column, canonical)
+    addIdentifierFilter(column, domestic)
+    addIdentifierFilter(column, `+${canonical}`)
+    addIdentifierFilter(column, formatPhone(domestic))
+    addIdentifierFilter(column, onlyDigits(raw ?? '') || null)
+  }
+
+  if (cnpj) {
+    addIdentifierFilter('cnpj', input.cnpj?.trim() || null)
+    addIdentifierFilter('cnpj', cnpj)
+    if (cnpj.length === 14) {
+      addIdentifierFilter('cnpj', `${cnpj.slice(0, 2)}.${cnpj.slice(2, 5)}.${cnpj.slice(5, 8)}/${cnpj.slice(8, 12)}-${cnpj.slice(12)}`)
+    }
+  }
+
+  const candidates = new Map<string, Lead>()
+  const mergeCandidates = (leads: Lead[]) => {
+    for (const lead of leads) {
+      if (!excludeId || lead.id !== excludeId) candidates.set(lead.id, lead)
+    }
+  }
+
+  if (identifierFilters.size > 0) {
+    const { data, error } = await client
+      .from('leads')
+      .select('*')
+      .or([...identifierFilters].join(','))
+      .order('id', { ascending: true })
+      .limit(DUPLICATE_CANDIDATE_LIMIT)
+    throwDbError(error)
+    mergeCandidates((data ?? []) as Lead[])
+  }
+
+  if (name && city) {
+    const { data, error } = await client
+      .from('leads')
+      .select('*')
+      .ilike('name', name.replace(/[\\%_]/g, '\\$&'))
+      .ilike('city', city.replace(/[\\%_]/g, '\\$&'))
+      .order('id', { ascending: true })
+      .limit(DUPLICATE_CANDIDATE_LIMIT)
+    throwDbError(error)
+    mergeCandidates((data ?? []) as Lead[])
+  }
+
+  return [...candidates.values()].filter((lead) => {
+    if (phone && normalizePhoneForComparison(lead.phone ?? '') === phone) return true
+    if (whatsapp && normalizePhoneForComparison(lead.whatsapp ?? '') === whatsapp) return true
     if (cnpj && onlyDigits(lead.cnpj ?? '') === cnpj) return true
-    if (name && lead.name.trim().toLowerCase() === name && city && (lead.city ?? '').trim().toLowerCase() === city) return true
-    return false
+    return name !== '' && city !== ''
+      && lead.name.trim().toLowerCase() === name
+      && (lead.city ?? '').trim().toLowerCase() === city
   })
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildWhatsAppLink, normalizeWhatsAppNumber } from './whatsapp'
+import { buildWhatsAppLink, normalizePhoneForComparison, normalizeWhatsAppNumber } from './whatsapp'
 
 describe('normalizeWhatsAppNumber', () => {
   it('adiciona 55 a celular com DDD (11 dígitos)', () => {
@@ -20,6 +20,27 @@ describe('normalizeWhatsAppNumber', () => {
     expect(normalizeWhatsAppNumber('123')).toBeNull()
     expect(normalizeWhatsAppNumber('abcdefghij')).toBeNull()
     expect(normalizeWhatsAppNumber('55119888877779999')).toBeNull()
+  })
+})
+
+describe('normalizePhoneForComparison', () => {
+  it.each(['11988887777', '+55 (11) 98888-7777', '011988887777'])(
+    'canonicaliza o identificador brasileiro %s',
+    (value) => {
+      expect(normalizePhoneForComparison(value)).toBe('5511988887777')
+    },
+  )
+
+  it.each([
+    ['123', '123'],
+    ['(1) 23', '123'],
+    ['abc123', '123'],
+  ])('usa apenas dígitos no identificador inválido %s', (value, expected) => {
+    expect(normalizePhoneForComparison(value)).toBe(expected)
+  })
+
+  it.each(['', '   ', 'abcdefghij'])('não inventa identificador para %j', (value) => {
+    expect(normalizePhoneForComparison(value)).toBeNull()
   })
 })
 

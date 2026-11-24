@@ -3,11 +3,19 @@ import { DEFAULT_SETTINGS, type ServicePrices, type UserSettings } from '../type
 
 export async function getSettings(): Promise<UserSettings> {
   const client = requireSupabase()
-  const { data: sessionData } = await client.auth.getUser()
-  const ownerId = sessionData.user?.id ?? ''
+  const { data: sessionData, error: authError } = await client.auth.getUser()
+  if (authError) throw new Error('Não foi possível validar sua sessão. Entre novamente.')
+  const ownerId = sessionData.user?.id
+  if (!ownerId) throw new Error('Sua sessão expirou. Entre novamente para carregar as configurações.')
   const { data, error } = await client.from('user_settings').select('*').maybeSingle()
   throwDbError(error)
-  if (!data) return { owner_id: ownerId, ...DEFAULT_SETTINGS }
+  if (!data) {
+    return {
+      owner_id: ownerId,
+      service_prices: { ...DEFAULT_SETTINGS.service_prices },
+      whatsapp_template: DEFAULT_SETTINGS.whatsapp_template,
+    }
+  }
   return data as UserSettings
 }
 

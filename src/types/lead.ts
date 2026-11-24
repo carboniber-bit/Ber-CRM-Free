@@ -165,7 +165,9 @@ export interface Lead {
 
 export type LeadWrite = Omit<
   Lead,
-  'id' | 'owner_id' | 'created_at' | 'updated_at' | 'score' | 'priority' | 'needs' | 'score_reasons'
+  | 'id' | 'owner_id' | 'created_at' | 'updated_at'
+  | 'next_contact_at' | 'last_verified_at'
+  | 'score' | 'priority' | 'needs' | 'score_reasons'
 >
 
 export function emptyLeadDraft(): LeadWrite {
@@ -199,8 +201,6 @@ export function emptyLeadDraft(): LeadWrite {
     offered_service: null,
     notes: null,
     source: null,
-    next_contact_at: null,
-    last_verified_at: null,
     estimated_value: 0,
     negotiated_value: 0,
     contracted_value: 0,
@@ -214,6 +214,7 @@ export interface LeadFilters {
   city?: string
   district?: string
   status?: LeadStatus
+  priority?: Priority
   presenceField?: PresenceField
   presenceValue?: Presence
   createdFrom?: string

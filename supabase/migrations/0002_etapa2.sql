@@ -2,6 +2,8 @@
 -- Execute este arquivo no Supabase Dashboard → SQL Editor.
 -- Não altera a tabela profiles da Etapa 1.
 
+begin;
+
 -- ============ LEADS ============
 create table public.leads (
   id uuid primary key default gen_random_uuid(),
@@ -77,6 +79,27 @@ create policy "leads_delete_own" on public.leads for delete using (auth.uid() = 
 create trigger leads_set_updated_at before update on public.leads
   for each row execute function public.set_updated_at();
 
+-- Usada apenas pelas policies dos filhos. Security invoker + search_path vazio
+-- evitam elevação de privilégio e ambiguidade de objetos; leads não chama esta
+-- função, portanto não há recursão de RLS.
+create or replace function public.owns_lead(p_lead_id uuid)
+returns boolean
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select exists (
+    select 1
+    from public.leads as lead
+    where lead.id = p_lead_id
+      and lead.owner_id = (select auth.uid())
+  );
+$$;
+
+revoke all on function public.owns_lead(uuid) from public;
+grant execute on function public.owns_lead(uuid) to authenticated;
+
 -- ============ ATIVIDADES (timeline) ============
 create table public.lead_activities (
   id uuid primary key default gen_random_uuid(),
@@ -96,10 +119,70 @@ create index lead_activities_owner_idx on public.lead_activities (owner_id, crea
 alter table public.lead_activities enable row level security;
 grant select, insert, update, delete on public.lead_activities to authenticated;
 
-create policy "activities_select_own" on public.lead_activities for select using (auth.uid() = owner_id);
-create policy "activities_insert_own" on public.lead_activities for insert with check (auth.uid() = owner_id);
-create policy "activities_update_own" on public.lead_activities for update using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
-create policy "activities_delete_own" on public.lead_activities for delete using (auth.uid() = owner_id);
+alter table public.lead_activities
+  add constraint lead_activities_user_id_auth_check
+  check (user_id is null or user_id = auth.uid());
+
+create policy "activities_select_own" on public.lead_activities for select
+  using (auth.uid() = owner_id and public.owns_lead(lead_id));
+create policy "activities_insert_own" on public.lead_activities for insert
+  with check (auth.uid() = owner_id and public.owns_lead(lead_id));
+create policy "activities_update_own" on public.lead_activities for update
+  using (auth.uid() = owner_id and public.owns_lead(lead_id))
+  with check (auth.uid() = owner_id and public.owns_lead(lead_id));
+create policy "activities_delete_own" on public.lead_activities for delete
+  using (auth.uid() = owner_id and public.owns_lead(lead_id));
+
+-- O banco é dono do histórico de status: a atividade é inserida na mesma
+-- transação do update, inclusive para escritas REST diretas.
+create or replace function public.log_lead_status_change()
+returns trigger
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+begin
+  if old.status is distinct from new.status then
+    insert into public.lead_activities (owner_id, lead_id, user_id, type, description)
+    values (
+      new.owner_id,
+      new.id,
+      (select auth.uid()),
+      'mudanca_status',
+      'De "' || case old.status
+        when 'novo' then 'Novo'
+        when 'contato_realizado' then 'Contato realizado'
+        when 'aguardando_resposta' then 'Aguardando resposta'
+        when 'pediu_informacoes' then 'Pediu informações'
+        when 'interessado' then 'Interessado'
+        when 'negociando' then 'Negociando'
+        when 'aceitou' then 'Aceitou'
+        when 'ignorou' then 'Ignorou'
+        when 'nao_interessado' then 'Não interessado'
+        when 'follow_up' then 'Follow-up'
+        when 'perdido' then 'Perdido'
+      end || '" para "' || case new.status
+        when 'novo' then 'Novo'
+        when 'contato_realizado' then 'Contato realizado'
+        when 'aguardando_resposta' then 'Aguardando resposta'
+        when 'pediu_informacoes' then 'Pediu informações'
+        when 'interessado' then 'Interessado'
+        when 'negociando' then 'Negociando'
+        when 'aceitou' then 'Aceitou'
+        when 'ignorou' then 'Ignorou'
+        when 'nao_interessado' then 'Não interessado'
+        when 'follow_up' then 'Follow-up'
+        when 'perdido' then 'Perdido'
+      end || '".'
+    );
+  end if;
+  return new;
+end;
+$$;
+
+create trigger leads_log_status_change
+  after update of status on public.leads
+  for each row execute function public.log_lead_status_change();
 
 -- ============ FOLLOW-UPS ============
 create table public.lead_followups (
@@ -122,10 +205,15 @@ create index lead_followups_lead_idx on public.lead_followups (lead_id, due_at);
 alter table public.lead_followups enable row level security;
 grant select, insert, update, delete on public.lead_followups to authenticated;
 
-create policy "followups_select_own" on public.lead_followups for select using (auth.uid() = owner_id);
-create policy "followups_insert_own" on public.lead_followups for insert with check (auth.uid() = owner_id);
-create policy "followups_update_own" on public.lead_followups for update using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
-create policy "followups_delete_own" on public.lead_followups for delete using (auth.uid() = owner_id);
+create policy "followups_select_own" on public.lead_followups for select
+  using (auth.uid() = owner_id and public.owns_lead(lead_id));
+create policy "followups_insert_own" on public.lead_followups for insert
+  with check (auth.uid() = owner_id and public.owns_lead(lead_id));
+create policy "followups_update_own" on public.lead_followups for update
+  using (auth.uid() = owner_id and public.owns_lead(lead_id))
+  with check (auth.uid() = owner_id and public.owns_lead(lead_id));
+create policy "followups_delete_own" on public.lead_followups for delete
+  using (auth.uid() = owner_id and public.owns_lead(lead_id));
 
 create trigger lead_followups_set_updated_at before update on public.lead_followups
   for each row execute function public.set_updated_at();
@@ -142,15 +230,18 @@ create table public.lead_digital_checks (
   unique (lead_id, item)
 );
 
-create index lead_digital_checks_lead_idx on public.lead_digital_checks (lead_id);
-
 alter table public.lead_digital_checks enable row level security;
 grant select, insert, update, delete on public.lead_digital_checks to authenticated;
 
-create policy "checks_select_own" on public.lead_digital_checks for select using (auth.uid() = owner_id);
-create policy "checks_insert_own" on public.lead_digital_checks for insert with check (auth.uid() = owner_id);
-create policy "checks_update_own" on public.lead_digital_checks for update using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
-create policy "checks_delete_own" on public.lead_digital_checks for delete using (auth.uid() = owner_id);
+create policy "checks_select_own" on public.lead_digital_checks for select
+  using (auth.uid() = owner_id and public.owns_lead(lead_id));
+create policy "checks_insert_own" on public.lead_digital_checks for insert
+  with check (auth.uid() = owner_id and public.owns_lead(lead_id));
+create policy "checks_update_own" on public.lead_digital_checks for update
+  using (auth.uid() = owner_id and public.owns_lead(lead_id))
+  with check (auth.uid() = owner_id and public.owns_lead(lead_id));
+create policy "checks_delete_own" on public.lead_digital_checks for delete
+  using (auth.uid() = owner_id and public.owns_lead(lead_id));
 
 -- ============ CONFIGURAÇÕES DO USUÁRIO ============
 create table public.user_settings (
@@ -171,3 +262,5 @@ create policy "settings_delete_own" on public.user_settings for delete using (au
 
 create trigger user_settings_set_updated_at before update on public.user_settings
   for each row execute function public.set_updated_at();
+
+commit;

@@ -58,9 +58,11 @@ export async function completeFollowup(id: string, result: string | null): Promi
     .from('lead_followups')
     .update({ status: 'concluido', completed_at: new Date().toISOString(), result })
     .eq('id', id)
+    .eq('status', 'pendente')
     .select()
-    .single()
+    .maybeSingle()
   throwDbError(error)
+  if (!data) return
   const followup = data as Followup
   await addActivity(
     followup.lead_id,
@@ -76,9 +78,11 @@ export async function cancelFollowup(id: string): Promise<void> {
     .from('lead_followups')
     .update({ status: 'cancelado' })
     .eq('id', id)
+    .eq('status', 'pendente')
     .select()
-    .single()
+    .maybeSingle()
   throwDbError(error)
+  if (!data) return
   await syncNextContact((data as Followup).lead_id)
 }
 
