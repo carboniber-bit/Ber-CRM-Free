@@ -127,9 +127,9 @@ export function LeadEditPage() {
         <LeadForm
           initial={initial}
           leadId={lead.id}
-          onSaved={() => {
+          onSaved={(lead) => {
             toast('Alterações salvas.')
-            navigate('/leads')
+            navigate(`/leads/${lead.id}`)
           }}
           onCancel={() => navigate('/leads')}
         />

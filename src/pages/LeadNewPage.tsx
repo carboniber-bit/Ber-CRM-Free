@@ -12,9 +12,9 @@ export function LeadNewPage() {
       <h1 className="font-display text-xl font-bold text-ink">Novo lead</h1>
       <Card>
         <LeadForm
-          onSaved={() => {
+          onSaved={(lead) => {
             toast('Lead cadastrado com sucesso.')
-            navigate('/leads')
+            navigate(`/leads/${lead.id}`)
           }}
           onCancel={() => navigate('/leads')}
         />

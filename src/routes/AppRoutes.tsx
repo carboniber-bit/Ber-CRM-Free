@@ -6,6 +6,7 @@ import { LoginPage } from '../pages/LoginPage'
 import { DashboardPage } from '../pages/DashboardPage'
 import { LeadsPage } from '../pages/LeadsPage'
 import { LeadNewPage } from '../pages/LeadNewPage'
+import { LeadDetailPage } from '../pages/LeadDetailPage'
 import { LeadEditPage } from '../pages/LeadEditPage'
 import { StatusPage } from '../pages/StatusPage'
 import { NotFoundPage } from '../pages/NotFoundPage'
@@ -22,6 +23,7 @@ export function AppRoutes() {
           <Route path="/" element={<DashboardPage />} />
           <Route path="/leads" element={<LeadsPage />} />
           <Route path="/leads/novo" element={<LeadNewPage />} />
+          <Route path="/leads/:id" element={<LeadDetailPage />} />
           <Route path="/leads/:id/editar" element={<LeadEditPage />} />
         </Route>
       </Route>
