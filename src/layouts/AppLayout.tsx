@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import {
   BarChart3, FolderKanban, LayoutDashboard, Lock, LogOut, Menu,
@@ -13,6 +13,21 @@ interface NavItem {
   icon: LucideIcon
   to?: string
   stage?: string
+}
+
+const focusableSelector = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled]):not([type="hidden"])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[contenteditable="true"]',
+  '[tabindex]:not([tabindex="-1"])',
+].join(', ')
+
+function getFocusableElements(dialog: HTMLElement) {
+  return Array.from(dialog.querySelectorAll<HTMLElement>(focusableSelector))
+    .filter((element) => element.getClientRects().length > 0)
 }
 
 const navItems: NavItem[] = [
@@ -67,10 +82,65 @@ function NavContent({ onNavigate }: { onNavigate?: () => void }) {
 export function AppLayout() {
   const { user, signOut } = useAuth()
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const hamburgerRef = useRef<HTMLButtonElement>(null)
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const drawerRef = useRef<HTMLElement>(null)
+  const closeDrawer = useCallback(() => setDrawerOpen(false), [])
+
+  useEffect(() => {
+    if (!drawerOpen) return
+    const drawer = drawerRef.current
+    const hamburger = hamburgerRef.current
+    if (!drawer) return
+
+    closeButtonRef.current?.focus()
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        closeDrawer()
+        return
+      }
+      if (event.key !== 'Tab') return
+
+      const focusableElements = getFocusableElements(drawer)
+      if (focusableElements.length === 0) {
+        event.preventDefault()
+        drawer.focus()
+        return
+      }
+
+      const first = focusableElements[0]
+      const last = focusableElements[focusableElements.length - 1]
+      const activeElement = document.activeElement
+
+      if (event.shiftKey && (activeElement === first || activeElement === drawer || !drawer.contains(activeElement))) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && (activeElement === last || !drawer.contains(activeElement))) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+
+    const desktopQuery = window.matchMedia('(min-width: 1024px)')
+    const onDesktopChange = (event: MediaQueryListEvent) => {
+      if (event.matches) closeDrawer()
+    }
+
+    window.addEventListener('keydown', onKeyDown)
+    desktopQuery.addEventListener('change', onDesktopChange)
+
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      desktopQuery.removeEventListener('change', onDesktopChange)
+      hamburger?.focus()
+    }
+  }, [drawerOpen, closeDrawer])
 
   return (
     <div className="flex min-h-screen bg-bg">
-      <aside className="hidden w-60 shrink-0 flex-col border-r border-line bg-surface p-4 lg:flex">
+      <aside inert={drawerOpen} className="hidden w-60 shrink-0 flex-col border-r border-line bg-surface p-4 lg:flex">
         <Logo className="mb-8 px-2 text-ink" />
         <NavContent />
         <div className="mt-auto rounded-xl border border-line bg-elevated p-3 text-xs text-muted">
@@ -80,23 +150,39 @@ export function AppLayout() {
 
       {drawerOpen && (
         <div className="fixed inset-0 z-40 lg:hidden">
-          <div className="absolute inset-0 bg-black/70" onClick={() => setDrawerOpen(false)} />
-          <aside className="absolute left-0 top-0 flex h-full w-64 flex-col border-r border-line bg-surface p-4">
+          <div className="absolute inset-0 bg-black/70" onClick={closeDrawer} />
+          <aside
+            ref={drawerRef}
+            id="mobile-navigation-drawer"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Menu de navegação"
+            tabIndex={-1}
+            className="absolute left-0 top-0 flex h-full w-64 flex-col border-r border-line bg-surface p-4"
+          >
             <div className="mb-6 flex items-center justify-between">
               <Logo className="text-ink" />
-              <button onClick={() => setDrawerOpen(false)} aria-label="Fechar menu" className="rounded-lg p-1.5 text-muted hover:bg-elevated hover:text-ink">
+              <button ref={closeButtonRef} onClick={closeDrawer} aria-label="Fechar menu" className="rounded-lg p-1.5 text-muted hover:bg-elevated hover:text-ink">
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <NavContent onNavigate={() => setDrawerOpen(false)} />
+            <NavContent onNavigate={closeDrawer} />
           </aside>
         </div>
       )}
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div inert={drawerOpen} className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-16 items-center justify-between gap-4 border-b border-line bg-surface px-4 md:px-6">
           <div className="flex items-center gap-3">
-            <button onClick={() => setDrawerOpen(true)} aria-label="Abrir menu" className="rounded-lg p-1.5 text-muted hover:bg-elevated hover:text-ink lg:hidden">
+            <button
+              ref={hamburgerRef}
+              onClick={() => setDrawerOpen(true)}
+              aria-label="Abrir menu"
+              aria-haspopup="dialog"
+              aria-expanded={drawerOpen}
+              aria-controls="mobile-navigation-drawer"
+              className="rounded-lg p-1.5 text-muted hover:bg-elevated hover:text-ink lg:hidden"
+            >
               <Menu className="h-5 w-5" />
             </button>
             <Logo className="text-ink lg:hidden" />
