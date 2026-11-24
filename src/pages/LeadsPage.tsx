@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Plus, RefreshCw, Trash2, Users } from 'lucide-react'
+import { Download, Plus, RefreshCw, Trash2, Upload, Users } from 'lucide-react'
 import { deleteLead, listLeads } from '../services/leadService'
 import type { Lead, LeadFilters, LeadSort } from '../types/lead'
 import { NICHE_LABELS, type Niche } from '../types/lead'
@@ -12,8 +12,10 @@ import { ScoreBar } from '../components/ui/ScoreBar'
 import { Skeleton } from '../components/ui/Skeleton'
 import { StatusBadge } from '../components/ui/StatusBadge'
 import { LeadFiltersBar } from '../components/leads/LeadFiltersBar'
+import { CsvImportModal } from '../components/leads/CsvImportModal'
 import { useToast } from '../hooks/useToast'
 import { formatBRL, formatDate } from '../lib/format'
+import { leadsToCsv } from '../lib/csv'
 
 const PAGE_SIZE = 20
 
@@ -30,6 +32,19 @@ export function LeadsPage() {
   const [error, setError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState<Lead | null>(null)
   const [deleteLoading, setDeleteLoading] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const exportingRef = useRef(false)
+  const exportGenerationRef = useRef(0)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      exportGenerationRef.current += 1
+    }
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -58,6 +73,52 @@ export function LeadsPage() {
     startLoading()
     setRefreshKey((key) => key + 1)
   }
+
+  const exportCsv = async () => {
+    if (exportingRef.current) return
+    const generation = ++exportGenerationRef.current
+    const isCurrent = () => mountedRef.current && exportGenerationRef.current === generation
+    let objectUrl: string | null = null
+    let anchor: HTMLAnchorElement | null = null
+
+    exportingRef.current = true
+    setExporting(true)
+    try {
+      const { leads: exported, total: filteredTotal } = await listLeads(filters, sort, 0, 1000)
+      if (!isCurrent()) return
+      if (exported.length === 0) {
+        toast('Nenhum lead para exportar.', 'info')
+        return
+      }
+
+      const blob = new Blob([leadsToCsv(exported)], { type: 'text/csv;charset=utf-8' })
+      objectUrl = URL.createObjectURL(blob)
+      anchor = document.createElement('a')
+      anchor.href = objectUrl
+      anchor.download = 'leads.csv'
+      anchor.style.display = 'none'
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      anchor = null
+      URL.revokeObjectURL(objectUrl)
+      objectUrl = null
+
+      if (filteredTotal > 1000) {
+        toast(`${exported.length} lead(s) exportado(s). A view contém ${filteredTotal}; foram exportados somente os primeiros 1000.`, 'info')
+      } else {
+        toast(`${exported.length} lead(s) exportado(s).`)
+      }
+    } catch (error) {
+      if (isCurrent()) toast(error instanceof Error ? error.message : 'Erro ao exportar.', 'error')
+    } finally {
+      if (anchor?.isConnected) anchor.remove()
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+      exportingRef.current = false
+      if (mountedRef.current) setExporting(false)
+    }
+  }
+
   const changeFilters = (next: LeadFilters) => {
     startLoading()
     setFilters(next)
@@ -104,9 +165,11 @@ export function LeadsPage() {
           <h1 className="font-display text-xl font-bold text-ink">Leads</h1>
           <p className="text-sm text-muted">{total} estabelecimento{total === 1 ? '' : 's'} cadastrado{total === 1 ? '' : 's'}</p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={reload}><RefreshCw className="h-4 w-4" /> Atualizar</Button>
-          <Button variant="mint" onClick={() => navigate('/leads/novo')}><Plus className="h-4 w-4" /> Novo lead</Button>
+        <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
+          <Button variant="outline" onClick={reload} disabled={exporting || importOpen}><RefreshCw className="h-4 w-4" /> Atualizar</Button>
+          <Button variant="outline" onClick={() => void exportCsv()} loading={exporting} disabled={exporting || importOpen}><Download className="h-4 w-4" /> Exportar CSV</Button>
+          <Button variant="outline" onClick={() => setImportOpen(true)} disabled={exporting || importOpen}><Upload className="h-4 w-4" /> Importar CSV</Button>
+          <Button variant="mint" onClick={() => navigate('/leads/novo')} disabled={exporting || importOpen}><Plus className="h-4 w-4" /> Novo lead</Button>
         </div>
       </div>
 
@@ -144,7 +207,7 @@ export function LeadsPage() {
                   <th className="px-4 py-3 font-medium">Pontuação</th>
                   <th className="px-4 py-3 font-medium">Valor est.</th>
                   <th className="px-4 py-3 font-medium">Cadastro</th>
-                  <th className="px-4 py-3" />
+                  <th scope="col" className="px-4 py-3"><span className="sr-only">Ações</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -194,7 +257,7 @@ export function LeadsPage() {
           </div>
 
           <div className="flex items-center justify-between text-sm text-muted">
-            <span>Página {page + 1} de {totalPages}</span>
+            <span role="status" aria-live="polite">Página {page + 1} de {totalPages}</span>
             <div className="flex gap-2">
               <Button variant="outline" disabled={page === 0} onClick={() => changePage(page - 1)}>Anterior</Button>
               <Button variant="outline" disabled={page + 1 >= totalPages} onClick={() => changePage(page + 1)}>Próxima</Button>
@@ -202,6 +265,12 @@ export function LeadsPage() {
           </div>
         </>
       )}
+
+      <CsvImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={reload}
+      />
 
       <ConfirmDialog
         open={deleting !== null}
