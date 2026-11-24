@@ -131,7 +131,7 @@ export function LeadEditPage() {
             toast('Alterações salvas.')
             navigate('/leads')
           }}
-          onCancel={() => navigate(`/leads/${lead.id}`)}
+          onCancel={() => navigate('/leads')}
         />
       </Card>
     </div>

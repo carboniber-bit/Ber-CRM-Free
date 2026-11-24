@@ -18,7 +18,11 @@ import {
   type Presence,
 } from '../../types/lead'
 import { SERVICE_LABELS, type ServicePrices } from '../../types/settings'
-import { onlyDigits } from '../../lib/format'
+import {
+  normalizeLeadDraftForSave,
+  validateLeadDraft,
+  type LeadDraftErrors,
+} from '../../lib/leadForm'
 import { Button } from '../ui/Button'
 import { Input } from '../ui/Input'
 import { Select } from '../ui/Select'
@@ -31,103 +35,16 @@ interface LeadFormProps {
   onCancel: () => void
 }
 
-type Errors = Partial<Record<keyof LeadWrite, string>>
-
-const URL_FIELDS = ['website', 'menu_url', 'catalog_url', 'instagram', 'facebook'] as const
-
-function hasControlCharacter(value: string): boolean {
-  for (const character of value) {
-    const code = character.codePointAt(0)
-    if (code !== undefined && (code <= 31 || code === 127)) return true
-  }
-  return false
-}
-
-function isValidHostname(hostname: string, requireDomain: boolean): boolean {
-  const normalized = hostname.replace(/\.$/, '').toLowerCase()
-  if (!normalized) return false
-  if (normalized.startsWith('[') && normalized.endsWith(']')) return !requireDomain
-
-  const labels = normalized.split('.')
-  if (requireDomain && labels.length < 2) return false
-  if (!labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label))) return false
-
-  const topLevelDomain = labels[labels.length - 1]
-  return !requireDomain || (topLevelDomain.length >= 2 && !/^\d+$/.test(topLevelDomain))
-}
-
-function normalizeUrl(raw: string): string | null {
-  const value = raw.trim()
-  if (!value || value.startsWith('/') || value.includes('\\') || /\s/.test(value) || hasControlCharacter(value) || /%(?![0-9a-f]{2})/i.test(value)) return null
-
-  const isHttpUrl = /^https?:\/\//i.test(value)
-  if (/^https?:\/\/\//i.test(value)) return null
-  const hasScheme = /^[a-z][a-z\d+.-]*:/i.test(value)
-  const isHostWithPort = /^[^/?#@:\\]+:\d+(?:[/?#]|$)/.test(value)
-  if (hasScheme && !isHttpUrl && !isHostWithPort) return null
-
-  const candidate = isHttpUrl ? value : `https://${value}`
-  let url: URL
-  try {
-    url = new URL(candidate)
-  } catch {
-    return null
-  }
-
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
-  if (!url.hostname || url.username || url.password) return null
-  if (!isValidHostname(url.hostname, !isHttpUrl)) return null
-  return candidate
-}
-
-function validate(draft: LeadWrite): Errors {
-  const errors: Errors = {}
-  if (!draft.name.trim()) errors.name = 'Nome do estabelecimento é obrigatório.'
-
-  const email = draft.email?.trim()
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.email = 'E-mail inválido.'
-
-  for (const field of ['phone', 'whatsapp'] as const) {
-    const value = draft[field]
-    if (!value) continue
-    const digits = onlyDigits(value)
-    const valid = (digits.length === 10 || digits.length === 11)
-      || ((digits.length === 12 || digits.length === 13) && digits.startsWith('55'))
-    if (!valid) errors[field] = 'Use 10–11 dígitos com DDD ou 12–13 dígitos começando com 55.'
-  }
-
-  if (draft.cnpj && onlyDigits(draft.cnpj).length !== 14) errors.cnpj = 'CNPJ deve ter 14 dígitos.'
-
-  for (const field of URL_FIELDS) {
-    const value = draft[field]?.trim()
-    if (value && !normalizeUrl(value)) errors[field] = 'Informe uma URL válida (http://, https:// ou domínio).'
-  }
-
-  for (const field of ['estimated_value', 'negotiated_value', 'contracted_value', 'received_value'] as const) {
-    if (!Number.isFinite(draft[field]) || draft[field] < 0) errors[field] = 'Valor inválido.'
-  }
-
-  return errors
-}
-
-function normalizeUrls(draft: LeadWrite): LeadWrite {
-  const normalized = { ...draft }
-  for (const field of URL_FIELDS) {
-    normalized[field] = normalizeUrl(draft[field] ?? '')
-  }
-  return normalized
-}
-
 const sectionTitle = 'font-display text-sm font-semibold text-ink'
 
 export function LeadForm({ initial, leadId, onSaved, onCancel }: LeadFormProps) {
   const [draft, setDraft] = useState<LeadWrite>(initial ?? emptyLeadDraft())
-  const [errors, setErrors] = useState<Errors>({})
+  const [errors, setErrors] = useState<LeadDraftErrors>({})
   const [saving, setSaving] = useState(false)
   const [checkingDuplicates, setCheckingDuplicates] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [duplicates, setDuplicates] = useState<Lead[]>([])
-  const [forceSave, setForceSave] = useState(false)
+  const [duplicateLookupFailed, setDuplicateLookupFailed] = useState(false)
   const [prices, setPrices] = useState<ServicePrices | null>(null)
 
   useEffect(() => {
@@ -143,6 +60,7 @@ export function LeadForm({ initial, leadId, onSaved, onCancel }: LeadFormProps) 
     setDraft((current) => ({ ...current, [key]: value }))
     setErrors((current) => ({ ...current, [key]: undefined }))
     setDuplicates([])
+    setDuplicateLookupFailed(false)
   }
 
   const setText = <K extends keyof LeadWrite,>(key: K) =>
@@ -159,41 +77,49 @@ export function LeadForm({ initial, leadId, onSaved, onCancel }: LeadFormProps) 
       setSaveError(error instanceof Error ? error.message : 'Erro ao salvar.')
     } finally {
       setSaving(false)
-      setForceSave(false)
     }
   }
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault()
+  const save = async (skipDuplicateCheck: boolean) => {
     if (saving || checkingDuplicates) return
 
-    const validation = validate(draft)
+    const validation = validateLeadDraft(draft)
     setErrors(validation)
     setSaveError(null)
     if (Object.values(validation).some(Boolean)) return
 
-    const payload = normalizeUrls(draft)
+    const payload = normalizeLeadDraftForSave(draft)
     setDuplicates([])
+    setDuplicateLookupFailed(false)
 
-    if (!forceSave) {
-      setCheckingDuplicates(true)
-      try {
-        const candidates = await findDuplicateCandidates(
-          { phone: payload.phone, whatsapp: payload.whatsapp, cnpj: payload.cnpj, name: payload.name, city: payload.city },
-          leadId,
-        )
-        if (candidates.length > 0) {
-          setDuplicates(candidates)
-          return
-        }
-      } catch {
-        // A busca de duplicidade não bloqueia o cadastro quando falha.
-      } finally {
-        setCheckingDuplicates(false)
+    if (skipDuplicateCheck) {
+      await persist(payload)
+      return
+    }
+
+    setCheckingDuplicates(true)
+    try {
+      const candidates = await findDuplicateCandidates(
+        { phone: payload.phone, whatsapp: payload.whatsapp, cnpj: payload.cnpj, name: payload.name, city: payload.city },
+        leadId,
+      )
+      if (candidates.length > 0) {
+        setDuplicates(candidates)
+        return
       }
+    } catch {
+      setDuplicateLookupFailed(true)
+      return
+    } finally {
+      setCheckingDuplicates(false)
     }
 
     await persist(payload)
+  }
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault()
+    void save(false)
   }
 
   const applyServicePrice = (service: string) => {
@@ -273,6 +199,19 @@ export function LeadForm({ initial, leadId, onSaved, onCancel }: LeadFormProps) 
         <Textarea disabled={busy} label="Observações" value={draft.notes ?? ''} onChange={setText('notes')} />
       </section>
 
+      {duplicateLookupFailed && (
+        <div className="rounded-xl border border-danger/40 bg-danger/5 p-4" role="alert">
+          <div className="flex items-center gap-2 text-sm font-medium text-danger">
+            <AlertTriangle className="h-4 w-4" /> Não foi possível verificar duplicidades
+          </div>
+          <p className="mt-1 text-xs text-muted">O lead não foi salvo. Tente novamente para manter a proteção contra duplicidades ou cadastre explicitamente sem verificar.</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button type="button" variant="outline" disabled={busy} onClick={() => void save(false)}>Tentar novamente</Button>
+            <Button type="button" variant="ghost" disabled={busy} onClick={() => void save(true)}>Cadastrar sem verificar duplicidades</Button>
+          </div>
+        </div>
+      )}
+
       {duplicates.length > 0 && (
         <div className="rounded-xl border border-lime/40 bg-lime/5 p-4" role="alert">
           <div className="flex items-center gap-2 text-sm font-medium text-lime">
@@ -289,8 +228,8 @@ export function LeadForm({ initial, leadId, onSaved, onCancel }: LeadFormProps) 
             ))}
           </ul>
           <div className="mt-3 flex flex-wrap gap-2">
-            <Button type="button" variant="outline" onClick={() => { setDuplicates([]); setForceSave(true) }}>Cadastrar mesmo assim</Button>
-            <Button type="button" variant="ghost" onClick={() => setDuplicates([])}>Voltar e revisar</Button>
+            <Button type="button" variant="outline" disabled={busy} onClick={() => void save(true)}>Cadastrar mesmo assim</Button>
+            <Button type="button" variant="ghost" disabled={busy} onClick={() => setDuplicates([])}>Voltar e revisar</Button>
           </div>
         </div>
       )}

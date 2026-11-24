@@ -6,9 +6,13 @@ interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   error?: string
 }
 
-export function Input({ label, error, className, id, ...props }: InputProps) {
+export function Input({
+  label, error, className, id, 'aria-describedby': ariaDescribedBy, ...props
+}: InputProps) {
   const generatedId = useId()
   const inputId = id ?? generatedId
+  const errorId = `${inputId}-error`
+  const describedBy = [ariaDescribedBy, error ? errorId : undefined].filter(Boolean).join(' ') || undefined
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -25,8 +29,9 @@ export function Input({ label, error, className, id, ...props }: InputProps) {
         )}
         aria-invalid={error ? true : undefined}
         {...props}
+        aria-describedby={describedBy}
       />
-      {error && <p className="text-xs text-danger">{error}</p>}
+      {error && <p id={errorId} className="text-xs text-danger">{error}</p>}
     </div>
   )
 }
