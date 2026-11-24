@@ -1,7 +1,7 @@
 import { requireSupabase, throwDbError } from '../lib/db'
 import { computeOpportunity } from '../lib/opportunity'
-import { formatPhone, localDayBoundary, onlyDigits } from '../lib/format'
-import { normalizePhoneForComparison, normalizeWhatsAppNumber } from '../lib/whatsapp'
+import { localDayBoundary, onlyDigits } from '../lib/format'
+import { normalizePhoneForComparison } from '../lib/whatsapp'
 import {
   situationStatuses,
   type Lead,
@@ -138,26 +138,9 @@ export async function findDuplicateCandidates(
     if (value) identifierFilters.add(`${column}.eq.${JSON.stringify(value)}`)
   }
 
-  for (const [column, raw] of [['phone', input.phone], ['whatsapp', input.whatsapp]] as const) {
-    const canonical = normalizePhoneForComparison(raw ?? '')
-    if (!canonical) continue
-    const brazilNumber = normalizeWhatsAppNumber(raw ?? '')
-    const domestic = brazilNumber?.startsWith('55') ? brazilNumber.slice(2) : canonical
-    addIdentifierFilter(column, raw?.trim() || null)
-    addIdentifierFilter(column, canonical)
-    addIdentifierFilter(column, domestic)
-    addIdentifierFilter(column, `+${canonical}`)
-    addIdentifierFilter(column, formatPhone(domestic))
-    addIdentifierFilter(column, onlyDigits(raw ?? '') || null)
-  }
-
-  if (cnpj) {
-    addIdentifierFilter('cnpj', input.cnpj?.trim() || null)
-    addIdentifierFilter('cnpj', cnpj)
-    if (cnpj.length === 14) {
-      addIdentifierFilter('cnpj', `${cnpj.slice(0, 2)}.${cnpj.slice(2, 5)}.${cnpj.slice(5, 8)}/${cnpj.slice(8, 12)}-${cnpj.slice(12)}`)
-    }
-  }
+  addIdentifierFilter('phone_canonical', phone)
+  addIdentifierFilter('whatsapp_canonical', whatsapp)
+  addIdentifierFilter('cnpj_digits', cnpj)
 
   const candidates = new Map<string, Lead>()
   const mergeCandidates = (leads: Lead[]) => {

@@ -152,13 +152,35 @@ function recordStartLines(text: string, delimiter: string): number[] {
   return lines
 }
 
-function structuralErrorsByRow(parsed: Papa.ParseResult<CsvSourceRow>): Map<number, string[]> {
+function physicalLineAt(text: string, index: number): number {
+  let line = 1
+  for (let i = 0; i < index && i < text.length; i++) {
+    if (text[i] === '\r') {
+      if (text[i + 1] === '\n') i++
+      line++
+    } else if (text[i] === '\n') {
+      line++
+    }
+  }
+  return line
+}
+
+function structuralErrorsByRow(
+  parsed: Papa.ParseResult<CsvSourceRow>,
+  text: string,
+  sourceLines: number[],
+): Map<number, string[]> {
   const byRow = new Map<number, string[]>()
   for (const error of parsed.errors) {
     if (error.type === 'Delimiter') continue
-    const row = typeof error.row === 'number'
+    let row = typeof error.row === 'number'
       ? Math.min(Math.max(error.row, 0), Math.max(parsed.data.length - 1, 0))
       : 0
+    if (error.type === 'Quotes' && typeof error.index === 'number') {
+      const errorLine = physicalLineAt(text, error.index)
+      const sourceIndex = sourceLines.findLastIndex((line) => line <= errorLine)
+      if (sourceIndex > 0 && sourceIndex <= parsed.data.length) row = sourceIndex - 1
+    }
     const messages = byRow.get(row) ?? []
     messages.push(`Erro estrutural (${error.code}): ${error.message}`)
     byRow.set(row, messages)
@@ -173,7 +195,7 @@ export function parseLeadsCsv(text: string): CsvParsedRow[] {
     transformHeader: (h) => h.trim().toLowerCase(),
   })
   const sourceLines = recordStartLines(text, parsed.meta.delimiter)
-  const errorsByRow = structuralErrorsByRow(parsed)
+  const errorsByRow = structuralErrorsByRow(parsed, text, sourceLines)
 
   if (parsed.data.length === 0) {
     const errors = errorsByRow.get(0) ?? []

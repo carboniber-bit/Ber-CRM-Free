@@ -146,6 +146,47 @@ describe('parseLeadsCsv', () => {
     expect(rows[1].draft?.estimated_value).toBe(10)
   })
 
+  it('invalida o registro com aspas malformadas sem deslocar o erro para o próximo', () => {
+    const rows = parseLeadsCsv('nome,cidade\n"A"x "B",São Paulo\nC,Rio')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].line).toBe(2)
+    expect(rows[0].draft).toBeNull()
+    expect(rows[0].errors.join(' ')).toMatch(/InvalidQuotes/)
+    expect(rows[1].line).toBe(3)
+    expect(rows[1].draft?.name).toBe('C')
+    expect(rows[1].draft?.city).toBe('Rio')
+    expect(rows[1].errors).toEqual([])
+  })
+
+  it('mantém o erro Quotes no registro malformado com linhas vazias antes e depois', () => {
+    const rows = parseLeadsCsv('nome,cidade\n\n"A"x "B",São Paulo\n\nC,Rio\n')
+    expect(rows.map((row) => row.line)).toEqual([3, 5])
+    expect(rows[0].draft).toBeNull()
+    expect(rows[0].errors.join(' ')).toMatch(/InvalidQuotes/)
+    expect(rows[1].draft?.name).toBe('C')
+    expect(rows[1].draft?.city).toBe('Rio')
+    expect(rows[1].errors).toEqual([])
+  })
+
+  it('mapeia Quotes pela linha física em registro multilinha CRLF', () => {
+    const rows = parseLeadsCsv('nome,cidade\r\n\r\n"A\r\nA2"x "B",São Paulo\r\nC,Rio')
+    expect(rows.map((row) => row.line)).toEqual([3, 5])
+    expect(rows[0].draft).toBeNull()
+    expect(rows[0].errors.join(' ')).toMatch(/InvalidQuotes/)
+    expect(rows[1].draft?.name).toBe('C')
+    expect(rows[1].draft?.city).toBe('Rio')
+    expect(rows[1].errors).toEqual([])
+  })
+
+  it('não desloca FieldMismatch, que já usa coordenadas pós-parse', () => {
+    const rows = parseLeadsCsv('nome,cidade,valor_estimado\n\n"Empresa\nMultilinha",São Paulo,\nC,Rio')
+    expect(rows.map((row) => row.line)).toEqual([3, 5])
+    expect(rows[0].draft?.name).toBe('Empresa\nMultilinha')
+    expect(rows[0].errors).toEqual([])
+    expect(rows[1].draft).toBeNull()
+    expect(rows[1].errors.join(' ')).toMatch(/TooFewFields/)
+  })
+
   it('expõe uma aspas não fechada como erro estrutural da linha', () => {
     const rows = parseLeadsCsv('nome,cidade\n"A,São Paulo')
     expect(rows).toHaveLength(1)
