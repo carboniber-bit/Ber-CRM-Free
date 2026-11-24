@@ -1,17 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, FileQuestion, Pencil } from 'lucide-react'
-import { getLead } from '../services/leadService'
-import { NICHE_LABELS, PRESENCE_FIELDS, PRESENCE_FIELD_LABELS, type Lead, type Niche } from '../types/lead'
+import { ArrowLeft, FileQuestion, MessageSquare, Pencil } from 'lucide-react'
+import { getLead, setLeadStatus } from '../services/leadService'
+import {
+  LEAD_STATUSES, NICHE_LABELS, PRESENCE_FIELDS, PRESENCE_FIELD_LABELS,
+  STATUS_LABELS, type Lead, type LeadStatus, type Niche,
+} from '../types/lead'
 import { formatBRL, formatDateTime, formatPhone } from '../lib/format'
+import { useToast } from '../hooks/useToast'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
+import { ConfirmDialog } from '../components/ui/ConfirmDialog'
 import { EmptyState } from '../components/ui/EmptyState'
 import { PresenceBadge } from '../components/ui/PresenceBadge'
+import { Select } from '../components/ui/Select'
 import { Skeleton } from '../components/ui/Skeleton'
 import { Spinner } from '../components/ui/Spinner'
 import { StatusBadge } from '../components/ui/StatusBadge'
+import { ContactDialog } from '../components/leads/ContactDialog'
 import { LeadChecklist } from '../components/leads/LeadChecklist'
+import { LeadTimeline } from '../components/leads/LeadTimeline'
 import { OpportunityPanel } from '../components/leads/OpportunityPanel'
 
 type LeadLoadState =
@@ -50,10 +58,16 @@ export function LeadDetailPage() {
 
 function LeadDetailContent({ leadId }: { leadId: string }) {
   const navigate = useNavigate()
+  const { toast } = useToast()
   const [loadState, setLoadState] = useState<LeadLoadState | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const [contactOpen, setContactOpen] = useState(false)
+  const [refreshKey, setRefreshKey] = useState(0)
+  const [pendingStatus, setPendingStatus] = useState<LeadStatus | null>(null)
+  const [statusSaving, setStatusSaving] = useState(false)
   const requestRef = useRef(0)
   const activeRef = useRef(true)
+  const statusSavingRef = useRef(false)
 
   const fetchLead = useCallback(async (background = false) => {
     if (!activeRef.current) return
@@ -161,6 +175,47 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
 
   const lead = loadState.lead
   const location = [lead.address, lead.district, lead.city, lead.state, lead.zip_code].filter(Boolean).join(', ')
+  const statusControlsDisabled = statusSaving || contactOpen || refreshing
+
+  const requestStatusChange = (status: LeadStatus) => {
+    if (statusControlsDisabled || status === lead.status) return
+    setPendingStatus(status)
+  }
+
+  const cancelStatusChange = () => {
+    if (statusSavingRef.current) return
+    setPendingStatus(null)
+  }
+
+  const confirmStatusChange = async () => {
+    if (!pendingStatus || statusSavingRef.current) return
+    const targetStatus = pendingStatus
+    statusSavingRef.current = true
+    setStatusSaving(true)
+
+    try {
+      const updatedLead = await setLeadStatus(leadId, targetStatus)
+      if (!activeRef.current) return
+      setLoadState({ status: 'ready', lead: updatedLead })
+      setPendingStatus(null)
+      setRefreshKey((key) => key + 1)
+      toast('Status atualizado.')
+      void reload(true)
+    } catch (error) {
+      if (!activeRef.current) return
+      const message = error instanceof Error ? error.message : 'Erro ao atualizar status.'
+      toast(message, 'error')
+    } finally {
+      statusSavingRef.current = false
+      if (activeRef.current) setStatusSaving(false)
+    }
+  }
+
+  const handleContactSaved = () => {
+    setRefreshKey((key) => key + 1)
+    void reload(true)
+  }
+
   const links = [
     { label: 'Instagram', url: lead.instagram },
     { label: 'Facebook', url: lead.facebook },
@@ -184,6 +239,16 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
             <span>{lead.niche ? NICHE_LABELS[lead.niche as Niche] ?? lead.niche : 'Sem nicho'}</span>
             {lead.city && <span>· {lead.city}</span>}
           </div>
+          <div className="mt-3 w-full sm:w-56">
+            <Select
+              label="Status"
+              value={pendingStatus ?? lead.status}
+              onChange={(event) => requestStatusChange(event.target.value as LeadStatus)}
+              options={LEAD_STATUSES.map((status) => ({ value: status, label: STATUS_LABELS[status] }))}
+              disabled={statusControlsDisabled}
+              className="w-full"
+            />
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {refreshing && (
@@ -191,6 +256,14 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
               <Spinner className="h-3.5 w-3.5" /> Atualizando…
             </span>
           )}
+          <Button
+            type="button"
+            variant="mint"
+            onClick={() => setContactOpen(true)}
+            disabled={statusSaving || pendingStatus !== null || refreshing}
+          >
+            <MessageSquare className="h-4 w-4" aria-hidden="true" /> Registrar contato
+          </Button>
           <Button type="button" variant="outline" onClick={() => navigate(`/leads/${lead.id}/editar`)}>
             <Pencil className="h-4 w-4" aria-hidden="true" /> Editar
           </Button>
@@ -272,6 +345,8 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
             </dl>
             <p className="mt-3 text-xs text-muted">Valores estimados não são faturamento nem dinheiro recebido.</p>
           </Card>
+
+          <LeadTimeline leadId={lead.id} refreshKey={refreshKey} />
         </div>
 
         <div className="flex flex-col gap-5">
@@ -283,6 +358,25 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
           />
         </div>
       </div>
+
+      <ConfirmDialog
+        open={pendingStatus !== null}
+        title="Mudar status"
+        description={pendingStatus
+          ? `Confirmar mudança de ${STATUS_LABELS[lead.status]} para ${STATUS_LABELS[pendingStatus]}?`
+          : ''}
+        confirmLabel="Mudar status"
+        loading={statusSaving}
+        onConfirm={() => void confirmStatusChange()}
+        onCancel={cancelStatusChange}
+      />
+      <ContactDialog
+        open={contactOpen}
+        leadId={lead.id}
+        currentStatus={lead.status}
+        onClose={() => setContactOpen(false)}
+        onSaved={handleContactSaved}
+      />
     </div>
   )
 }
