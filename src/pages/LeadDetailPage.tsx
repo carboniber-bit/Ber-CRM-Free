@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowLeft, FileQuestion, MessageSquare, Pencil } from 'lucide-react'
+import { ArrowLeft, CalendarClock, FileQuestion, MessageCircle, MessageSquare, Pencil } from 'lucide-react'
 import { getLead, setLeadStatus } from '../services/leadService'
 import {
   LEAD_STATUSES, NICHE_LABELS, PRESENCE_FIELDS, PRESENCE_FIELD_LABELS,
@@ -18,9 +18,12 @@ import { Skeleton } from '../components/ui/Skeleton'
 import { Spinner } from '../components/ui/Spinner'
 import { StatusBadge } from '../components/ui/StatusBadge'
 import { ContactDialog } from '../components/leads/ContactDialog'
+import { FollowupDialog } from '../components/leads/FollowupDialog'
 import { LeadChecklist } from '../components/leads/LeadChecklist'
+import { LeadFollowups } from '../components/leads/LeadFollowups'
 import { LeadTimeline } from '../components/leads/LeadTimeline'
 import { OpportunityPanel } from '../components/leads/OpportunityPanel'
+import { WhatsAppDialog } from '../components/leads/WhatsAppDialog'
 
 type LeadLoadState =
   | { status: 'loading' }
@@ -62,6 +65,8 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
   const [loadState, setLoadState] = useState<LeadLoadState | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [contactOpen, setContactOpen] = useState(false)
+  const [followupOpen, setFollowupOpen] = useState(false)
+  const [whatsappOpen, setWhatsappOpen] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
   const [pendingStatus, setPendingStatus] = useState<LeadStatus | null>(null)
   const [statusSaving, setStatusSaving] = useState(false)
@@ -132,13 +137,14 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
   }, [leadId])
 
   useEffect(() => {
-    if (contactOpen || pendingStatus !== null || statusSaving || refreshing) return
+    if (contactOpen || followupOpen || whatsappOpen || pendingStatus !== null || statusSaving || refreshing) return
     const opener = focusOpenerRef.current
     focusOpenerRef.current = null
     if (opener?.isConnected && !opener.disabled) opener.focus()
-  }, [contactOpen, pendingStatus, statusSaving, refreshing])
+  }, [contactOpen, followupOpen, whatsappOpen, pendingStatus, statusSaving, refreshing])
 
-  const handleChecklistChanged = useCallback(() => {
+  const handleLeadChanged = useCallback(() => {
+    setRefreshKey((key) => key + 1)
     void reload(true)
   }, [reload])
 
@@ -183,7 +189,7 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
 
   const lead = loadState.lead
   const location = [lead.address, lead.district, lead.city, lead.state, lead.zip_code].filter(Boolean).join(', ')
-  const statusControlsDisabled = statusSaving || contactOpen || refreshing
+  const statusControlsDisabled = statusSaving || contactOpen || followupOpen || whatsappOpen || pendingStatus !== null || refreshing
 
   const requestStatusChange = (status: LeadStatus, opener: HTMLSelectElement) => {
     if (statusControlsDisabled || status === lead.status) return
@@ -220,11 +226,6 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
     }
   }
 
-  const handleContactSaved = () => {
-    setRefreshKey((key) => key + 1)
-    void reload(true)
-  }
-
   const links = [
     { label: 'Instagram', url: lead.instagram },
     { label: 'Facebook', url: lead.facebook },
@@ -259,7 +260,7 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
             />
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {refreshing && (
             <span className="inline-flex items-center gap-1.5 text-xs text-muted">
               <Spinner className="h-3.5 w-3.5" /> Atualizando…
@@ -267,16 +268,46 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
           )}
           <Button
             type="button"
+            variant="outline"
+            onClick={(event) => {
+              if (statusControlsDisabled) return
+              focusOpenerRef.current = event.currentTarget
+              setWhatsappOpen(true)
+            }}
+            disabled={statusControlsDisabled}
+          >
+            <MessageCircle className="h-4 w-4" aria-hidden="true" /> WhatsApp
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={(event) => {
+              if (statusControlsDisabled) return
+              focusOpenerRef.current = event.currentTarget
+              setFollowupOpen(true)
+            }}
+            disabled={statusControlsDisabled}
+          >
+            <CalendarClock className="h-4 w-4" aria-hidden="true" /> Agendar follow-up
+          </Button>
+          <Button
+            type="button"
             variant="mint"
             onClick={(event) => {
+              if (statusControlsDisabled) return
               focusOpenerRef.current = event.currentTarget
               setContactOpen(true)
             }}
-            disabled={statusSaving || pendingStatus !== null || refreshing}
+            disabled={statusControlsDisabled}
           >
             <MessageSquare className="h-4 w-4" aria-hidden="true" /> Registrar contato
           </Button>
-          <Button type="button" variant="outline" onClick={() => navigate(`/leads/${lead.id}/editar`)}>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => navigate(`/leads/${lead.id}/editar`)}
+            disabled={statusControlsDisabled}
+          >
             <Pencil className="h-4 w-4" aria-hidden="true" /> Editar
           </Button>
         </div>
@@ -366,7 +397,12 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
           <LeadChecklist
             key={lead.id}
             leadId={lead.id}
-            onChanged={handleChecklistChanged}
+            onChanged={handleLeadChanged}
+          />
+          <LeadFollowups
+            leadId={lead.id}
+            refreshKey={refreshKey}
+            onChanged={handleLeadChanged}
           />
         </div>
       </div>
@@ -387,7 +423,19 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
         leadId={lead.id}
         currentStatus={lead.status}
         onClose={() => setContactOpen(false)}
-        onSaved={handleContactSaved}
+        onSaved={handleLeadChanged}
+      />
+      <FollowupDialog
+        open={followupOpen}
+        leadId={lead.id}
+        onClose={() => setFollowupOpen(false)}
+        onSaved={handleLeadChanged}
+      />
+      <WhatsAppDialog
+        open={whatsappOpen}
+        lead={lead}
+        onClose={() => setWhatsappOpen(false)}
+        onLogged={handleLeadChanged}
       />
     </div>
   )
