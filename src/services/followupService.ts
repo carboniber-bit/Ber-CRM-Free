@@ -1,6 +1,13 @@
 import { requireSupabase, throwDbError } from '../lib/db'
 import type { Followup, FollowupList } from '../types/followup'
 
+function toFollowup(data: unknown): Followup | null {
+  const payload = Array.isArray(data) ? data[0] : data
+  if (!payload || typeof payload !== 'object') return null
+  const candidate = payload as Partial<Followup>
+  return candidate.id ? candidate as Followup : null
+}
+
 function dayBounds() {
   const start = new Date()
   start.setHours(0, 0, 0, 0)
@@ -44,8 +51,9 @@ export async function createFollowup(
   const { data, error } = await client
     .rpc('create_lead_followup', { p_lead_id: leadId, p_due_at: dueAt, p_reason: reason, p_note: note })
   throwDbError(error)
-  if (!data) throw new Error('Não foi possível agendar o follow-up.')
-  return data as Followup
+  const created = toFollowup(data)
+  if (!created) throw new Error('Não foi possível agendar o follow-up.')
+  return created
 }
 
 export async function completeFollowup(id: string, result: string | null): Promise<Followup | null> {
@@ -53,7 +61,7 @@ export async function completeFollowup(id: string, result: string | null): Promi
   const { data, error } = await client
     .rpc('complete_lead_followup', { p_followup_id: id, p_result: result })
   throwDbError(error)
-  return (data as Followup | null) ?? null
+  return toFollowup(data)
 }
 
 export async function cancelFollowup(id: string): Promise<Followup | null> {
@@ -61,7 +69,7 @@ export async function cancelFollowup(id: string): Promise<Followup | null> {
   const { data, error } = await client
     .rpc('cancel_lead_followup', { p_followup_id: id })
   throwDbError(error)
-  return (data as Followup | null) ?? null
+  return toFollowup(data)
 }
 
 export async function countOverdue(): Promise<number> {

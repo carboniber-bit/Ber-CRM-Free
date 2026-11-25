@@ -86,6 +86,29 @@ describe('followupService mutations', () => {
     expect(from).not.toHaveBeenCalled()
   })
 
+  it('ignora a linha composta toda nula retornada por uma RPC sem resultado', async () => {
+    const emptyComposite = {
+      id: null,
+      lead_id: null,
+      owner_id: null,
+      due_at: null,
+      reason: null,
+      note: null,
+      status: null,
+      completed_at: null,
+      result: null,
+      created_at: null,
+      updated_at: null,
+    }
+    rpc.mockResolvedValue({ data: emptyComposite, error: null })
+
+    await expect(completeFollowup(followup.id, null)).resolves.toBeNull()
+    await expect(cancelFollowup(followup.id)).resolves.toBeNull()
+    await expect(createFollowup(followup.lead_id, followup.due_at, followup.reason, followup.note))
+      .rejects.toThrow('Não foi possível agendar o follow-up.')
+    expect(from).not.toHaveBeenCalled()
+  })
+
   it('propaga erro da RPC sem anunciar sucesso', async () => {
     rpc.mockResolvedValue({ data: null, error: { message: 'permission denied' } })
 

@@ -52,8 +52,9 @@ Projeto Supabase: `nuzjlizqdldhygsliwwc`
 3. **Execute o schema**: abra o [SQL Editor](https://supabase.com/dashboard/project/nuzjlizqdldhygsliwwc/sql/new)
    e execute, nesta ordem, [`0001_profiles.sql`](supabase/migrations/0001_profiles.sql),
    [`0002_etapa2.sql`](supabase/migrations/0002_etapa2.sql),
-   [`0003_duplicate_canonical.sql`](supabase/migrations/0003_duplicate_canonical.sql) e
-   [`0004_followup_atomic.sql`](supabase/migrations/0004_followup_atomic.sql).
+   [`0003_duplicate_canonical.sql`](supabase/migrations/0003_duplicate_canonical.sql),
+   [`0004_followup_atomic.sql`](supabase/migrations/0004_followup_atomic.sql) e
+   [`0005_followup_rpc_json.sql`](supabase/migrations/0005_followup_rpc_json.sql).
    As migrations criam as tabelas privadas, os índices, as políticas RLS e as
    RPCs e triggers transacionais de follow-up.
 4. **Crie seu usuário**: Dashboard → Authentication → Users → *Add user* →
@@ -82,7 +83,7 @@ src/
   utils/        helpers
   routes/       AppRoutes + ProtectedRoute
 supabase/
-  migrations/   0001–0004 (profiles, leads, CRM, duplicidades e follow-ups atômicos)
+  migrations/   0001–0005 (profiles, leads, CRM, duplicidades e follow-ups atômicos)
 ```
 
 Rotas: `/login` (pública) · `/status` (pública, diagnóstico) · `/` (protegida) · 404.
