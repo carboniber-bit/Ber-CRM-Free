@@ -222,7 +222,7 @@ export function LeadForm({ initial, leadId, onSaved, onCancel }: LeadFormProps) 
           <div className="flex items-center gap-2 text-sm font-medium text-lime">
             <AlertTriangle className="h-4 w-4" /> Possível duplicidade
           </div>
-          <p className="mt-1 text-xs text-muted">Encontramos registro(s) com telefone, WhatsApp, CNPJ ou nome+localização parecidos. Verifique antes de cadastrar:</p>
+          <p className="mt-1 text-xs text-muted">Encontramos {duplicates.length === 1 ? 'um registro' : `${duplicates.length} registros`} com telefone, WhatsApp, CNPJ ou nome+localização parecidos. Verifique antes de cadastrar:</p>
           <ul className="mt-2 flex flex-col gap-1">
             {duplicates.map((duplicate) => (
               <li key={duplicate.id}>

@@ -77,6 +77,16 @@ const REPORT_LABELS: Record<ReportResult, string> = {
   failed: 'Erro',
 }
 
+function countLabel(count: number, singular: string, plural: string) {
+  return `${count} ${count === 1 ? singular : plural}`
+}
+
+function summarize({ imported, skipped, failed }: { imported: number; skipped: number; failed: number }) {
+  return `${countLabel(imported, 'importado', 'importados')} · `
+    + `${countLabel(skipped, 'ignorado', 'ignorados')} · `
+    + `${countLabel(failed, 'linha com erro', 'linhas com erro')}.`
+}
+
 export function CsvImportModal(props: CsvImportModalProps) {
   return <CsvImportModalContent key={props.open ? 'open' : 'closed'} {...props} />
 }
@@ -286,7 +296,7 @@ function CsvImportModalContent({ open, onClose, onImported }: CsvImportModalProp
       if (!isCurrent()) return
       const nextReport = { imported, skipped, failed, entries }
       setReport(nextReport)
-      const summary = `${imported} importado(s) · ${skipped} ignorado(s) · ${failed} com erro.`
+      const summary = summarize(nextReport)
       if (imported > 0) {
         toast(summary, failed > 0 ? 'info' : 'success')
         onImported()
@@ -329,14 +339,19 @@ function CsvImportModalContent({ open, onClose, onImported }: CsvImportModalProp
             className="block w-full min-w-0 rounded-xl border border-line bg-surface p-2 text-sm text-muted file:mb-2 file:block file:w-full file:rounded-lg file:border-0 file:bg-primary file:px-4 file:py-2 file:text-sm file:font-medium file:text-bg sm:file:mb-0 sm:file:inline-block sm:file:w-auto"
             onChange={(event) => {
               const file = event.target.files?.[0]
-              if (file) void handleFile(file)
+              if (!file) return
+              // Sem isto o navegador não dispara change ao reescolher o mesmo arquivo.
+              event.target.value = ''
+              void handleFile(file)
             }}
           />
-          <p className="mt-2 text-xs text-muted">Durante a leitura, escolher outro arquivo substitui a seleção anterior.</p>
+          <p className="mt-2 text-xs text-muted">Você pode reescolher o mesmo arquivo para refazer a leitura. Durante a leitura, escolher outro arquivo substitui a seleção anterior.</p>
         </div>
 
         {fileName && (
-          <p className="break-all text-xs text-muted">Arquivo: {fileName} · {rows.length} linha(s)</p>
+          <p className="break-all text-xs text-muted">
+            Arquivo: {fileName} · {rows.length === 1 ? '1 linha' : `${rows.length} linhas`}
+          </p>
         )}
 
         {busy && (
@@ -373,7 +388,9 @@ function CsvImportModalContent({ open, onClose, onImported }: CsvImportModalProp
                       : isFileDuplicate
                         ? `Primeira ocorrência na linha ${row.duplicateLine}; esta linha será sempre ignorada.`
                         : isExistingDuplicate
-                          ? `Já existe "${row.duplicateName}". Será ignorada por padrão.`
+                          ? includeDuplicates
+                            ? `Já existe "${row.duplicateName}"; será importada porque "Incluir duplicados" está marcado.`
+                            : `Já existe "${row.duplicateName}". Será ignorada por padrão.`
                           : 'Pronta para importar.'
                     return (
                       <tr key={row.line} className="border-t border-line/50">
@@ -419,7 +436,7 @@ function CsvImportModalContent({ open, onClose, onImported }: CsvImportModalProp
             className="rounded-xl border border-primary/40 bg-primary/5 p-4 text-sm"
           >
             <p className="font-medium text-primary">Importação concluída</p>
-            <p className="mt-1 text-muted">{report.imported} importado(s) · {report.skipped} ignorado(s) · {report.failed} com erro.</p>
+            <p className="mt-1 text-muted">{summarize(report)}</p>
             <div className="mt-3 max-w-full overflow-auto rounded-xl border border-line">
               <table className="w-full min-w-[30rem] text-left text-xs">
                 <thead className="bg-elevated text-muted">
@@ -460,7 +477,7 @@ function CsvImportModalContent({ open, onClose, onImported }: CsvImportModalProp
               disabled={busy || processableCount === 0}
               onClick={() => void runImport()}
             >
-              <FileUp className="h-4 w-4" /> Importar {validCount} lead(s)
+              <FileUp className="h-4 w-4" /> {validCount === 1 ? 'Importar 1 lead' : `Importar ${validCount} leads`}
             </Button>
           )}
         </div>

@@ -104,10 +104,11 @@ export function LeadsPage() {
       URL.revokeObjectURL(objectUrl)
       objectUrl = null
 
+      const exportedLabel = exported.length === 1 ? '1 lead exportado' : `${exported.length} leads exportados`
       if (filteredTotal > 1000) {
-        toast(`${exported.length} lead(s) exportado(s). A view contém ${filteredTotal}; foram exportados somente os primeiros 1000.`, 'info')
+        toast(`${exportedLabel}. A view contém ${filteredTotal}; foram exportados somente os primeiros 1000.`, 'info')
       } else {
-        toast(`${exported.length} lead(s) exportado(s).`)
+        toast(`${exportedLabel}.`)
       }
     } catch (error) {
       if (isCurrent()) toast(error instanceof Error ? error.message : 'Erro ao exportar.', 'error')
@@ -163,7 +164,7 @@ export function LeadsPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="font-display text-xl font-bold text-ink">Leads</h1>
-          <p className="text-sm text-muted">{total} estabelecimento{total === 1 ? '' : 's'} cadastrado{total === 1 ? '' : 's'}</p>
+          <p className="text-sm text-muted">{total === 1 ? '1 estabelecimento cadastrado' : `${total} estabelecimentos cadastrados`}</p>
         </div>
         <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
           <Button variant="outline" onClick={reload} disabled={exporting || importOpen}><RefreshCw className="h-4 w-4" /> Atualizar</Button>
