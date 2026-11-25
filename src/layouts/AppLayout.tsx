@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
-  BarChart3, Bell, FolderKanban, LayoutDashboard, Lock, LogOut, Menu,
+  BarChart3, Bell, FolderKanban, LayoutDashboard, LogOut, Menu,
   Settings, Target, Users, Wallet, X, type LucideIcon,
 } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
@@ -12,8 +12,7 @@ import { cn } from '../utils/cn'
 interface NavItem {
   label: string
   icon: LucideIcon
-  to?: string
-  stage?: string
+  to: string
 }
 
 const focusableSelector = [
@@ -36,46 +35,33 @@ const navItems: NavItem[] = [
   { label: 'Leads', icon: Users, to: '/leads' },
   { label: 'Oportunidades', icon: Target, to: '/oportunidades' },
   { label: 'Pipeline', icon: FolderKanban, to: '/pipeline' },
-  { label: 'Clientes', icon: Users, stage: 'Etapa 3' },
-  { label: 'Projetos', icon: FolderKanban, stage: 'Etapa 3' },
-  { label: 'Financeiro', icon: Wallet, stage: 'Etapa 4' },
-  { label: 'Relatórios', icon: BarChart3, stage: 'Etapa 4' },
-  { label: 'Configurações', icon: Settings, stage: 'Etapa 2' },
+  { label: 'Clientes', icon: Users, to: '/clientes' },
+  { label: 'Projetos', icon: FolderKanban, to: '/projetos' },
+  { label: 'Financeiro', icon: Wallet, to: '/financeiro' },
+  { label: 'Relatórios', icon: BarChart3, to: '/relatorios' },
+  { label: 'Configurações', icon: Settings, to: '/configuracoes' },
 ]
 
 function NavContent({ onNavigate, className }: { onNavigate?: () => void; className?: string }) {
   return (
     <nav className={cn('flex flex-col gap-1', className)}>
-      {navItems.map(({ label, icon: Icon, to, stage }) =>
-        to ? (
-          <NavLink
-            key={label}
-            to={to}
-            end={to === '/'}
-            onClick={onNavigate}
-            className={({ isActive }) =>
-              cn(
-                'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors',
-                isActive ? 'bg-primary/10 text-primary' : 'text-muted hover:bg-elevated hover:text-ink',
-              )
-            }
-          >
-            <Icon className="h-4 w-4" />
-            {label}
-          </NavLink>
-        ) : (
-          <span
-            key={label}
-            className="flex cursor-not-allowed items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-muted"
-            title={`Disponível na ${stage}`}
-          >
-            <Icon className="h-4 w-4 shrink-0" />
-            <span className="min-w-0 flex-1">{label}</span>
-            <span className="shrink-0 text-[10px] font-medium leading-none text-muted">{stage}</span>
-            <Lock className="h-3.5 w-3.5 shrink-0" />
-          </span>
-        ),
-      )}
+      {navItems.map(({ label, icon: Icon, to }) => (
+        <NavLink
+          key={label}
+          to={to}
+          end={to === '/'}
+          onClick={onNavigate}
+          className={({ isActive }) =>
+            cn(
+              'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors',
+              isActive ? 'bg-primary/10 text-primary' : 'text-muted hover:bg-elevated hover:text-ink',
+            )
+          }
+        >
+          <Icon className="h-4 w-4" />
+          {label}
+        </NavLink>
+      ))}
     </nav>
   )
 }
@@ -167,7 +153,7 @@ export function AppLayout() {
         <Logo className="mb-8 px-2 text-ink" />
         <NavContent />
         <div className="mt-auto rounded-xl border border-line bg-elevated p-3 text-xs text-muted">
-          Etapa 2 em andamento — leads, oportunidades e pipeline.
+          Etapa 2 — leads, oportunidades, pipeline e prospecção.
         </div>
       </aside>
 

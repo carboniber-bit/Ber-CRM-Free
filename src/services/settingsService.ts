@@ -19,6 +19,26 @@ export async function getSettings(): Promise<UserSettings> {
   return data as UserSettings
 }
 
+export async function getProfileName(): Promise<string> {
+  const client = requireSupabase()
+  const { data: userData, error: authError } = await client.auth.getUser()
+  if (authError) throw new Error('Não foi possível validar sua sessão. Entre novamente.')
+  const userId = userData.user?.id
+  if (!userId) throw new Error('Sua sessão expirou. Entre novamente.')
+  const { data, error } = await client.from('profiles').select('full_name').eq('id', userId).maybeSingle()
+  throwDbError(error)
+  return data?.full_name ?? ''
+}
+
+export async function updateProfileName(fullName: string): Promise<void> {
+  const client = requireSupabase()
+  const { data: userData } = await client.auth.getUser()
+  const userId = userData.user?.id
+  if (!userId) throw new Error('Sessão expirada. Entre novamente.')
+  const { error } = await client.from('profiles').update({ full_name: fullName }).eq('id', userId)
+  throwDbError(error)
+}
+
 export async function saveSettings(prices: ServicePrices, whatsappTemplate: string): Promise<UserSettings> {
   const client = requireSupabase()
   const { data, error } = await client

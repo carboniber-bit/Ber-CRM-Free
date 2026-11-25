@@ -12,6 +12,8 @@ import { LeadDetailPage } from '../pages/LeadDetailPage'
 import { LeadEditPage } from '../pages/LeadEditPage'
 import { FollowUpsPage } from '../pages/FollowUpsPage'
 import { StatusPage } from '../pages/StatusPage'
+import { SettingsPage } from '../pages/SettingsPage'
+import { ModulePlaceholderPage } from '../pages/ModulePlaceholderPage'
 import { NotFoundPage } from '../pages/NotFoundPage'
 
 export function AppRoutes() {
@@ -27,6 +29,11 @@ export function AppRoutes() {
           <Route path="/leads" element={<LeadsPage />} />
           <Route path="/oportunidades" element={<OpportunitiesPage />} />
           <Route path="/pipeline" element={<PipelinePage />} />
+          <Route path="/clientes" element={<ModulePlaceholderPage moduleKey="clientes" />} />
+          <Route path="/projetos" element={<ModulePlaceholderPage moduleKey="projetos" />} />
+          <Route path="/financeiro" element={<ModulePlaceholderPage moduleKey="financeiro" />} />
+          <Route path="/relatorios" element={<ModulePlaceholderPage moduleKey="relatorios" />} />
+          <Route path="/configuracoes" element={<SettingsPage />} />
           <Route path="/followups" element={<FollowUpsPage />} />
           <Route path="/leads/novo" element={<LeadNewPage />} />
           <Route path="/leads/:id" element={<LeadDetailPage />} />

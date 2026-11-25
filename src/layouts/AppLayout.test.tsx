@@ -90,14 +90,21 @@ describe('AppLayout sino de atrasados', () => {
     await waitFor(() => expect(within(bell()).getByText('2')).toBeTruthy())
   })
 
-  it('Follow-ups não entra na sidebar: o acesso é pelo sino', async () => {
+  it('exibe os nove links navegáveis na ordem e mantém Follow-ups apenas no sino', async () => {
     renderLayout()
     await waitFor(() => expect(countOverdue).toHaveBeenCalled())
 
     const nav = screen.getByRole('navigation')
-    expect(within(nav).queryByRole('link', { name: 'Follow-ups' })).toBeNull()
-    expect(within(nav).getAllByRole('link').map((link) => link.getAttribute('href'))).toEqual([
-      '/', '/leads', '/oportunidades', '/pipeline',
+    const links = within(nav).getAllByRole('link')
+    expect(links.map((link) => link.textContent)).toEqual([
+      'Dashboard', 'Leads', 'Oportunidades', 'Pipeline', 'Clientes', 'Projetos',
+      'Financeiro', 'Relatórios', 'Configurações',
     ])
+    expect(links.map((link) => link.getAttribute('href'))).toEqual([
+      '/', '/leads', '/oportunidades', '/pipeline', '/clientes', '/projetos',
+      '/financeiro', '/relatorios', '/configuracoes',
+    ])
+    expect(within(nav).queryByRole('link', { name: 'Follow-ups' })).toBeNull()
+    expect(screen.getByText('Etapa 2 — leads, oportunidades, pipeline e prospecção.')).toBeTruthy()
   })
 })
