@@ -74,12 +74,21 @@ function parseNiche(raw: string): string | null {
 
 const MAX_ESTIMATED_VALUE = 9999999999.99
 
+const CURRENCY_PREFIX = /^R\$\s*/i
+
 function parseMoney(raw: string): number | null {
-  const v = raw.trim()
+  let v = raw.trim()
   if (v === '') return 0
 
+  // Planilhas exportam moeda formatada ("R$ 1,500.00"). Com o símbolo presente, o
+  // formato americano com agrupamento por vírgula e decimais por ponto deixa de ser ambíguo.
+  const hasCurrencySymbol = CURRENCY_PREFIX.test(v)
+  if (hasCurrencySymbol) v = v.replace(CURRENCY_PREFIX, '')
+
   let normalized: string
-  if (/^\d+$/.test(v) || /^\d+\.\d{1,2}$/.test(v)) {
+  if (hasCurrencySymbol && /^\d{1,3}(?:,\d{3})+\.\d{1,2}$/.test(v)) {
+    normalized = v.replace(/,/g, '')
+  } else if (/^\d+$/.test(v) || /^\d+\.\d{1,2}$/.test(v)) {
     normalized = v
   } else if (/^\d+,\d{1,2}$/.test(v)) {
     normalized = v.replace(',', '.')
