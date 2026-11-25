@@ -42,9 +42,8 @@ export function computeIndicators(
   }
 }
 
-export function leadsByMonth(leads: Lead[]): Array<{ month: string; total: number }> {
+export function leadsByMonth(leads: Lead[], now = new Date()): Array<{ month: string; total: number }> {
   const buckets = new Map<string, { sortKey: number; total: number }>()
-  const now = new Date()
   for (let i = 5; i >= 0; i--) {
     const date = new Date(now.getFullYear(), now.getMonth() - i, 1)
     const key = `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getFullYear()).slice(2)}`

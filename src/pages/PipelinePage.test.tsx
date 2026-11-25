@@ -150,7 +150,7 @@ function mobileNames() {
 }
 
 function moveSelect(index = 0) {
-  return within(mobileEntries()[index]).getByLabelText('Mover para') as HTMLSelectElement
+  return within(mobileEntries()[index]).getByRole('combobox') as HTMLSelectElement
 }
 
 function moveSelectLabels(index = 0) {
@@ -223,7 +223,7 @@ afterEach(() => {
 beforeEach(() => {
   seq = 0
   dnd.props = null
-  vi.clearAllMocks()
+  vi.resetAllMocks()
   consoleError = vi.spyOn(console, 'error')
   consoleWarn = vi.spyOn(console, 'warn')
   mockLeads(PIPELINE_LEADS)
@@ -265,6 +265,27 @@ describe('PipelinePage quadro', () => {
     expect(columnFor('negociando').getByText('Arraste leads para cá')).toBeTruthy()
     // Card não aninha controle interativo dentro de link.
     expect(container.querySelectorAll('a button, a a')).toHaveLength(0)
+  })
+
+  it('oferece um seletor nativo focável, identificado pelo lead e fora do nó arrastável', async () => {
+    vi.mocked(setLeadStatus).mockResolvedValueOnce({ ...barbearia, status: 'interessado' })
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    const select = columnFor('novo').getByRole('combobox', {
+      name: `Mover ${barbearia.name} para`,
+    }) as HTMLSelectElement
+    expect(select.tagName).toBe('SELECT')
+    expect(select.tabIndex).toBe(0)
+    expect(select.closest('[aria-roledescription="draggable"]')).toBeNull()
+    select.focus()
+    expect(document.activeElement).toBe(select)
+
+    fireEvent.change(select, { target: { value: 'interessado' } })
+
+    expect(setLeadStatus).toHaveBeenCalledWith(barbearia.id, 'interessado')
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(`"${barbearia.name}" movido para Interessado.`))
+    expect(columnFor('interessado').getByText(barbearia.name)).toBeTruthy()
   })
 
   it('mostra nicho, prioridade, valor estimado e data de próximo contato no card', async () => {
@@ -625,6 +646,133 @@ describe('PipelinePage arraste', () => {
     expect(columnFor('interessado').getByText(barbearia.name)).toBeTruthy()
     await act(async () => { await Promise.resolve() })
     expect(toast).toHaveBeenCalledWith(`"${barbearia.name}" movido para Interessado.`)
+  })
+
+  it('serializa mudanças do mesmo lead e ignora rollback de uma mutação antiga', async () => {
+    let rejectFirst!: (reason: Error) => void
+    let resolveSecond!: (lead: Lead) => void
+    const first = new Promise<Lead>((_resolve, reject) => { rejectFirst = reject })
+    const second = new Promise<Lead>((resolve) => { resolveSecond = resolve })
+    vi.mocked(setLeadStatus).mockReturnValueOnce(first).mockReturnValueOnce(second)
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    endDrag({ id: 'interessado' })
+    endDrag({ id: 'negociando' })
+
+    expect(setLeadStatus).toHaveBeenCalledTimes(1)
+    expect(setLeadStatus).toHaveBeenNthCalledWith(1, barbearia.id, 'interessado')
+
+    await act(async () => {
+      resolveSecond({ ...barbearia, status: 'negociando' })
+      rejectFirst(new Error('A primeira atualização falhou.'))
+    })
+
+    await waitFor(() => expect(setLeadStatus).toHaveBeenCalledTimes(2))
+    expect(setLeadStatus).toHaveBeenNthCalledWith(2, barbearia.id, 'negociando')
+    expect(columnFor('negociando').getByText(barbearia.name)).toBeTruthy()
+    expect(columnFor('novo').queryByText(barbearia.name)).toBeNull()
+  })
+
+  it('volta ao status original quando duas mudanças consecutivas do mesmo lead falham', async () => {
+    vi.mocked(setLeadStatus).mockRejectedValue(new Error('Não foi possível atualizar o status.'))
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    endDrag({ id: 'interessado' })
+    endDrag({ id: 'negociando' })
+
+    await waitFor(() => expect(setLeadStatus).toHaveBeenCalledTimes(2))
+    expect(setLeadStatus).toHaveBeenNthCalledWith(1, barbearia.id, 'interessado')
+    expect(setLeadStatus).toHaveBeenNthCalledWith(2, barbearia.id, 'negociando')
+    expect(columnFor('novo').getByText(barbearia.name)).toBeTruthy()
+    expect(columnFor('interessado').queryByText(barbearia.name)).toBeNull()
+    expect(columnFor('negociando').queryByText(barbearia.name)).toBeNull()
+  })
+
+  it('não deixa uma recarga iniciada durante a mutação sobrescrever o status confirmado', async () => {
+    let resolveMove!: (lead: Lead) => void
+    let resolveReload!: (value: { leads: Lead[]; total: number }) => void
+    vi.mocked(setLeadStatus).mockReturnValueOnce(new Promise<Lead>((resolve) => { resolveMove = resolve }))
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    const before = queries().length
+    vi.mocked(listLeads)
+      .mockReturnValueOnce(new Promise((resolve) => { resolveReload = resolve }))
+      .mockResolvedValueOnce({
+        leads: PIPELINE_LEADS.map((lead) => (
+          lead.id === barbearia.id ? { ...lead, status: 'interessado' as const } : lead
+        )),
+        total: PIPELINE_LEADS.length,
+      })
+    endDrag({ id: 'interessado' })
+    fireEvent.click(screen.getByRole('button', { name: 'Atualizar' }))
+
+    await act(async () => {
+      resolveMove({ ...barbearia, status: 'interessado' })
+      resolveReload({ leads: PIPELINE_LEADS, total: PIPELINE_LEADS.length })
+    })
+
+    await waitFor(() => expect(queries().length).toBe(before + 2))
+    expect(columnFor('interessado').getByText(barbearia.name)).toBeTruthy()
+    expect(columnFor('novo').queryByText(barbearia.name)).toBeNull()
+  })
+
+  it('mantém o status otimista quando a listagem responde antes da gravação', async () => {
+    let resolveMove!: (lead: Lead) => void
+    let resolveReload!: (value: { leads: Lead[]; total: number }) => void
+    const confirmed = {
+      leads: PIPELINE_LEADS.map((lead) => (
+        lead.id === barbearia.id ? { ...lead, status: 'interessado' as const } : lead
+      )),
+      total: PIPELINE_LEADS.length,
+    }
+    vi.mocked(setLeadStatus).mockReturnValueOnce(new Promise<Lead>((resolve) => { resolveMove = resolve }))
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+    const before = queries().length
+
+    vi.mocked(listLeads)
+      .mockReturnValueOnce(new Promise((resolve) => { resolveReload = resolve }))
+      .mockResolvedValueOnce(confirmed)
+    endDrag({ id: 'interessado' })
+    fireEvent.click(screen.getByRole('button', { name: 'Atualizar' }))
+
+    await act(async () => { resolveReload({ leads: PIPELINE_LEADS, total: PIPELINE_LEADS.length }) })
+
+    expect(queries().length).toBe(before + 1)
+    expect(screen.queryByRole('group', { name: STATUS_LABELS.novo })).toBeNull()
+    expect(screen.queryByText(barbearia.name)).toBeNull()
+
+    await act(async () => { resolveMove({ ...barbearia, status: 'interessado' }) })
+
+    await waitFor(() => expect(queries().length).toBe(before + 2))
+    await waitFor(() => expect(columnFor('interessado').getByText(barbearia.name)).toBeTruthy())
+    expect(columnFor('novo').queryByText(barbearia.name)).toBeNull()
+  })
+
+  it('refaz uma consulta nova descartada pela conclusão de uma mutação em voo', async () => {
+    let resolveMove!: (lead: Lead) => void
+    let resolveFiltered!: (value: { leads: Lead[]; total: number }) => void
+    vi.mocked(setLeadStatus).mockReturnValueOnce(new Promise<Lead>((resolve) => { resolveMove = resolve }))
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+    const before = queries().length
+
+    vi.mocked(listLeads).mockReturnValueOnce(new Promise((resolve) => { resolveFiltered = resolve }))
+    endDrag({ id: 'interessado' })
+    fireEvent.change(screen.getByLabelText('Nicho'), { target: { value: 'pizzaria' } })
+
+    await act(async () => {
+      resolveMove({ ...barbearia, status: 'interessado' })
+      resolveFiltered({ leads: [pizzaria], total: 1 })
+    })
+
+    await waitFor(() => expect(queries().length).toBe(before + 2))
+    expect(lastQuery()).toEqual([{ niche: 'pizzaria' }, 'score_desc', 0, PAGE_SIZE])
+    expect(columnFor('novo').getByText(pizzaria.name)).toBeTruthy()
+    expect(screen.queryByText(barbearia.name)).toBeNull()
   })
 
   it('soltar no vazio não muda status nem escreve histórico', async () => {

@@ -2,12 +2,14 @@
 
 CRM profissional construído por etapas, 100% em planos gratuitos.
 
-**Etapa atual: 2 (em andamento) — Plano 2 concluído: Leads / Prospecção** (lista com filtros
-e paginação, ficha do lead, checklist de presença digital, oportunidade e valores,
-timeline, follow-ups, WhatsApp manual e importação/exportação CSV).
-O **Plano 3** da mesma etapa — Oportunidades, Pipeline Kanban, página de Follow-ups,
-Dashboard com gráficos e Configurações — ainda não foi iniciado e depende de autorização.
-Módulos de Projetos e Financeiro serão implementados nas próximas etapas.
+**Etapa atual: 2 — Planos 1, 2 e 3 implementados.** O CRM inclui Leads / Prospecção
+(lista com filtros e paginação, ficha, checklist de presença digital, oportunidade e valores,
+timeline, follow-ups, WhatsApp manual e importação/exportação CSV), além de Oportunidades,
+Pipeline Kanban, página de Follow-ups, Dashboard com gráficos e Configurações.
+A validação final foi executada com dados reais; o teste de isolamento RLS entre dois
+usuários permanece pendente até existir uma segunda conta temporária de teste.
+Módulos de Clientes, Projetos, Financeiro e Relatórios estão preparados como placeholders
+e serão implementados nas próximas etapas.
 
 ## Stack
 
@@ -70,7 +72,8 @@ Projeto Supabase: `nuzjlizqdldhygsliwwc`
 
 - Apenas a chave **pública** (anon/publishable) é usada no frontend.
   **Nunca** coloque a `service_role` key no `.env.local` ou no código.
-- RLS ativo nas tabelas privadas: cada usuário acessa somente os próprios dados.
+- RLS ativo nas tabelas privadas com `owner_id = auth.uid()`; a validação cruzada
+  com dois usuários está pendente por falta de uma segunda conta temporária.
 - Rotas internas protegidas por sessão; sem sessão → redireciona para `/login`.
 - `.env.local` está no `.gitignore` — credenciais nunca vão para o GitHub.
 
@@ -83,14 +86,17 @@ src/
     auth/         telas de autenticação
     leads/        LeadForm, LeadFiltersBar, LeadChecklist, OpportunityPanel, LeadTimeline,
                   LeadFollowups, FollowupDialog, ContactDialog, WhatsAppDialog, CsvImportModal
-  pages/          LoginPage, DashboardPage, StatusPage, NotFoundPage,
-                  LeadsPage, LeadNewPage, LeadDetailPage, LeadEditPage
+    pipeline/     KanbanCard e KanbanColumn
+    followups/    FollowupItem
+  pages/          LoginPage, DashboardPage, StatusPage, NotFoundPage, LeadsPage,
+                  LeadNewPage, LeadDetailPage, LeadEditPage, OpportunitiesPage,
+                  PipelinePage, FollowUpsPage, SettingsPage, ModulePlaceholderPage
   layouts/        AuthLayout (login) e AppLayout (app autenticado, sidebar + drawer mobile)
   hooks/          useAuth, useToast
   services/       authService, leadService, activityService, followupService,
-                  digitalCheckService, settingsService
+                  digitalCheckService, dashboardService, settingsService
   lib/            supabase.ts (cliente único), db.ts, csv.ts, format.ts, leadForm.ts,
-                  opportunity.ts, whatsapp.ts (+ testes próprios)
+                  opportunity.ts, whatsapp.ts, dashboard.ts, pipeline.ts (+ testes próprios)
   types/          Profile, Lead, Activity, Followup, Check, Settings
   utils/          helpers
   routes/         AppRoutes + ProtectedRoute
@@ -98,8 +104,38 @@ supabase/
   migrations/   0001–0005 (profiles, leads, CRM, duplicidades e follow-ups atômicos)
 ```
 
-Rotas: `/login` (pública) · `/status` (pública, diagnóstico) · `/` (protegida) ·
-`/leads` · `/leads/novo` · `/leads/:id` · `/leads/:id/editar` · 404.
+Rotas protegidas: `/` (dashboard) · `/leads` · `/leads/novo` · `/leads/:id` ·
+`/leads/:id/editar` · `/oportunidades` · `/pipeline` · `/followups` · `/configuracoes` ·
+`/clientes` · `/projetos` · `/financeiro` · `/relatorios`. `/login` e `/status` são públicas;
+rotas desconhecidas exibem a página 404.
+
+## Fluxo de prospecção
+
+1. **Cadastre o lead** com os dados conhecidos. Presença digital usa três estados:
+   `sim`, `não` e `não verificado`; desconhecido nunca é tratado como ausência confirmada.
+2. **Verifique a presença digital** e edite o lead quando houver nova informação. O score,
+   a prioridade e o valor estimado são recalculados a partir dos dados cadastrados.
+3. **Consulte Oportunidades** e use filtros combinados para priorizar o trabalho.
+4. **Inicie a prospecção** pela ficha do lead existente. O WhatsApp abre um link `wa.me`
+   com mensagem editável; o envio continua sendo manual.
+5. **Mova o lead no Pipeline** por arraste ou pelo seletor “Mover para”, no desktop e no
+   mobile. A mudança fica registrada no histórico.
+6. **Agende Follow-ups**, conclua com resultado e acompanhe os atrasados pelo dashboard
+   e pelo sino do cabeçalho.
+
+Limites atuais dos planos gratuitos:
+
+- Supabase Free e Vercel Hobby, sem billing, APIs pagas ou automação de mensagens.
+- O dashboard usa a contagem exata de leads, mas seus gráficos e indicadores de leads
+  (exceto o total) trabalham sobre uma janela de até 1000 registros.
+- A lista principal de Oportunidades mostra até 200 registros por consulta; a contagem
+  e o potencial indicam quando são parciais. A fila “Prospectar hoje” percorre as páginas
+  da consulta elegível antes de ordenar e priorizar. Como usa paginação por offset, escrita
+  concorrente durante a leitura pode alterar o conjunto retornado.
+- O Pipeline carrega até 500 leads por consulta e a exportação CSV inclui até 1000
+  registros da view filtrada; a interface avisa quando há mais resultados.
+- Valores estimados não são faturamento nem dinheiro recebido. Projetos e Financeiro
+  ainda não foram implementados.
 
 ## Deploy na Vercel (plano Hobby, gratuito)
 
@@ -122,6 +158,6 @@ Rotas: `/login` (pública) · `/status` (pública, diagnóstico) · `/` (protegi
 | 1 | Fundação, auth, Supabase, deploy | ✅ concluída |
 | 2 · Plano 1 | Fundação do CRM: vitest, migration `0002`, types, services, kit UI, sidebar | ✅ concluída |
 | 2 · Plano 2 | Leads / prospecção: lista, ficha, follow-ups, WhatsApp, CSV | ✅ concluída |
-| 2 · Plano 3 | Oportunidades, pipeline Kanban, follow-ups, dashboard, configurações | aguardando autorização |
+| 2 · Plano 3 | Oportunidades, pipeline Kanban, follow-ups, dashboard, configurações | implementado; validação RLS entre 2 usuários pendente |
 | 3 | Projetos | planejada |
 | 4 | Financeiro | planejada |

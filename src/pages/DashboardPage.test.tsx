@@ -812,6 +812,21 @@ describe('DashboardPage próximos follow-ups', () => {
     expect(getDashboardData).toHaveBeenCalledTimes(1)
   })
 
+  it('recalcula os meses do gráfico quando o relógio atravessa a virada do mês', async () => {
+    await renderLoaded()
+    expect(chartRows('Leads cadastrados ao longo do tempo').map((row) => row.month)).toEqual([
+      '06/26', '07/26', '08/26', '09/26', '10/26', '11/26',
+    ])
+
+    vi.setSystemTime(new Date(2026, 11, 1, 0, 0, 0))
+    await act(async () => { vi.advanceTimersByTime(60_000) })
+
+    expect(chartRows('Leads cadastrados ao longo do tempo').map((row) => row.month)).toEqual([
+      '07/26', '08/26', '09/26', '10/26', '11/26', '12/26',
+    ])
+    expect(getDashboardData).toHaveBeenCalledTimes(1)
+  })
+
   it('sem follow-up pendente orienta agendar em vez de sumir com o painel', async () => {
     await renderLoaded({ followups: [makeFollowup({ lead_id: 'lead-2', due_at: offset(DAY), status: 'concluido' })] })
 

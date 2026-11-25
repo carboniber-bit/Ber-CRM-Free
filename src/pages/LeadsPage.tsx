@@ -197,7 +197,7 @@ export function LeadsPage() {
       ) : (
         <>
           {/* Desktop: tabela */}
-          <Card className="hidden overflow-x-auto p-0 md:block">
+          <div className="hidden relative overflow-x-auto rounded-2xl border border-line bg-surface md:block">
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-line text-xs uppercase tracking-wide text-muted">
@@ -233,7 +233,7 @@ export function LeadsPage() {
                 ))}
               </tbody>
             </table>
-          </Card>
+          </div>
 
           {/* Mobile: cards */}
           <div className="flex flex-col gap-3 md:hidden">

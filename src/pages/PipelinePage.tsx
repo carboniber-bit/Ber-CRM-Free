@@ -45,7 +45,18 @@ export function PipelinePage() {
   const [error, setError] = useState<string | null>(null)
   const [mobileColumn, setMobileColumn] = useState<LeadStatus>('novo')
   const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const leadsRef = useRef<Lead[]>([])
+  const mutationVersionRef = useRef(0)
+  const pendingMovesRef = useRef(0)
+  const refreshAfterMovesRef = useRef(false)
+  const moveQueuesRef = useRef(new Map<string, Promise<void>>())
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
+
+  const updateLeads = (updater: (current: Lead[]) => Lead[]) => {
+    const next = updater(leadsRef.current)
+    leadsRef.current = next
+    setLeads(next)
+  }
 
   const cancelPendingCommit = () => {
     if (commitTimer.current) {
@@ -58,16 +69,28 @@ export function PipelinePage() {
 
   useEffect(() => {
     let active = true
+    const requestedVersion = mutationVersionRef.current
+    const requestedDuringMove = pendingMovesRef.current > 0
+    const discardStaleResult = () => {
+      if (!requestedDuringMove && requestedVersion === mutationVersionRef.current) return false
+      if (pendingMovesRef.current > 0) {
+        refreshAfterMovesRef.current = true
+      } else {
+        setRefreshKey((key) => key + 1)
+      }
+      return true
+    }
     void listLeads(queryFilters, 'score_desc', 0, PIPELINE_PAGE_SIZE).then(
       (result) => {
-        if (!active) return
+        if (!active || discardStaleResult()) return
+        leadsRef.current = result.leads
         setLeads(result.leads)
         setTotal(result.total)
         setError(null)
         setLoading(false)
       },
       (e: unknown) => {
-        if (!active) return
+        if (!active || discardStaleResult()) return
         setError(e instanceof Error ? e.message : 'Erro ao carregar pipeline.')
         setLoading(false)
       },
@@ -86,18 +109,42 @@ export function PipelinePage() {
   const hasActiveFilters = Object.values(queryFilters).some((value) => value !== undefined && value !== '')
 
   // O arraste é a confirmação do usuário (spec: no Kanban não há diálogo extra).
-  const moveLead = async (leadId: string, status: LeadStatus) => {
-    const lead = leads.find((l) => l.id === leadId)
-    if (!lead || lead.status === status) return
-    const previous = lead.status
-    setLeads((current) => current.map((l) => (l.id === leadId ? { ...l, status } : l)))
-    try {
-      await setLeadStatus(leadId, status)
-      toast(`"${lead.name}" movido para ${STATUS_LABELS[status]}.`)
-    } catch (e) {
-      setLeads((current) => current.map((l) => (l.id === leadId ? { ...l, status: previous } : l)))
-      toast(e instanceof Error ? e.message : 'Erro ao mover lead.', 'error')
+  const moveLead = (leadId: string, status: LeadStatus) => {
+    const performMove = async () => {
+      const lead = leadsRef.current.find((l) => l.id === leadId)
+      if (!lead || lead.status === status) return
+      const previous = lead.status
+      pendingMovesRef.current += 1
+      mutationVersionRef.current += 1
+      updateLeads((current) => current.map((l) => (l.id === leadId ? { ...l, status } : l)))
+      try {
+        const updated = await setLeadStatus(leadId, status)
+        mutationVersionRef.current += 1
+        updateLeads((current) => current.map((l) => (l.id === leadId ? updated : l)))
+        toast(`"${lead.name}" movido para ${STATUS_LABELS[status]}.`)
+      } catch (e) {
+        mutationVersionRef.current += 1
+        updateLeads((current) => current.map((l) => (
+          l.id === leadId && l.status === status ? { ...l, status: previous } : l
+        )))
+        toast(e instanceof Error ? e.message : 'Erro ao mover lead.', 'error')
+      } finally {
+        pendingMovesRef.current -= 1
+        if (pendingMovesRef.current === 0 && refreshAfterMovesRef.current) {
+          refreshAfterMovesRef.current = false
+          setRefreshKey((key) => key + 1)
+        }
+      }
     }
+
+    const pending = moveQueuesRef.current.get(leadId)
+    const task = pending ? pending.then(performMove, performMove) : performMove()
+    moveQueuesRef.current.set(leadId, task)
+    const cleanup = () => {
+      if (moveQueuesRef.current.get(leadId) === task) moveQueuesRef.current.delete(leadId)
+    }
+    void task.then(cleanup, cleanup)
+    return task
   }
 
   // O arraste é a confirmação: sem coluna sob o ponteiro não há `over` (pointerWithin) e
@@ -204,7 +251,9 @@ export function PipelinePage() {
           <div className="hidden md:block">
             <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragEnd={onDragEnd}>
               <div className="flex gap-4 overflow-x-auto pb-4">
-                {LEAD_STATUSES.map((status) => <KanbanColumn key={status} status={status} leads={byStatus.get(status) ?? []} />)}
+                {LEAD_STATUSES.map((status) => (
+                  <KanbanColumn key={status} status={status} leads={byStatus.get(status) ?? []} onMove={moveLead} />
+                ))}
               </div>
             </DndContext>
           </div>
@@ -223,7 +272,7 @@ export function PipelinePage() {
                   <div key={lead.id} role="listitem" className="flex flex-col gap-2">
                     <KanbanCardBody lead={lead} />
                     <Select
-                      label="Mover para"
+                      label={`Mover ${lead.name} para`}
                       placeholder="Escolha o novo status"
                       value=""
                       onChange={(e) => { if (e.target.value) void moveLead(lead.id, e.target.value as LeadStatus) }}

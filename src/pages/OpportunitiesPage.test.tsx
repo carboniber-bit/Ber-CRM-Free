@@ -136,12 +136,12 @@ function mockQueries(
     followups?: Followup[]
   } = {},
 ) {
-  vi.mocked(listLeads).mockImplementation(async (filters) => {
-    const isOpportunityQuery = filters.hasNeeds === true
-    const rows = isOpportunityQuery ? opportunities : all
+  vi.mocked(listLeads).mockImplementation(async (_filters, _sort, _page, pageSize) => {
+    const isQueueQuery = pageSize === 1000
+    const rows = isQueueQuery ? all : opportunities
     return {
       leads: rows,
-      total: isOpportunityQuery ? opportunitiesTotal : rows.length,
+      total: isQueueQuery ? rows.length : opportunitiesTotal,
     }
   })
   vi.mocked(listFollowups).mockResolvedValue(followups)
@@ -192,12 +192,12 @@ function lastOpportunityQuery(): Record<string, unknown> | undefined {
 }
 
 function opportunityQueryCalls() {
-  return vi.mocked(listLeads).mock.calls.filter((call) => call[0].hasNeeds === true)
+  return vi.mocked(listLeads).mock.calls.filter((call) => call[3] === 200)
 }
 
-// A consulta da fila não usa hasNeeds: é a única que baixa até 1000 linhas.
+// A fila usa a mesma elegibilidade, mas paginas de 1000 até completar a base.
 function queueBaseQueryCalls() {
-  return vi.mocked(listLeads).mock.calls.filter((call) => call[0].hasNeeds !== true)
+  return vi.mocked(listLeads).mock.calls.filter((call) => call[3] === 1000)
 }
 
 afterEach(() => {
@@ -232,15 +232,90 @@ describe('OpportunitiesPage consulta', () => {
   it('pede a fila base com a consulta fixa e não a recarrega ao filtrar', async () => {
     await renderLoaded()
 
-    // Forma exata da consulta da fila: sem filtros da página, página 0, 1000 linhas.
-    expect(queueBaseQueryCalls()).toEqual([[{}, 'score_desc', 0, 1000]])
+    // A elegibilidade é aplicada no banco antes da janela; lead ineligível não consome página.
+    expect(queueBaseQueryCalls()).toEqual([[
+      { hasNeeds: true, excludeStatuses: INELIGIBLE_STATUSES }, 'score_desc', 0, 1000,
+    ]])
     expect(vi.mocked(listFollowups).mock.calls).toEqual([['overdue']])
 
     fireEvent.change(screen.getByLabelText('Nicho'), { target: { value: 'pizzaria' } })
     await waitFor(() => expect(lastOpportunityQuery()?.niche).toBe('pizzaria'))
 
-    expect(queueBaseQueryCalls()).toEqual([[{}, 'score_desc', 0, 1000]])
+    expect(queueBaseQueryCalls()).toEqual([[
+      { hasNeeds: true, excludeStatuses: INELIGIBLE_STATUSES }, 'score_desc', 0, 1000,
+    ]])
     expect(vi.mocked(listFollowups)).toHaveBeenCalledTimes(1)
+  })
+
+  it('pagina toda a base elegível antes de montar a fila Prospectar hoje', async () => {
+    const firstPage = Array.from({ length: 1000 }, (_, index) => makeLead({
+      id: `fila-pagina-1-${index}`,
+      name: `Lead da primeira página ${index + 1}`,
+      status: 'novo',
+      score: 10,
+      priority: 'baixa',
+      needs: ['site'],
+    }))
+    const oportunidadeForaDaPrimeiraPagina = makeLead({
+      id: 'fila-pagina-2',
+      name: 'Oportunidade da segunda página',
+      status: 'novo',
+      score: 1,
+      priority: 'muito_alta',
+      needs: ['site'],
+    })
+    vi.mocked(listLeads).mockImplementation(async (_filters, _sort, page, pageSize) => {
+      if (pageSize === 200) return { leads: defaultOpportunities, total: defaultOpportunities.length }
+      return page === 0
+        ? { leads: firstPage, total: 1001 }
+        : { leads: [oportunidadeForaDaPrimeiraPagina], total: 1001 }
+    })
+    vi.mocked(listFollowups).mockResolvedValue([])
+    renderPage()
+    await screen.findByRole('heading', { name: 'Prospectar hoje' })
+
+    expect(queueBaseQueryCalls()).toEqual([
+      [{ hasNeeds: true, excludeStatuses: INELIGIBLE_STATUSES }, 'score_desc', 0, 1000],
+      [{ hasNeeds: true, excludeStatuses: INELIGIBLE_STATUSES }, 'score_desc', 1, 1000],
+    ])
+    expect(queueLinks()[0]?.textContent).toContain(oportunidadeForaDaPrimeiraPagina.name)
+  })
+
+  it('interrompe a paginação da fila quando a consulta de follow-ups falha', async () => {
+    let resolveFirstPage!: (value: { leads: Lead[]; total: number }) => void
+    const firstPage = Array.from({ length: 1000 }, (_, index) => makeLead({
+      id: `fila-falha-followup-${index}`,
+      name: `Lead da fila ${index + 1}`,
+      status: 'novo',
+      score: 10,
+      priority: 'baixa',
+      needs: ['site'],
+    }))
+    vi.mocked(listLeads).mockImplementation((_filters, _sort, page, pageSize) => {
+      if (pageSize === 200) {
+        return Promise.resolve({ leads: defaultOpportunities, total: defaultOpportunities.length })
+      }
+      if (page === 0) {
+        return new Promise((resolve) => { resolveFirstPage = resolve })
+      }
+      return Promise.resolve({
+        leads: [makeLead({ name: 'Lead que não deveria ser consultado', needs: ['site'] })],
+        total: 1001,
+      })
+    })
+    vi.mocked(listFollowups).mockRejectedValue(new Error('Falha ao consultar follow-ups.'))
+    renderPage()
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('Falha ao consultar follow-ups')
+    expect(queueBaseQueryCalls()).toHaveLength(1)
+
+    await act(async () => {
+      resolveFirstPage({ leads: firstPage, total: 1001 })
+      await Promise.resolve()
+    })
+
+    expect(queueBaseQueryCalls()).toHaveLength(1)
   })
 
   it('não dispara consulta a cada tecla digitada em Cidade e Bairro', async () => {
@@ -355,7 +430,10 @@ describe('OpportunitiesPage potencial estimado', () => {
     await screen.findByRole('button', { name: `Prospectar ${barbearia.name}` })
     expect(screen.queryByText('Carregando oportunidades…')).toBeNull()
 
-    vi.mocked(listLeads).mockRejectedValue(new Error('Falha ao contar oportunidades.'))
+    vi.mocked(listLeads).mockImplementation(async (_filters, _sort, _page, pageSize) => {
+      if (pageSize === 200) throw new Error('Falha ao contar oportunidades.')
+      return { leads: defaultAll, total: defaultAll.length }
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Atualizar' }))
     await screen.findByRole('alert')
 
@@ -449,21 +527,32 @@ describe('OpportunitiesPage fila Prospectar hoje', () => {
     expect(screen.queryByRole('heading', { name: 'Prospectar hoje' })).toBeNull()
   })
 
-  it('esconde a fila enquanto recarrega e não deixa fila antiga depois de falha', async () => {
+  it('mantém o erro da fila ao filtrar e oferece retry independente da lista principal', async () => {
     renderPage()
     await screen.findByRole('heading', { name: 'Prospectar hoje' })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Atualizar' }))
-    expect(screen.queryByRole('heading', { name: 'Prospectar hoje' })).toBeNull()
-    await screen.findByRole('heading', { name: 'Prospectar hoje' })
-
-    vi.mocked(listLeads).mockRejectedValue(new Error('Falha ao atualizar a fila de prospecção.'))
+    vi.mocked(listLeads).mockImplementation(async (_filters, _sort, _page, pageSize) => {
+      if (pageSize === 1000) throw new Error('Falha ao atualizar a fila de prospecção.')
+      return { leads: defaultOpportunities, total: defaultOpportunities.length }
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Atualizar' }))
     const alert = await screen.findByRole('alert')
 
     expect(alert.textContent).toContain('Falha ao atualizar a fila de prospecção')
     expect(screen.queryByRole('heading', { name: 'Prospectar hoje' })).toBeNull()
-    expect(screen.queryAllByRole('button', { name: /^Prospectar / })).toHaveLength(0)
+    expect(screen.getAllByRole('button', { name: /^Prospectar / })).toHaveLength(2)
+
+    fireEvent.change(screen.getByLabelText('Nicho'), { target: { value: 'pizzaria' } })
+    await waitFor(() => expect(lastOpportunityQuery()?.niche).toBe('pizzaria'))
+    expect(screen.getByRole('alert').textContent).toContain('Falha ao atualizar a fila de prospecção')
+
+    const opportunityCallsBeforeRetry = opportunityQueryCalls().length
+    mockQueries()
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Tentar novamente' }))
+
+    await screen.findByRole('heading', { name: 'Prospectar hoje' })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(opportunityQueryCalls()).toHaveLength(opportunityCallsBeforeRetry)
   })
 })
 
@@ -531,15 +620,43 @@ describe('OpportunitiesPage estado vazio e erro', () => {
     expect(labels).toHaveLength(SITUATIONS.length - impossible.length + 1) // +1: placeholder "Todas"
   })
 
-  it('mostra o erro da consulta em vez de afirmar que não há oportunidades', async () => {
-    vi.mocked(listLeads).mockRejectedValue(new Error('Falha de conexão com o Supabase. Verifique sua internet.'))
+  it('refaz somente a lista quando o retry da lista falha sem substituir a fila confirmada', async () => {
+    let failOpportunities = true
+    vi.mocked(listLeads).mockImplementation(async (_filters, _sort, _page, pageSize) => {
+      if (pageSize === 1000) return { leads: defaultAll, total: defaultAll.length }
+      if (failOpportunities) throw new Error('Falha ao carregar oportunidades.')
+      return { leads: defaultOpportunities, total: defaultOpportunities.length }
+    })
+    renderPage()
+    const alert = await screen.findByRole('alert')
+    await screen.findByRole('heading', { name: 'Prospectar hoje' })
+    const queueCalls = vi.mocked(listLeads).mock.calls.filter((call) => call[3] === 1000).length
+
+    failOpportunities = false
+    vi.mocked(listLeads).mockImplementation(async (_filters, _sort, _page, pageSize) => {
+      if (pageSize === 1000) throw new Error('A fila confirmada não deveria ser recarregada.')
+      return { leads: defaultOpportunities, total: defaultOpportunities.length }
+    })
+    fireEvent.click(within(alert).getByRole('button', { name: 'Tentar novamente' }))
+
+    await screen.findByRole('button', { name: `Prospectar ${barbearia.name}` })
+    expect(screen.getByRole('heading', { name: 'Prospectar hoje' })).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(vi.mocked(listLeads).mock.calls.filter((call) => call[3] === 1000)).toHaveLength(queueCalls)
+  })
+
+  it('mostra o erro da lista sem descartar a fila cuja consulta foi confirmada', async () => {
+    vi.mocked(listLeads).mockImplementation(async (_filters, _sort, _page, pageSize) => {
+      if (pageSize === 200) throw new Error('Falha de conexão com o Supabase. Verifique sua internet.')
+      return { leads: defaultAll, total: defaultAll.length }
+    })
     renderPage()
     const alert = await screen.findByRole('alert')
 
     expect(alert.textContent).toContain('Falha de conexão com o Supabase')
     expect(screen.getByRole('button', { name: 'Tentar novamente' })).toBeTruthy()
     expect(screen.queryByRole('heading', { name: 'Nenhuma oportunidade identificada' })).toBeNull()
-    expect(screen.queryByRole('heading', { name: 'Prospectar hoje' })).toBeNull()
+    expect(await screen.findByRole('heading', { name: 'Prospectar hoje' })).toBeTruthy()
   })
 })
 

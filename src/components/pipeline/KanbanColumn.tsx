@@ -3,7 +3,11 @@ import { STATUS_LABELS, type Lead, type LeadStatus } from '../../types/lead'
 import { KanbanCard } from './KanbanCard'
 import { cn } from '../../utils/cn'
 
-export function KanbanColumn({ status, leads }: { status: LeadStatus; leads: Lead[] }) {
+export function KanbanColumn({ status, leads, onMove }: {
+  status: LeadStatus
+  leads: Lead[]
+  onMove?: (leadId: string, status: LeadStatus) => void
+}) {
   const { setNodeRef, isOver } = useDroppable({ id: status })
 
   return (
@@ -21,7 +25,7 @@ export function KanbanColumn({ status, leads }: { status: LeadStatus; leads: Lea
         <span className="rounded-full bg-elevated px-2 py-0.5 text-xs text-muted">{leads.length}</span>
       </div>
       <div className="flex min-h-24 flex-col gap-2">
-        {leads.map((lead) => <KanbanCard key={lead.id} lead={lead} />)}
+        {leads.map((lead) => <KanbanCard key={lead.id} lead={lead} onMove={onMove} />)}
         {leads.length === 0 && (
           <p className="rounded-xl border border-dashed border-line px-3 py-4 text-center text-xs text-muted/60">Arraste leads para cá</p>
         )}

@@ -100,10 +100,10 @@ export function DashboardPage() {
     [data, now],
   )
   // As séries agregam sobre até 1000 linhas: memos para a página não recontar a cada tecla do
-  // relógio de render. `countBy(leads, 'priority')` é calculado uma vez e serve às barras e às
-  // Cells — duas chamadas dariam duas ordens independentes para o mesmo gráfico.
+  // relógio de render. Só a janela mensal depende do relógio, para acompanhar a virada do mês.
+  // `countBy(leads, 'priority')` é calculado uma vez e serve às barras e às Cells.
+  const byMonth = useMemo(() => (data ? leadsByMonth(data.leads, new Date(now)) : []), [data, now])
   const charts = useMemo(() => (data ? {
-    byMonth: leadsByMonth(data.leads),
     byNiche: countBy(data.leads, 'niche'),
     byStatus: countBy(data.leads, 'status'),
     byPriority: countBy(data.leads, 'priority'),
@@ -217,7 +217,7 @@ export function DashboardPage() {
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
             <ChartCard title="Leads cadastrados ao longo do tempo">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={charts.byMonth}>
+                <AreaChart data={byMonth}>
                   <CartesianGrid stroke={GRID} strokeDasharray="3 3" />
                   <XAxis dataKey="month" {...AXIS} />
                   <YAxis allowDecimals={false} {...AXIS} />

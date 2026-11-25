@@ -49,6 +49,7 @@ afterEach(() => {
   expect(consoleWarn).not.toHaveBeenCalled()
   consoleError.mockRestore()
   consoleWarn.mockRestore()
+  vi.useRealTimers()
 })
 
 beforeEach(() => {
@@ -102,6 +103,56 @@ describe('AppLayout sino de atrasados', () => {
     await waitFor(() => expect(within(bell()).getByText('2')).toBeTruthy())
   })
 
+  it('atualiza o sino quando um follow-up vence com a aplicação aberta', async () => {
+    vi.useFakeTimers()
+    vi.mocked(countOverdue).mockResolvedValueOnce(0).mockResolvedValueOnce(1)
+    renderLayout()
+    await act(async () => { await Promise.resolve() })
+    expect(bell().getAttribute('aria-label')).toBe('Follow-ups atrasados: 0')
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+
+    expect(countOverdue).toHaveBeenCalledTimes(2)
+    expect(bell().getAttribute('aria-label')).toBe('Follow-ups atrasados: 1')
+    expect(within(bell()).getByText('1')).toBeTruthy()
+  })
+
+  it('não sobrepõe consultas do sino e agrupa atualizações recebidas durante uma consulta', async () => {
+    vi.useFakeTimers()
+    let resolveFirst!: (count: number) => void
+    vi.mocked(countOverdue)
+      .mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve }))
+      .mockResolvedValueOnce(1)
+    renderLayout()
+    await act(async () => { await Promise.resolve() })
+    expect(countOverdue).toHaveBeenCalledTimes(1)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+    window.dispatchEvent(new Event('followups:changed'))
+    window.dispatchEvent(new Event('followups:changed'))
+    expect(countOverdue).toHaveBeenCalledTimes(1)
+
+    await act(async () => { resolveFirst(0) })
+    await act(async () => { await Promise.resolve() })
+
+    expect(countOverdue).toHaveBeenCalledTimes(2)
+    expect(bell().getAttribute('aria-label')).toBe('Follow-ups atrasados: 1')
+    expect(within(bell()).getByText('1')).toBeTruthy()
+  })
+
+  it('remove o timer e o listener do sino ao desmontar o layout', async () => {
+    vi.useFakeTimers()
+    const { unmount } = renderLayout()
+    await act(async () => { await Promise.resolve() })
+    expect(countOverdue).toHaveBeenCalledTimes(1)
+
+    unmount()
+    window.dispatchEvent(new Event('followups:changed'))
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+
+    expect(countOverdue).toHaveBeenCalledTimes(1)
+  })
+
   it('atualiza o sino ao concluir o último atrasado sem trocar de rota', async () => {
     const pending: Followup = {
       id: '00000000-0000-0000-0000-000000000301',
@@ -128,7 +179,7 @@ describe('AppLayout sino de atrasados', () => {
 
     await waitFor(() => expect(completeFollowup).toHaveBeenCalledWith(pending.id, null))
     await waitFor(() => expect(countOverdue).toHaveBeenCalledTimes(2))
-    expect(bell().getAttribute('aria-label')).toBe('Follow-ups atrasados: 0')
+    await waitFor(() => expect(bell().getAttribute('aria-label')).toBe('Follow-ups atrasados: 0'))
     expect(within(bell()).queryByText('1')).toBeNull()
   })
 

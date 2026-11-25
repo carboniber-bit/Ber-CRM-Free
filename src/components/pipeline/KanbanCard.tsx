@@ -3,9 +3,10 @@ import type { CSSProperties } from 'react'
 import { Link } from 'react-router-dom'
 import { CalendarClock, Phone } from 'lucide-react'
 import type { DraggableAttributes, DraggableSyntheticListeners } from '@dnd-kit/core'
-import { NICHE_LABELS, type Lead, type Niche } from '../../types/lead'
+import { LEAD_STATUSES, NICHE_LABELS, STATUS_LABELS, type Lead, type LeadStatus, type Niche } from '../../types/lead'
 import { formatBRL, formatDate, formatPhone } from '../../lib/format'
 import { PriorityBadge } from '../ui/PriorityBadge'
+import { Select } from '../ui/Select'
 import { cn } from '../../utils/cn'
 
 export interface KanbanCardDrag {
@@ -63,7 +64,7 @@ export function KanbanCardBody({ lead, drag, dragging = false, style }: KanbanCa
 }
 
 /** Card arrastável do quadro: precisa estar dentro de um `DndContext`. */
-export function KanbanCard({ lead }: { lead: Lead }) {
+export function KanbanCard({ lead, onMove }: { lead: Lead; onMove?: (leadId: string, status: LeadStatus) => void }) {
   // Atributos explícitos: o padrão do dnd-kit é `role="button"` + `tabIndex=0`, mas o card tem
   // conteúdo apresentacional (o Link da ficha) — botão faria o leitor de tela engolir o único
   // caminho de navegação — e sem KeyboardSensor a parada de tab extra não levaria a lugar nenhum.
@@ -75,11 +76,25 @@ export function KanbanCard({ lead }: { lead: Lead }) {
   const style = transform ? { transform: `translate(${transform.x}px, ${transform.y}px)` } : undefined
 
   return (
-    <KanbanCardBody
-      lead={lead}
-      dragging={isDragging}
-      style={style}
-      drag={{ setNodeRef, attributes, listeners }}
-    />
+    <>
+      <KanbanCardBody
+        lead={lead}
+        dragging={isDragging}
+        style={style}
+        drag={{ setNodeRef, attributes, listeners }}
+      />
+      {onMove && (
+        <Select
+          label={`Mover ${lead.name} para`}
+          placeholder="Escolha o novo status"
+          value=""
+          onChange={(e) => { if (e.target.value) onMove(lead.id, e.target.value as LeadStatus) }}
+          options={LEAD_STATUSES.map((status) => ({
+            value: status,
+            label: status === lead.status ? `${STATUS_LABELS[status]} (atual)` : STATUS_LABELS[status],
+          }))}
+        />
+      )}
+    </>
   )
 }

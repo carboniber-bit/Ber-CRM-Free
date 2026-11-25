@@ -78,23 +78,48 @@ export function AppLayout() {
   const drawerRef = useRef<HTMLElement>(null)
   const closeDrawer = useCallback(() => setDrawerOpen(false), [])
 
-  // Sem timer nem polling: o contador é relido a cada troca de rota e após mutações confirmadas
-  // de follow-ups. O número só volta a ser exibido quando a nova consulta responde.
+  // O relógio também conta: um follow-up pode vencer sem navegação nem mutação. O contador é
+  // relido a cada minuto, troca de rota e mutação confirmada; respostas antigas são descartadas.
   useEffect(() => {
     let active = true
     let request = 0
+    let inFlight = false
+    let refreshQueued = false
     const refresh = () => {
+      if (inFlight) {
+        refreshQueued = true
+        return
+      }
+      inFlight = true
       const current = ++request
       setOverdueCount(null)
+      const finish = () => {
+        if (!active) return
+        inFlight = false
+        if (refreshQueued) {
+          refreshQueued = false
+          refresh()
+        }
+      }
       void countOverdue().then(
-        (count) => { if (active && current === request) setOverdueCount(count) },
-        () => { if (active && current === request) setOverdueCount(null) },
+        (count) => {
+          if (!active) return
+          if (current === request) setOverdueCount(count)
+          finish()
+        },
+        () => {
+          if (!active) return
+          if (current === request) setOverdueCount(null)
+          finish()
+        },
       )
     }
     refresh()
+    const timer = window.setInterval(refresh, 60_000)
     window.addEventListener('followups:changed', refresh)
     return () => {
       active = false
+      window.clearInterval(timer)
       window.removeEventListener('followups:changed', refresh)
     }
   }, [location.pathname])
