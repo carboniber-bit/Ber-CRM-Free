@@ -1,26 +1,38 @@
 // @vitest-environment jsdom
+import type { ReactNode } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { countOverdue } from '../services/followupService'
+import { completeFollowup, countOverdue } from '../services/followupService'
+import type { Followup } from '../types/followup'
+import { ToastContext } from '../hooks/useToast'
+import { FollowupItem } from '../components/followups/FollowupItem'
 import { AppLayout } from './AppLayout'
 
-vi.mock('../services/followupService', () => ({ countOverdue: vi.fn() }))
+vi.mock('../services/followupService', () => ({
+  countOverdue: vi.fn(),
+  completeFollowup: vi.fn(),
+  cancelFollowup: vi.fn(),
+}))
 vi.mock('../hooks/useAuth', () => ({
   useAuth: () => ({ user: { email: 'teste@exemplo.com' }, signOut: vi.fn() }),
 }))
 
-function renderLayout(initialEntries = ['/']) {
+const toast = vi.fn()
+
+function renderLayout(initialEntries = ['/'], followupsPage: ReactNode = <div>Follow-ups</div>) {
   return render(
-    <MemoryRouter initialEntries={initialEntries}>
-      <Routes>
-        <Route element={<AppLayout />}>
-          <Route path="/" element={<div>Página inicial</div>} />
-          <Route path="/leads" element={<div>Lista de leads</div>} />
-          <Route path="/followups" element={<div>Follow-ups</div>} />
-        </Route>
-      </Routes>
-    </MemoryRouter>,
+    <ToastContext.Provider value={{ toast }}>
+      <MemoryRouter initialEntries={initialEntries}>
+        <Routes>
+          <Route element={<AppLayout />}>
+            <Route path="/" element={<div>Página inicial</div>} />
+            <Route path="/leads" element={<div>Lista de leads</div>} />
+            <Route path="/followups" element={followupsPage} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    </ToastContext.Provider>,
   )
 }
 
@@ -88,6 +100,36 @@ describe('AppLayout sino de atrasados', () => {
     await waitFor(() => expect(countOverdue).toHaveBeenCalledTimes(2))
     expect(screen.getByText('Lista de leads')).toBeTruthy()
     await waitFor(() => expect(within(bell()).getByText('2')).toBeTruthy())
+  })
+
+  it('atualiza o sino ao concluir o último atrasado sem trocar de rota', async () => {
+    const pending: Followup = {
+      id: '00000000-0000-0000-0000-000000000301',
+      lead_id: '00000000-0000-0000-0000-000000000101',
+      owner_id: '00000000-0000-0000-0000-000000000201',
+      due_at: '2026-11-24T12:00:00.000Z',
+      reason: 'Retornar proposta',
+      note: null,
+      status: 'pendente',
+      completed_at: null,
+      result: null,
+      created_at: '2026-11-23T12:00:00.000Z',
+      updated_at: '2026-11-23T12:00:00.000Z',
+    }
+    vi.mocked(countOverdue).mockResolvedValueOnce(1).mockResolvedValueOnce(0)
+    vi.mocked(completeFollowup).mockResolvedValue({ ...pending, status: 'concluido', result: 'Pediu retorno' })
+    renderLayout(['/followups'], (
+      <FollowupItem followup={pending} now={Date.parse('2026-11-25T18:00:00.000Z')} onChanged={() => {}} />
+    ))
+    await waitFor(() => expect(within(bell()).getByText('1')).toBeTruthy())
+
+    fireEvent.click(screen.getByRole('button', { name: /^Concluir follow-up/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar conclusão' }))
+
+    await waitFor(() => expect(completeFollowup).toHaveBeenCalledWith(pending.id, null))
+    await waitFor(() => expect(countOverdue).toHaveBeenCalledTimes(2))
+    expect(bell().getAttribute('aria-label')).toBe('Follow-ups atrasados: 0')
+    expect(within(bell()).queryByText('1')).toBeNull()
   })
 
   it('exibe os nove links navegáveis na ordem e mantém Follow-ups apenas no sino', async () => {

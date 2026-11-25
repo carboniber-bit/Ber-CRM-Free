@@ -77,6 +77,7 @@ export function FollowupItem({
     }
     setMutationError(null)
     toast('Este follow-up não está mais pendente. Nenhuma alteração foi feita.', 'info')
+    window.dispatchEvent(new Event('followups:changed'))
     // Aviso depois do toast: quem ressincroniza não apaga a informação de que nada foi feito.
     onObsolete?.()
   }
@@ -130,6 +131,7 @@ export function FollowupItem({
     setCompleting(false)
     setResult('')
     toast('Follow-up concluído.')
+    window.dispatchEvent(new Event('followups:changed'))
     onChanged()
   }
 
@@ -183,6 +185,7 @@ export function FollowupItem({
     onUpdated?.(latest)
     setCanceling(false)
     toast('Follow-up cancelado.')
+    window.dispatchEvent(new Event('followups:changed'))
     onChanged()
   }
 
