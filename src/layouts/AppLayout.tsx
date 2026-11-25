@@ -33,7 +33,7 @@ function getFocusableElements(dialog: HTMLElement) {
 const navItems: NavItem[] = [
   { label: 'Dashboard', icon: LayoutDashboard, to: '/' },
   { label: 'Leads', icon: Users, to: '/leads' },
-  { label: 'Oportunidades', icon: Target, stage: 'Etapa 2' },
+  { label: 'Oportunidades', icon: Target, to: '/oportunidades' },
   { label: 'Pipeline', icon: FolderKanban, stage: 'Etapa 2' },
   { label: 'Clientes', icon: Users, stage: 'Etapa 3' },
   { label: 'Projetos', icon: FolderKanban, stage: 'Etapa 3' },

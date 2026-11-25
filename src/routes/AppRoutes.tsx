@@ -5,6 +5,7 @@ import { ProtectedRoute } from './ProtectedRoute'
 import { LoginPage } from '../pages/LoginPage'
 import { DashboardPage } from '../pages/DashboardPage'
 import { LeadsPage } from '../pages/LeadsPage'
+import { OpportunitiesPage } from '../pages/OpportunitiesPage'
 import { LeadNewPage } from '../pages/LeadNewPage'
 import { LeadDetailPage } from '../pages/LeadDetailPage'
 import { LeadEditPage } from '../pages/LeadEditPage'
@@ -22,6 +23,7 @@ export function AppRoutes() {
         <Route element={<AppLayout />}>
           <Route path="/" element={<DashboardPage />} />
           <Route path="/leads" element={<LeadsPage />} />
+          <Route path="/oportunidades" element={<OpportunitiesPage />} />
           <Route path="/leads/novo" element={<LeadNewPage />} />
           <Route path="/leads/:id" element={<LeadDetailPage />} />
           <Route path="/leads/:id/editar" element={<LeadEditPage />} />
