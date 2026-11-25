@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { AtSign, Globe, MessageCircle, Phone, Target } from 'lucide-react'
 import { NEED_LABELS, NICHE_LABELS, type Lead, type Niche } from '../../types/lead'
 import { formatBRL, formatPhone } from '../../lib/format'
@@ -9,8 +9,10 @@ import { ScoreBar } from '../ui/ScoreBar'
 import { StatusBadge } from '../ui/StatusBadge'
 
 export function OpportunityCard({ lead, onWhatsApp }: { lead: Lead; onWhatsApp: (lead: Lead) => void }) {
+  const navigate = useNavigate()
   return (
-    <Card className="flex flex-col gap-3 p-4">
+    // Sem padding próprio: o Card já traz o p-5 do kit (cn concatena, não resolve conflito).
+    <Card className="flex flex-col gap-3">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <Link to={`/leads/${lead.id}`} className="font-display text-sm font-semibold text-ink hover:text-primary">{lead.name}</Link>
@@ -41,7 +43,8 @@ export function OpportunityCard({ lead, onWhatsApp }: { lead: Lead; onWhatsApp: 
         <StatusBadge status={lead.status} />
         <div className="flex gap-1.5">
           <Button variant="ghost" className="h-8 px-2.5 text-xs" aria-label={`Abrir WhatsApp de ${lead.name}`} onClick={() => onWhatsApp(lead)}><MessageCircle className="h-3.5 w-3.5" /> WhatsApp</Button>
-          <Link to={`/leads/${lead.id}`}><Button variant="mint" className="h-8 px-2.5 text-xs" aria-label={`Prospectar ${lead.name}`}><Target className="h-3.5 w-3.5" /> Prospectar</Button></Link>
+          {/* CTA como botão irmão do link do título: <button> dentro de <a> é HTML inválido. */}
+          <Button variant="mint" className="h-8 px-2.5 text-xs" aria-label={`Prospectar ${lead.name}`} onClick={() => navigate(`/leads/${lead.id}`)}><Target className="h-3.5 w-3.5" /> Prospectar</Button>
         </div>
       </div>
     </Card>

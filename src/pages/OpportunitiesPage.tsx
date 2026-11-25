@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ArrowRight, RefreshCw, Target } from 'lucide-react'
 import { listLeads } from '../services/leadService'
 import { listFollowups } from '../services/followupService'
 import { prospectingQueue } from '../lib/dashboard'
+import { isEligibleOpportunity } from '../lib/opportunity'
 import { INELIGIBLE_STATUSES, NICHE_LABELS, type Lead, type LeadFilters, type Niche } from '../types/lead'
 import type { Followup } from '../types/followup'
 import { formatBRL } from '../lib/format'
@@ -18,72 +19,164 @@ import { WhatsAppDialog } from '../components/leads/WhatsAppDialog'
 const OPPORTUNITY_PAGE_SIZE = 200
 const QUEUE_BASE_PAGE_SIZE = 1000
 const QUEUE_PREVIEW_SIZE = 5
+// Cidade/Bairro são texto livre: um caractere não pode virar uma consulta.
+const FREE_TEXT_DEBOUNCE_MS = 300
+const FREE_TEXT_KEYS: Array<keyof LeadFilters> = ['city', 'district']
+
+function onlyFreeTextChanged(prev: LeadFilters, next: LeadFilters): boolean {
+  const prevValues = prev as Record<string, unknown>
+  const nextValues = next as Record<string, unknown>
+  const keys = new Set([...Object.keys(prev), ...Object.keys(next)])
+  let changed = false
+  for (const key of keys) {
+    if (prevValues[key] === nextValues[key]) continue
+    changed = true
+    if (!FREE_TEXT_KEYS.some((freeKey) => freeKey === key)) return false
+  }
+  return changed
+}
 
 export function OpportunitiesPage() {
   const navigate = useNavigate()
+  // `filters` alimenta o formulário (tecla a tecla); `queryFilters` é o que foi confirmado
+  // para a consulta de oportunidades depois do debounce dos campos de texto livre.
   const [filters, setFilters] = useState<LeadFilters>({})
+  const [queryFilters, setQueryFilters] = useState<LeadFilters>({})
   const [refreshKey, setRefreshKey] = useState(0)
   const [leads, setLeads] = useState<Lead[]>([])
+  const [total, setTotal] = useState(0)
   const [allLeads, setAllLeads] = useState<Lead[]>([])
   const [followups, setFollowups] = useState<Followup[]>([])
-  const [loading, setLoading] = useState(true)
+  const [opportunitiesLoading, setOpportunitiesLoading] = useState(true)
+  const [queueLoading, setQueueLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [whatsappLead, setWhatsappLead] = useState<Lead | null>(null)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Consulta que depende dos filtros: só roda quando o filtro é confirmado ou se recarrega.
   useEffect(() => {
     let active = true
-    void Promise.all([
-      listLeads({ ...filters, hasNeeds: true, excludeStatuses: INELIGIBLE_STATUSES }, 'score_desc', 0, OPPORTUNITY_PAGE_SIZE),
-      listLeads({}, 'score_desc', 0, QUEUE_BASE_PAGE_SIZE),
-      listFollowups('overdue'),
-    ]).then(
-      ([filtered, all, overdue]) => {
+    void listLeads(
+      { ...queryFilters, hasNeeds: true, excludeStatuses: INELIGIBLE_STATUSES },
+      'score_desc',
+      0,
+      OPPORTUNITY_PAGE_SIZE,
+    ).then(
+      (result) => {
         if (!active) return
-        setLeads(filtered.leads)
-        setAllLeads(all.leads)
-        setFollowups(overdue)
-        setError(null)
-        setLoading(false)
+        setLeads(result.leads)
+        setTotal(result.total)
+        setOpportunitiesLoading(false)
       },
       (e: unknown) => {
         if (!active) return
         setError(e instanceof Error ? e.message : 'Erro ao carregar oportunidades.')
-        setLoading(false)
+        setOpportunitiesLoading(false)
       },
     )
     return () => { active = false }
-  }, [filters, refreshKey])
+  }, [queryFilters, refreshKey])
 
-  const startLoading = () => {
-    setLoading(true)
+  // Fila "Prospectar hoje": independe dos filtros, então só recarrega junto com a página.
+  useEffect(() => {
+    let active = true
+    void Promise.all([
+      listLeads({}, 'score_desc', 0, QUEUE_BASE_PAGE_SIZE),
+      listFollowups('overdue'),
+    ]).then(
+      ([all, overdue]) => {
+        if (!active) return
+        setAllLeads(all.leads)
+        setFollowups(overdue)
+        setQueueLoading(false)
+      },
+      (e: unknown) => {
+        if (!active) return
+        // Sem dados confirmados da fila, nada antigo pode ser apresentado como atual.
+        setAllLeads([])
+        setFollowups([])
+        setError(e instanceof Error ? e.message : 'Erro ao carregar a fila de prospecção.')
+        setQueueLoading(false)
+      },
+    )
+    return () => { active = false }
+  }, [refreshKey])
+
+  useEffect(() => () => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+  }, [])
+
+  const cancelPendingCommit = () => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current)
+      debounceRef.current = null
+    }
+  }
+  const commitQueryFilters = (next: LeadFilters) => {
+    setQueryFilters(next)
+    setOpportunitiesLoading(true)
     setError(null)
   }
+  const changeFilters = (next: LeadFilters) => {
+    setFilters(next)
+    cancelPendingCommit()
+    if (onlyFreeTextChanged(filters, next)) {
+      debounceRef.current = setTimeout(() => {
+        debounceRef.current = null
+        commitQueryFilters(next)
+      }, FREE_TEXT_DEBOUNCE_MS)
+      return
+    }
+    commitQueryFilters(next)
+  }
+  const clearFilters = () => {
+    setFilters({})
+    cancelPendingCommit()
+    commitQueryFilters({})
+  }
   const reload = () => {
-    startLoading()
+    cancelPendingCommit()
+    setOpportunitiesLoading(true)
+    setQueueLoading(true)
+    setError(null)
+    setQueryFilters(filters)
     setRefreshKey((key) => key + 1)
   }
-  const changeFilters = (next: LeadFilters) => {
-    startLoading()
-    setFilters(next)
-  }
 
-  const queue = useMemo(() => prospectingQueue(allLeads, followups), [allLeads, followups])
+  // "Prospectar hoje" desta página é fila de oportunidade: lead sem necessidade confirmada
+  // não pontua e não pode aparecer numa lista que se apresenta como oportunidade.
+  const queue = useMemo(
+    () => prospectingQueue(allLeads.filter(isEligibleOpportunity), followups),
+    [allLeads, followups],
+  )
   const totalPotential = useMemo(() => leads.reduce((sum, lead) => sum + lead.estimated_value, 0), [leads])
-  const countLabel = leads.length === 1 ? '1 oportunidade' : `${leads.length} oportunidades`
+  const countLabel = total === 1 ? '1 oportunidade' : `${total} oportunidades`
+  const partialPotential = leads.length > 0 && leads.length < total
+  const potentialHint = partialPotential
+    ? ` · referente ${leads.length === 1 ? 'à 1 primeira listada' : `às ${leads.length} primeiras listadas`}`
+    : ''
+  const hasActiveFilters = Object.values(queryFilters).some((value) => value !== undefined && value !== '')
+  const loading = opportunitiesLoading || queueLoading
 
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="font-display text-xl font-bold text-ink">Oportunidades</h1>
+          {/* Enquanto a consulta não responde (ou falha), nenhum número é afirmado: zero
+              em trânsito não é "nenhuma oportunidade". */}
           <p className="text-sm text-muted">
-            {countLabel} · potencial estimado {formatBRL(totalPotential)}
+            {error
+              ? 'Contagem e potencial indisponíveis nesta atualização. Recarregue para tentar de novo.'
+              : loading
+                ? 'Carregando oportunidades…'
+                : `${countLabel} · potencial estimado ${formatBRL(totalPotential)}${potentialHint}`}
           </p>
         </div>
         <Button variant="outline" onClick={reload}><RefreshCw className="h-4 w-4" /> Atualizar</Button>
       </div>
 
-      {queue.length > 0 && (
+      {!queueLoading && !error && queue.length > 0 && (
         <Card title="Prospectar hoje" dot="mint">
           <div className="flex flex-col gap-2">
             {queue.slice(0, QUEUE_PREVIEW_SIZE).map((lead) => (
@@ -111,12 +204,21 @@ export function OpportunitiesPage() {
       ) : loading ? (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-56" />)}</div>
       ) : leads.length === 0 ? (
-        <EmptyState
-          icon={Target}
-          title="Nenhuma oportunidade identificada"
-          description="As oportunidades nascem dos leads: cadastre estabelecimentos e confirme a presença digital (marque 'Não' apenas quando verificado). Leads sem dados confirmados não pontuam."
-          action={<Link to="/leads/novo"><Button variant="mint">Cadastrar lead</Button></Link>}
-        />
+        hasActiveFilters ? (
+          <EmptyState
+            icon={Target}
+            title="Nenhuma oportunidade com esses filtros"
+            description="Nenhum lead atende a todos os filtros aplicados. Limpe os filtros para ver a lista completa de oportunidades."
+            action={<Button variant="outline" onClick={clearFilters}>Limpar filtros</Button>}
+          />
+        ) : (
+          <EmptyState
+            icon={Target}
+            title="Nenhuma oportunidade identificada"
+            description="As oportunidades nascem dos leads: cadastre estabelecimentos e confirme a presença digital (marque 'Não' apenas quando verificado). Leads sem dados confirmados não pontuam."
+            action={<Button variant="mint" onClick={() => navigate('/leads/novo')}>Cadastrar lead</Button>}
+          />
+        )
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {leads.map((lead) => <OpportunityCard key={lead.id} lead={lead} onWhatsApp={setWhatsappLead} />)}
