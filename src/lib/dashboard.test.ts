@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { computeIndicators, conversionFunnel, countBy, leadsByMonth, prospectingQueue } from './dashboard'
 import { emptyLeadDraft, type Lead } from '../types/lead'
 import type { Followup } from '../types/followup'
@@ -53,27 +53,46 @@ describe('computeIndicators', () => {
     expect(i.followupsPendentes).toBe(2)
     expect(i.followupsAtrasados).toBe(1)
   })
+
+  it('trata os três status de contato como contatados', () => {
+    const leads = [
+      lead({ status: 'contato_realizado' }),
+      lead({ status: 'aguardando_resposta' }),
+      lead({ status: 'pediu_informacoes' }),
+      lead({ status: 'novo' }),
+      lead({ status: 'ignorou' }),
+    ]
+    expect(computeIndicators(leads, []).contatados).toBe(3)
+    const funnel = conversionFunnel(leads)
+    expect(funnel.map((s) => s.label)).toEqual(['Novo', 'Contatado', 'Interessado', 'Negociando', 'Aceitou'])
+    expect(funnel[1].total).toBe(3)
+  })
 })
 
 describe('leadsByMonth', () => {
   it('agrupa por mês e ordena cronologicamente', () => {
-    // Datas derivadas de new Date() para o teste não quebrar a partir de dezembro.
-    const now = new Date()
-    const monthKey = (d: Date) =>
-      `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getFullYear()).slice(2)}`
-    const currentMonth = new Date(now.getFullYear(), now.getMonth(), 1)
-    const previousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1)
-    const result = leadsByMonth([
-      lead({ created_at: new Date(now.getFullYear(), now.getMonth(), 5).toISOString() }),
-      lead({ created_at: new Date(now.getFullYear(), now.getMonth(), 20).toISOString() }),
-      lead({ created_at: new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString() }),
-    ])
-    expect(result.length).toBeGreaterThanOrEqual(2)
-    const atual = result.find((r) => r.month === monthKey(currentMonth))
-    expect(atual?.total).toBe(2)
-    const anterior = result.find((r) => r.month === monthKey(previousMonth))
-    expect(anterior?.total).toBe(1)
-    expect(result[result.length - 1].month).toBe(monthKey(currentMonth))
+    // Relógio fixo: as chaves esperadas são literais, sem depender do new Date() do teste.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 10, 15, 12, 0, 0)) // 15/11/2026, horário local
+    try {
+      const localDay = (month: number, day: number) => new Date(2026, month, day).toISOString()
+      const result = leadsByMonth([
+        lead({ created_at: localDay(10, 5) }),
+        lead({ created_at: localDay(10, 20) }),
+        lead({ created_at: localDay(9, 1) }),
+        lead({ created_at: localDay(7, 14) }),
+      ])
+      expect(result).toEqual([
+        { month: '06/26', total: 0 },
+        { month: '07/26', total: 0 },
+        { month: '08/26', total: 1 },
+        { month: '09/26', total: 0 },
+        { month: '10/26', total: 1 },
+        { month: '11/26', total: 2 },
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -81,6 +100,38 @@ describe('countBy / conversionFunnel', () => {
   it('conta por nicho com rótulos', () => {
     const result = countBy([lead({ niche: 'barbearia' }), lead({ niche: 'barbearia' })], 'niche')
     expect(result.find((r) => r.label === 'Barbearia')?.total).toBe(2)
+  })
+  it('reúne nicho vazio e "outros" num único rótulo Outros', () => {
+    const result = countBy([
+      lead({ niche: null }),
+      lead({ niche: '' }),
+      lead({ niche: 'outros' }),
+    ], 'niche')
+    expect(result).toEqual([{ label: 'Outros', total: 3 }])
+  })
+  it('usa os rótulos pt-BR de status', () => {
+    const result = countBy([
+      lead({ status: 'novo' }),
+      lead({ status: 'novo' }),
+      lead({ status: 'nao_interessado' }),
+    ], 'status')
+    expect(result).toEqual([
+      { label: 'Novo', total: 2 },
+      { label: 'Não interessado', total: 1 },
+    ])
+  })
+  it('conta por prioridade apenas oportunidades elegíveis', () => {
+    const result = countBy([
+      lead({ priority: 'muito_alta', status: 'negociando', needs: ['site'] }),
+      lead({ priority: 'muito_alta', status: 'interessado', needs: ['cardapio'] }),
+      lead({ priority: 'muito_alta', status: 'aceitou', needs: ['site'] }), // convertida: fora
+      lead({ priority: 'muito_alta', status: 'novo', needs: [] }), // sem necessidades: fora
+      lead({ priority: 'baixa', status: 'interessado', needs: ['site'] }),
+    ], 'priority')
+    expect(result).toEqual([
+      { label: 'Muito alta', total: 2 },
+      { label: 'Baixa', total: 1 },
+    ])
   })
   it('funil de conversão tem 5 etapas', () => {
     const result = conversionFunnel([lead({ status: 'novo' }), lead({ status: 'aceitou' })])
@@ -109,5 +160,21 @@ describe('prospectingQueue', () => {
       overdueLead,
     ], [followup({ lead_id: overdueLead.id, due_at: '2020-01-01T00:00:00Z' })])
     expect(queue[0].id).toBe(overdueLead.id)
+  })
+  it('desempata por score, depois status novo, depois created_at', () => {
+    const scored = lead({ status: 'contato_realizado', priority: 'media', score: 80, created_at: '2026-11-10T00:00:00Z' })
+    const freshUnscored = lead({ status: 'novo', priority: 'media', score: 40, created_at: '2026-11-11T00:00:00Z' })
+    expect(prospectingQueue([freshUnscored, scored], []).map((l) => l.id))
+      .toEqual([scored.id, freshUnscored.id]) // maior score vence o status novo
+
+    const contacted = lead({ status: 'contato_realizado', priority: 'media', score: 60, created_at: '2026-11-01T00:00:00Z' })
+    const sameScoreNew = lead({ status: 'novo', priority: 'media', score: 60, created_at: '2026-11-12T00:00:00Z' })
+    expect(prospectingQueue([contacted, sameScoreNew], []).map((l) => l.id))
+      .toEqual([sameScoreNew.id, contacted.id]) // mesmo score: não contatado primeiro
+
+    const later = lead({ status: 'novo', priority: 'media', score: 60, created_at: '2026-11-20T00:00:00Z' })
+    const earlier = lead({ status: 'novo', priority: 'media', score: 60, created_at: '2026-11-02T00:00:00Z' })
+    expect(prospectingQueue([later, earlier], []).map((l) => l.id))
+      .toEqual([earlier.id, later.id]) // mesmo score e status: created_at ascendente
   })
 })

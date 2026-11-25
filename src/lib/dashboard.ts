@@ -1,6 +1,6 @@
 import {
-  INELIGIBLE_STATUSES, NICHE_LABELS, PRIORITY_LABELS, STATUS_LABELS,
-  type Lead, type Niche, type Priority,
+  INELIGIBLE_STATUSES, NICHE_LABELS, PRIORITY_LABELS, STATUS_LABELS, situationStatuses,
+  type Lead, type LeadStatus, type Niche, type Priority,
 } from '../types/lead'
 import type { Followup } from '../types/followup'
 import { isEligibleOpportunity } from './opportunity'
@@ -18,7 +18,8 @@ export interface DashboardIndicators {
   followupsAtrasados: number
 }
 
-const CONTATADOS = ['contato_realizado', 'aguardando_resposta', 'pediu_informacoes']
+// Fonte única de verdade do grupo "contato realizado" (src/types/lead.ts).
+const CONTATADOS: LeadStatus[] = situationStatuses('contato_realizado')
 
 export function computeIndicators(leads: Lead[], followups: Followup[]): DashboardIndicators {
   const now = Date.now()
@@ -57,13 +58,17 @@ export function leadsByMonth(leads: Lead[]): Array<{ month: string; total: numbe
     .map(([month, { total }]) => ({ month, total }))
 }
 
+function nicheLabel(niche: string | null): string {
+  const raw = (niche || 'outros') as Niche
+  return NICHE_LABELS[raw] ?? raw
+}
+
 export function countBy(leads: Lead[], key: 'niche' | 'status' | 'priority'): Array<{ label: string; total: number }> {
   const source = key === 'priority' ? leads.filter(isEligibleOpportunity) : leads
   const counts = new Map<string, number>()
   for (const lead of source) {
-    const raw = lead[key] ?? 'outros'
     const label =
-      key === 'niche' ? (NICHE_LABELS[raw as Niche] ?? raw)
+      key === 'niche' ? nicheLabel(lead.niche)
       : key === 'status' ? STATUS_LABELS[lead.status]
       : PRIORITY_LABELS[lead.priority]
     counts.set(label, (counts.get(label) ?? 0) + 1)
