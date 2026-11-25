@@ -17,6 +17,8 @@ export function SettingsPage() {
   const [prices, setPrices] = useState<ServicePrices>({ ...DEFAULT_SETTINGS.service_prices })
   const [template, setTemplate] = useState(DEFAULT_SETTINGS.whatsapp_template)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [reloadKey, setReloadKey] = useState(0)
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -29,11 +31,22 @@ export function SettingsPage() {
         setFullName(profileName)
       })
       .catch((e: unknown) => {
-        if (active) toast(e instanceof Error ? e.message : 'Erro ao carregar configurações.', 'error')
+        if (!active) return
+        const message = e instanceof Error && e.message
+          ? e.message
+          : 'Erro ao carregar configurações.'
+        setLoadError(message)
+        toast(message, 'error')
       })
       .finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [toast])
+  }, [toast, reloadKey])
+
+  const reload = () => {
+    setLoading(true)
+    setLoadError(null)
+    setReloadKey((key) => key + 1)
+  }
 
   const save = async () => {
     setSaving(true)
@@ -48,6 +61,20 @@ export function SettingsPage() {
   }
 
   if (loading) return <Skeleton className="h-96" />
+
+  if (loadError) {
+    return (
+      <div className="mx-auto flex max-w-3xl flex-col gap-5">
+        <h1 className="font-display text-xl font-bold text-ink">Configurações</h1>
+        <Card className="border-danger/40" role="alert">
+          <p className="text-sm text-danger">{loadError}</p>
+          <Button type="button" variant="outline" className="mt-3" onClick={reload}>
+            Tentar novamente
+          </Button>
+        </Card>
+      </div>
+    )
+  }
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-5">

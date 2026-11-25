@@ -60,6 +60,13 @@ function saveButton(): HTMLButtonElement {
   return screen.getByRole('button', { name: /Salvar configurações/ }) as HTMLButtonElement
 }
 
+function expectNoEditableForm() {
+  expect(screen.queryByLabelText('Seu nome')).toBeNull()
+  expect(screen.queryByLabelText('Site (R$)')).toBeNull()
+  expect(screen.queryByLabelText('Template (editável a cada envio)')).toBeNull()
+  expect(screen.queryByRole('button', { name: /Salvar configurações/ })).toBeNull()
+}
+
 let consoleError: ReturnType<typeof vi.spyOn>
 let consoleWarn: ReturnType<typeof vi.spyOn>
 
@@ -120,22 +127,80 @@ describe('SettingsPage carregamento e perfil', () => {
       .toBe(settings.whatsapp_template)
   })
 
-  it('mostra feedback de erro quando as configurações não carregam', async () => {
+  it('bloqueia o formulário e a gravação quando as configurações não carregam', async () => {
     vi.mocked(getSettings).mockRejectedValue(new Error('Falha ao carregar configurações.'))
 
     renderPage()
 
-    await waitFor(() => expect(toast).toHaveBeenCalledWith('Falha ao carregar configurações.', 'error'))
-    expect(await screen.findByRole('heading', { name: 'Configurações' })).toBeTruthy()
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('Falha ao carregar configurações.')
+    expect(screen.getByRole('heading', { name: 'Configurações' })).toBeTruthy()
+    expect(within(alert).getByRole('button', { name: 'Tentar novamente' })).toBeTruthy()
+    expectNoEditableForm()
+    expect(saveSettings).not.toHaveBeenCalled()
+    expect(updateProfileName).not.toHaveBeenCalled()
+    expect(toast).toHaveBeenCalledWith('Falha ao carregar configurações.', 'error')
   })
 
-  it('mostra feedback de erro quando o nome do perfil não carrega', async () => {
+  it('bloqueia o formulário e a gravação quando o nome do perfil não carrega', async () => {
     vi.mocked(getProfileName).mockRejectedValue(new Error('Não foi possível ler o perfil.'))
 
     renderPage()
 
-    await waitFor(() => expect(toast).toHaveBeenCalledWith('Não foi possível ler o perfil.', 'error'))
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('Não foi possível ler o perfil.')
+    expect(screen.getByRole('heading', { name: 'Configurações' })).toBeTruthy()
+    expect(within(alert).getByRole('button', { name: 'Tentar novamente' })).toBeTruthy()
+    expectNoEditableForm()
+    expect(saveSettings).not.toHaveBeenCalled()
+    expect(updateProfileName).not.toHaveBeenCalled()
+    expect(toast).toHaveBeenCalledWith('Não foi possível ler o perfil.', 'error')
+  })
+
+  it('repete as duas leituras e hidrata os valores reais após recuperar a carga', async () => {
+    const recoveredSettings: UserSettings = {
+      ...settings,
+      service_prices: { site: 2100, landing: 850, cardapio: 950, catalogo: 1450, outros: 350 },
+      whatsapp_template: 'Template recuperado.\nPronto para enviar.',
+    }
+    const pendingSettings = deferred<UserSettings>()
+    const pendingName = deferred<string>()
+    vi.mocked(getSettings).mockRejectedValueOnce(new Error('Falha temporária.'))
+
+    const { container } = renderPage()
+    const alert = await screen.findByRole('alert')
+
+    vi.mocked(getSettings).mockReturnValueOnce(pendingSettings.promise)
+    vi.mocked(getProfileName).mockReturnValueOnce(pendingName.promise)
+    fireEvent.click(within(alert).getByRole('button', { name: 'Tentar novamente' }))
+
+    expect(getSettings).toHaveBeenCalledTimes(2)
+    expect(getProfileName).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(container.querySelector('.animate-pulse')).not.toBeNull()
+    expectNoEditableForm()
+
+    await act(async () => {
+      pendingSettings.resolve(recoveredSettings)
+      await Promise.resolve()
+    })
+
+    expect(container.querySelector('.animate-pulse')).not.toBeNull()
+    expectNoEditableForm()
+
+    await act(async () => {
+      pendingName.resolve('Ana Recuperada')
+      await Promise.resolve()
+    })
+
     expect(await screen.findByRole('heading', { name: 'Configurações' })).toBeTruthy()
+    expect(container.querySelector('.animate-pulse')).toBeNull()
+    expect((screen.getByLabelText('Seu nome') as HTMLInputElement).value).toBe('Ana Recuperada')
+    expect((screen.getByLabelText('Site (R$)') as HTMLInputElement).value).toBe('2100')
+    expect((screen.getByLabelText('Template (editável a cada envio)') as HTMLTextAreaElement).value)
+      .toBe(recoveredSettings.whatsapp_template)
+    expect(saveButton().disabled).toBe(false)
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('não processa erro nem resposta de carregamento após desmontar a página', async () => {
@@ -150,7 +215,7 @@ describe('SettingsPage carregamento e perfil', () => {
     await act(async () => {
       pendingSettings.reject(new Error('Resposta obsoleta.'))
       pendingName.resolve('Ana Lima')
-      await Promise.resolve()
+      await Promise.allSettled([pendingSettings.promise, pendingName.promise])
     })
 
     expect(toast).not.toHaveBeenCalled()
