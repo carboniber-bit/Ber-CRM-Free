@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastContext } from '../hooks/useToast'
-import { cancelFollowup, completeFollowup, listFollowups } from '../services/followupService'
+import { cancelFollowup, completeFollowup, createFollowup, listFollowups } from '../services/followupService'
 import { listLeads } from '../services/leadService'
 import type { Followup, FollowupList } from '../types/followup'
 import type { Lead } from '../types/lead'
@@ -13,11 +13,13 @@ vi.mock('../services/followupService', () => ({
   listFollowups: vi.fn(),
   completeFollowup: vi.fn(),
   cancelFollowup: vi.fn(),
+  createFollowup: vi.fn(),
 }))
 vi.mock('../services/leadService', () => ({ listLeads: vi.fn() }))
 
 const NAME_WINDOW = 1000
 const HOUR = 3_600_000
+const UNKNOWN_LEAD_NAME = 'Nome do lead não carregado'
 
 const toast = vi.fn()
 
@@ -65,6 +67,26 @@ function renderPage() {
 
 function listQueries() {
   return vi.mocked(listFollowups).mock.calls.map((call) => call[0])
+}
+
+function nameQueries() {
+  return vi.mocked(listLeads).mock.calls.length
+}
+
+// O input é `datetime-local`: valor no formato local, convertido para ISO pelo diálogo.
+function localInput(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+async function scheduleFor(leadId: string) {
+  fireEvent.change(screen.getByLabelText('Lead do novo follow-up'), { target: { value: leadId } })
+  fireEvent.click(screen.getByRole('button', { name: 'Agendar follow-up' }))
+  await screen.findByRole('dialog', { name: 'Agendar follow-up' })
+  const due = localInput(new Date(Date.now() + 48 * HOUR))
+  fireEvent.change(screen.getByLabelText(/Data e hora do próximo contato/), { target: { value: due } })
+  fireEvent.click(screen.getByRole('button', { name: 'Agendar' }))
+  return new Date(due).toISOString()
 }
 
 function itemFor(reason: string): HTMLElement {
@@ -170,8 +192,10 @@ describe('FollowUpsPage linhas', () => {
     await screen.findByText('Contato sem nome')
 
     const item = itemFor('Contato sem nome')
-    expect(item.textContent).toContain('Lead não carregado nesta lista')
+    expect(item.textContent).toContain(UNKNOWN_LEAD_NAME)
     expect(item.textContent).not.toMatch(/removido|exclu/i)
+    // O rótulo antigo ("… nesta lista") confundia a lista de follow-ups com a janela de leads.
+    expect(item.textContent).not.toMatch(/nesta lista/i)
     // O link continua apontando para a ficha: o id existe, só o nome não veio.
     expect(item.querySelector('a')?.getAttribute('href')).toBe('/leads/lead-fora-da-janela')
   })
@@ -190,9 +214,11 @@ describe('FollowUpsPage linhas', () => {
     await waitFor(() => expect(completeFollowup).toHaveBeenCalledWith('fu-hoje', 'Ligou de volta'))
     expect(toast).toHaveBeenCalledWith('Follow-up concluído.')
     await waitFor(() => expect(listQueries().filter((list) => list === 'today').length).toBe(2))
+    // A mutação reconsulta só a aba: a janela de nomes é cara e continua a mesma.
+    expect(nameQueries()).toBe(1)
   })
 
-  it('não anuncia conclusão nem recarrega quando a RPC devolve null', async () => {
+  it('ressincroniza a aba quando a RPC devolve null, sem anunciar conclusão', async () => {
     vi.mocked(completeFollowup).mockResolvedValue(null)
     renderPage()
     await screen.findByText('Contato de hoje')
@@ -207,8 +233,11 @@ describe('FollowUpsPage linhas', () => {
       'info',
     )
     expect(toast).not.toHaveBeenCalledWith('Follow-up concluído.')
-    expect(listQueries()).toHaveLength(before)
-    expect(screen.getByText('Contato de hoje')).toBeTruthy()
+    // Linha obsoleta confirmada pela RPC: a página reconsulta a aba em vez de deixar o
+    // "Pendente" na tela com botões vivos.
+    await waitFor(() => expect(listQueries()).toHaveLength(before + 1))
+    expect(listQueries().at(-1)).toBe('today')
+    expect(nameQueries()).toBe(1)
   })
 
   it('cancela depois de confirmar e recarrega a aba', async () => {
@@ -224,7 +253,7 @@ describe('FollowUpsPage linhas', () => {
     await waitFor(() => expect(listQueries().filter((list) => list === 'today').length).toBe(2))
   })
 
-  it('não anuncia cancelamento quando a RPC devolve null', async () => {
+  it('ressincroniza a aba quando o cancelamento devolve null, sem anunciar sucesso', async () => {
     vi.mocked(cancelFollowup).mockResolvedValue(null)
     renderPage()
     await screen.findByText('Contato de hoje')
@@ -239,7 +268,127 @@ describe('FollowUpsPage linhas', () => {
       'info',
     )
     expect(toast).not.toHaveBeenCalledWith('Follow-up cancelado.')
+    await waitFor(() => expect(listQueries()).toHaveLength(before + 1))
+    expect(listQueries().at(-1)).toBe('today')
+    expect(nameQueries()).toBe(1)
+  })
+})
+
+describe('FollowUpsPage agendar da própria página', () => {
+  it('agenda para o lead escolhido na página e reconsulta a aba ativa', async () => {
+    vi.mocked(createFollowup).mockResolvedValue(makeFollowup({ id: 'fu-novo', lead_id: 'lead-pizzaria' }))
+    renderPage()
+    await screen.findByText('Contato de hoje')
+    const before = listQueries().length
+
+    const dueIso = await scheduleFor('lead-pizzaria')
+
+    await waitFor(() => expect(createFollowup).toHaveBeenCalledWith('lead-pizzaria', dueIso, null, null))
+    expect(toast).toHaveBeenCalledWith('Follow-up agendado.')
+    await waitFor(() => expect(listQueries()).toHaveLength(before + 1))
+    expect(listQueries().at(-1)).toBe('today')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Agendar follow-up' })).toBeNull())
+  })
+
+  it('exige um lead escolhido antes de agendar', async () => {
+    renderPage()
+    await screen.findByText('Contato de hoje')
+
+    const schedule = screen.getByRole('button', { name: 'Agendar follow-up' })
+    expect((schedule as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByLabelText('Lead do novo follow-up') as HTMLSelectElement).value).toBe('')
+    fireEvent.click(schedule)
+    expect(screen.queryByRole('dialog', { name: 'Agendar follow-up' })).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('Lead do novo follow-up'), { target: { value: 'lead-barbearia' } })
+    expect((screen.getByRole('button', { name: 'Agendar follow-up' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('a escolha de lead vem da janela de nomes carregada e diz seus limites', async () => {
+    renderPage()
+    await screen.findByText('Contato de hoje')
+
+    const select = screen.getByLabelText('Lead do novo follow-up')
+    const options = Array.from(select.querySelectorAll('option')).map((option) => option.textContent)
+    expect(options).toEqual([
+      'Selecione o lead',
+      'Barbearia do Bairro',
+      'Pizzaria Forno a Lenha',
+    ])
+    // Fora da janela de 1000 o lead não pode ser escolhido aqui — a copy diz, não esconde.
+    expect(document.body.textContent).toMatch(/1000/)
+    expect(document.body.textContent).toMatch(/ficha do lead/)
+  })
+
+  it('não reabre o diálogo nem reconsulta quando o agendamento falha', async () => {
+    vi.mocked(createFollowup).mockRejectedValue(new Error('Falha de conexão com o Supabase.'))
+    renderPage()
+    await screen.findByText('Contato de hoje')
+    const before = listQueries().length
+
+    const due = localInput(new Date(Date.now() + 48 * HOUR))
+    fireEvent.change(screen.getByLabelText('Lead do novo follow-up'), { target: { value: 'lead-pizzaria' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Agendar follow-up' }))
+    await screen.findByRole('dialog', { name: 'Agendar follow-up' })
+    fireEvent.change(screen.getByLabelText(/Data e hora do próximo contato/), { target: { value: due } })
+    fireEvent.click(screen.getByRole('button', { name: 'Agendar' }))
+
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('Falha de conexão com o Supabase')
+    expect(toast).not.toHaveBeenCalledWith('Follow-up agendado.')
+    expect(screen.getByRole('dialog', { name: 'Agendar follow-up' })).toBeTruthy()
     expect(listQueries()).toHaveLength(before)
+  })
+
+  it('recusa data passada antes de chamar o serviço', async () => {
+    renderPage()
+    await screen.findByText('Contato de hoje')
+
+    fireEvent.change(screen.getByLabelText('Lead do novo follow-up'), { target: { value: 'lead-pizzaria' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Agendar follow-up' }))
+    await screen.findByRole('dialog', { name: 'Agendar follow-up' })
+    fireEvent.change(screen.getByLabelText(/Data e hora do próximo contato/), {
+      target: { value: localInput(new Date(Date.now() - HOUR)) },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Agendar' }))
+
+    await waitFor(() => expect(screen.getByText('A data do próximo contato deve ser futura.')).toBeTruthy())
+    expect(createFollowup).not.toHaveBeenCalled()
+  })
+})
+
+describe('FollowUpsPage ponteiro para oportunidades', () => {
+  it('aponta a fila de prospecção para a página de Oportunidades em vez de duplicá-la', async () => {
+    renderPage()
+    await screen.findByText('Contato de hoje')
+
+    const link = screen.getByRole('link', { name: /Oportunidades para prospectar hoje/ })
+    expect(link.getAttribute('href')).toBe('/oportunidades')
+    // A fila em si pertence a /oportunidades: nada de Card "Prospectar hoje" aqui.
+    expect(screen.queryByRole('heading', { name: 'Prospectar hoje' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Próxima oportunidade/ })).toBeNull()
+  })
+})
+
+describe('FollowUpsPage janela de nomes', () => {
+  it('trocar de aba não rebusca os leads; só o Atualizar explícito rebusca', async () => {
+    const { container } = renderPage()
+    await screen.findByText('Contato de hoje')
+    expect(nameQueries()).toBe(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Atrasados' }))
+    await waitFor(() => expect(listQueries()).toEqual(['today', 'overdue']))
+    // Sem rebuscar, a aba nova ainda rotula as linhas e mantém o seletor cheio: o mapa é do
+    // estado da página, não da consulta de cada aba.
+    expect(within(itemFor('Contato de hoje')).getByRole('link', { name: 'Barbearia do Bairro' })).toBeTruthy()
+    expect(container.querySelectorAll('select option')).toHaveLength(3)
+    fireEvent.click(screen.getByRole('button', { name: 'Concluídos' }))
+    await waitFor(() => expect(listQueries()).toEqual(['today', 'overdue', 'done']))
+    expect(nameQueries()).toBe(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Atualizar' }))
+    await waitFor(() => expect(nameQueries()).toBe(2))
+    expect(listQueries()).toHaveLength(4)
   })
 })
 
@@ -316,7 +465,9 @@ describe('FollowUpsPage carregando, erro e vazio', () => {
     mockLoad([])
     renderPage()
     await screen.findByRole('heading', { name: 'Nenhum follow-up aqui' })
-    expect(screen.getByText(/Agende follow-ups na ficha de cada lead/)).toBeTruthy()
+    // A copy não pode mandar o usuário para a ficha quando a própria página agenda.
+    expect(screen.getByText(/Agende um follow-up escolhendo o lead/)).toBeTruthy()
+    expect(screen.queryByText(/na ficha de cada lead/)).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Atrasados' }))
     await screen.findByRole('heading', { name: 'Nenhum follow-up atrasado' })
@@ -324,6 +475,7 @@ describe('FollowUpsPage carregando, erro e vazio', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Concluídos' }))
     await screen.findByRole('heading', { name: 'Nenhum follow-up concluído' })
+    expect(screen.getByText(/aparecem aqui com a data e o resultado registrados/)).toBeTruthy()
   })
 
   it('nenhum texto de cliente ou receita aparece na página', async () => {

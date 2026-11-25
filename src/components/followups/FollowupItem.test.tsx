@@ -44,6 +44,7 @@ interface HarnessProps {
   loadLatest?: () => Promise<Followup[] | null>
   onUpdated?: (followup: Followup) => void
   onChanged: () => void
+  onObsolete?: () => void
 }
 
 // O item não é dono da lista: quem renderiza pinta a linha confirmada pela RPC (é o que
@@ -65,17 +66,34 @@ function Harness({ followup, onUpdated, ...rest }: HarnessProps) {
   )
 }
 
-function renderItem(props: Partial<Omit<HarnessProps, 'followup' | 'onChanged'>> & { followup?: Followup } = {}) {
+type RenderItemProps = Omit<Partial<HarnessProps>, 'followup' | 'onChanged' | 'lead'> & {
+  followup?: Followup
+  /** `null` = a linha sem lead algum (é o que a ficha entrega quando não tem nome). */
+  lead?: { name: string; href?: string } | null
+}
+
+function renderItem(props: RenderItemProps = {}) {
   const onChanged = vi.fn()
-  const { followup = makeFollowup(), lead = { name: 'Barbearia do Bairro', href: LEAD_HREF }, ...rest } = props
+  const onObsolete = vi.fn()
+  const {
+    followup = makeFollowup(),
+    lead = { name: 'Barbearia do Bairro', href: LEAD_HREF },
+    ...rest
+  } = props
   const view = render(
     <ToastContext.Provider value={{ toast }}>
       <MemoryRouter>
-        <Harness followup={followup} lead={lead} onChanged={onChanged} {...rest} />
+        <Harness
+          followup={followup}
+          lead={lead ?? undefined}
+          onChanged={onChanged}
+          onObsolete={onObsolete}
+          {...rest}
+        />
       </MemoryRouter>
     </ToastContext.Provider>,
   )
-  return { ...view, onChanged }
+  return { ...view, onChanged, onObsolete }
 }
 
 function itemRoot(): HTMLElement {
@@ -117,7 +135,7 @@ describe('FollowupItem conclusão', () => {
     const completed = makeFollowup({ status: 'concluido', result: 'Pediu retorno' })
     vi.mocked(completeFollowup).mockResolvedValue(completed)
     const onUpdated = vi.fn()
-    const { onChanged } = renderItem({ onUpdated, loadLatest: async () => [makeFollowup()] })
+    const { onChanged, onObsolete } = renderItem({ onUpdated, loadLatest: async () => [makeFollowup()] })
 
     await openCompletion()
     // O rótulo shipped: sem ele o campo não é encontrável por leitor de tela.
@@ -128,11 +146,31 @@ describe('FollowupItem conclusão', () => {
     expect(completeFollowup).toHaveBeenCalledWith(makeFollowup().id, 'Pediu retorno')
     expect(onUpdated).toHaveBeenCalledWith(completed)
     expect(toast).toHaveBeenCalledWith('Follow-up concluído.')
+    // Conclusão confirmada não é obsolescência: nenhuma ressincronização extra pedida.
+    expect(onObsolete).not.toHaveBeenCalled()
     expect(toast).not.toHaveBeenCalledWith(
       'Este follow-up não está mais pendente. Nenhuma alteração foi feita.',
       'info',
     )
     expect(screen.getByText(FOLLOWUP_STATUS_LABELS.concluido)).toBeTruthy()
+  })
+
+  it('pede ressincronização silenciosa quando a RPC devolve null, sem notificar sucesso', async () => {
+    vi.mocked(completeFollowup).mockResolvedValue(null)
+    const { onChanged, onObsolete } = renderItem()
+
+    await openCompletion()
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar conclusão' }))
+
+    await waitFor(() => expect(onObsolete).toHaveBeenCalledTimes(1))
+    expect(onChanged).not.toHaveBeenCalled()
+    expect(toast).toHaveBeenCalledWith(
+      'Este follow-up não está mais pendente. Nenhuma alteração foi feita.',
+      'info',
+    )
+    expect(toast).not.toHaveBeenCalledWith('Follow-up concluído.')
+    // A lista ainda não respondeu: a linha continua como estava, sem se afirmar resolvida.
+    expect(screen.getByText(FOLLOWUP_STATUS_LABELS.pendente)).toBeTruthy()
   })
 
   it('manda resultado nulo quando o campo fica vazio', async () => {
@@ -192,7 +230,7 @@ describe('FollowupItem conclusão', () => {
   })
 
   it('trata como obsoleta a linha que a recarga já devolveu resolvida', async () => {
-    const { onChanged } = renderItem({ loadLatest: async () => [makeFollowup({ status: 'concluido' })] })
+    const { onChanged, onObsolete } = renderItem({ loadLatest: async () => [makeFollowup({ status: 'concluido' })] })
 
     await openCompletion()
     fireEvent.click(screen.getByRole('button', { name: 'Confirmar conclusão' }))
@@ -203,6 +241,8 @@ describe('FollowupItem conclusão', () => {
     ))
     expect(completeFollowup).not.toHaveBeenCalled()
     expect(onChanged).not.toHaveBeenCalled()
+    // Estado da tela divergia do banco: quem é dono da lista é avisado de ressincronizar.
+    expect(onObsolete).toHaveBeenCalledTimes(1)
   })
 
   it('mostra o erro da RPC e repete a conclusão com o mesmo resultado', async () => {
@@ -272,7 +312,7 @@ describe('FollowupItem cancelamento', () => {
 
   it('não anuncia sucesso quando a RPC devolve null', async () => {
     vi.mocked(cancelFollowup).mockResolvedValue(null)
-    const { onChanged } = renderItem()
+    const { onChanged, onObsolete } = renderItem()
 
     fireEvent.click(await screen.findByRole('button', { name: /^Cancelar follow-up/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Cancelar follow-up' }))
@@ -284,6 +324,7 @@ describe('FollowupItem cancelamento', () => {
     )
     expect(toast).not.toHaveBeenCalledWith('Follow-up cancelado.')
     expect(onChanged).not.toHaveBeenCalled()
+    expect(onObsolete).toHaveBeenCalledTimes(1)
     expect(screen.getByText(FOLLOWUP_STATUS_LABELS.pendente)).toBeTruthy()
   })
 
@@ -356,11 +397,23 @@ describe('FollowupItem apresentação', () => {
     expect(screen.queryByRole('button')).toBeNull()
   })
 
-  it('nome não carregado é rótulo honesto, não afirmação de exclusão', () => {
-    renderItem({ lead: { name: 'Lead não carregado nesta lista', href: LEAD_HREF } })
+  it('sem nome na linha, o item não inventa rótulo: data e ações seguem disponíveis', () => {
+    // Quem monta a lista decide o que mostrar quando o nome não veio (a página tem o seu
+    // texto honesto). O item, sem `lead`, tem de ficar mudo quanto ao lead — nunca fabricar
+    // um nome nem um link vazio, e continuar identificável pela data.
+    const { unmount } = renderItem({ lead: null })
 
-    expect(screen.getByRole('link', { name: 'Lead não carregado nesta lista' })).toBeTruthy()
-    expect(itemRoot().textContent).not.toMatch(/removido|excluíd/)
+    const label = formatDateTime('2026-11-25T12:00:00.000Z')
+    expect(itemRoot().textContent).toContain(label)
+    expect(itemRoot().querySelector('a')).toBeNull()
+    expect(itemRoot().textContent).not.toMatch(/lead|não carregado|removido|excluíd/i)
+    expect(screen.getByRole('button', { name: `Concluir follow-up de ${label}` })).toBeTruthy()
+    unmount()
+
+    // Nome com href nulo é texto: dentro da ficha o link apontaria para a própria página.
+    renderItem({ lead: { name: 'Barbearia do Bairro' } })
+    expect(screen.getByText('Barbearia do Bairro').tagName).toBe('SPAN')
+    expect(itemRoot().querySelector('a')).toBeNull()
   })
 
   it('trava os controles enquanto a lista está em trânsito', async () => {

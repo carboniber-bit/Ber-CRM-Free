@@ -24,6 +24,12 @@ export interface FollowupItemProps {
   loadLatest?: () => Promise<Followup[] | null>
   /** Linha confirmada pela RPC, aplicada por quem é dono da lista sem esperar a recarga. */
   onUpdated?: (followup: Followup) => void
+  /**
+   * Obsolescência confirmada (RPC `null` ou recarga já devolveu a linha resolvida): quem é dono da
+   * lista ressincroniza em silêncio. Não substitui `onChanged` — nesse caminho nada foi gravado
+   * por esta linha, então nada é anunciado como sucesso.
+   */
+  onObsolete?: () => void
   /** Lista em trânsito: nenhum controle age sobre uma linha potencialmente obsoleta. */
   pending?: boolean
   /** Base de comparação do atraso: quem renderiza a lista mantém o próprio relógio (tick de 60 s). */
@@ -39,7 +45,7 @@ interface MutationFailure {
 }
 
 export function FollowupItem({
-  followup, lead, loadLatest, onUpdated, pending = false, now, onChanged,
+  followup, lead, loadLatest, onUpdated, onObsolete, pending = false, now, onChanged,
 }: FollowupItemProps) {
   const { toast } = useToast()
   const [completing, setCompleting] = useState(false)
@@ -71,6 +77,8 @@ export function FollowupItem({
     }
     setMutationError(null)
     toast('Este follow-up não está mais pendente. Nenhuma alteração foi feita.', 'info')
+    // Aviso depois do toast: quem ressincroniza não apaga a informação de que nada foi feito.
+    onObsolete?.()
   }
 
   const complete = async (target: Followup, followupResult: string | null) => {

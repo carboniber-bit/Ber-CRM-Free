@@ -54,8 +54,8 @@ describe('AppLayout sino de atrasados', () => {
 
     expect(bell().getAttribute('href')).toBe('/followups')
     expect(bell().getAttribute('aria-label')).toBe('Follow-ups atrasados: 3')
-    // Badge é texto dentro do link: nenhum botão aninhado em âncora.
-    expect(bell().querySelectorAll('a button, a a, button')).toHaveLength(0)
+    // Badge é texto dentro do link: dentro da âncora não há botão nem âncora aninhada.
+    expect(bell().querySelectorAll('button, a')).toHaveLength(0)
   })
 
   it('não mostra badge quando o contador confirmado é zero', async () => {
