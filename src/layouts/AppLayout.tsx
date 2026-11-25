@@ -34,7 +34,7 @@ const navItems: NavItem[] = [
   { label: 'Dashboard', icon: LayoutDashboard, to: '/' },
   { label: 'Leads', icon: Users, to: '/leads' },
   { label: 'Oportunidades', icon: Target, to: '/oportunidades' },
-  { label: 'Pipeline', icon: FolderKanban, stage: 'Etapa 2' },
+  { label: 'Pipeline', icon: FolderKanban, to: '/pipeline' },
   { label: 'Clientes', icon: Users, stage: 'Etapa 3' },
   { label: 'Projetos', icon: FolderKanban, stage: 'Etapa 3' },
   { label: 'Financeiro', icon: Wallet, stage: 'Etapa 4' },

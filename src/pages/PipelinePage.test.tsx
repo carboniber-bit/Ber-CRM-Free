@@ -1,0 +1,582 @@
+// @vitest-environment jsdom
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { DndContext } from '@dnd-kit/core'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ToastContext } from '../hooks/useToast'
+import { formatBRL } from '../lib/format'
+import { LEAD_STATUSES, STATUS_LABELS, emptyLeadDraft, type Lead, type LeadStatus } from '../types/lead'
+import { listLeads, setLeadStatus } from '../services/leadService'
+import { addActivity } from '../services/activityService'
+import { KanbanCard, KanbanCardBody } from '../components/pipeline/KanbanCard'
+import { PipelinePage } from './PipelinePage'
+
+vi.mock('../services/leadService', () => ({ listLeads: vi.fn(), setLeadStatus: vi.fn() }))
+vi.mock('../services/activityService', () => ({ addActivity: vi.fn(), listActivities: vi.fn() }))
+
+const toast = vi.fn()
+const PAGE_SIZE = 500
+
+let seq = 0
+function makeLead(overrides: Partial<Lead> = {}): Lead {
+  seq += 1
+  return {
+    ...emptyLeadDraft(),
+    id: `lead-${seq}`,
+    owner_id: '00000000-0000-0000-0000-000000000201',
+    name: `Estabelecimento ${seq}`,
+    score: 0,
+    priority: 'baixa',
+    needs: [],
+    score_reasons: [],
+    created_at: '2026-11-01T00:00:00.000Z',
+    updated_at: '2026-11-01T00:00:00.000Z',
+    ...overrides,
+  } as Lead
+}
+
+const barbearia = makeLead({
+  id: 'lead-barbearia',
+  name: 'Barbearia do Bairro',
+  niche: 'barbearia',
+  city: 'São Paulo',
+  status: 'novo',
+  score: 85,
+  priority: 'muito_alta',
+  estimated_value: 800,
+  phone: '11999990001',
+  next_contact_at: '2026-12-01T12:00:00.000Z',
+})
+const pizzaria = makeLead({
+  id: 'lead-pizzaria',
+  name: 'Pizzaria Forno a Lenha',
+  niche: 'pizzaria',
+  city: 'Campinas',
+  status: 'novo',
+  score: 62,
+  priority: 'alta',
+  estimated_value: 400,
+})
+const salao = makeLead({
+  id: 'lead-salao',
+  name: 'Salão Novo Olhar',
+  niche: 'salao_beleza',
+  city: 'São Paulo',
+  status: 'interessado',
+  score: 70,
+  priority: 'media',
+  estimated_value: 1200,
+})
+const clinica = makeLead({
+  id: 'lead-clinica',
+  name: 'Clínica Sorriso',
+  niche: 'clinica_estetica',
+  city: 'Curitiba',
+  status: 'perdido',
+  score: 90,
+  priority: 'alta',
+  estimated_value: 99999,
+})
+const doceria = makeLead({
+  id: 'lead-doceria',
+  name: 'Doceria da Praça',
+  city: null,
+  status: 'contato_realizado',
+  score: 40,
+  priority: 'baixa',
+})
+
+const PIPELINE_LEADS = [barbearia, pizzaria, salao, clinica, doceria]
+
+// Espelha o que o service faz no Supabase (eq niche, ilike city, eq priority) para que os
+// testes provem a consulta de verdade, não só a contagem de chamadas.
+function mockLeads(rows: Lead[], total = rows.length) {
+  vi.mocked(listLeads).mockImplementation(async (filters) => ({
+    leads: rows.filter((lead) => {
+      if (filters.niche && lead.niche !== filters.niche) return false
+      if (filters.city && (lead.city ?? '').toLowerCase() !== filters.city.toLowerCase()) return false
+      if (filters.priority && lead.priority !== filters.priority) return false
+      return true
+    }),
+    total,
+  }))
+}
+
+function renderPage() {
+  return render(
+    <ToastContext.Provider value={{ toast }}>
+      <MemoryRouter initialEntries={['/pipeline']}>
+        <Routes>
+          <Route path="/pipeline" element={<PipelinePage />} />
+          <Route path="/leads/:id" element={<div>Ficha do lead</div>} />
+        </Routes>
+      </MemoryRouter>
+    </ToastContext.Provider>,
+  )
+}
+
+function columnFor(status: LeadStatus) {
+  return within(screen.getByRole('group', { name: STATUS_LABELS[status] }))
+}
+
+// A lista mobile é a única `list` do quadro: sem isso o card duplicado pela ramificação
+// desktop/mobile (só CSS) tornaria qualquer consulta de nome ambígua.
+function mobileEntries() {
+  return screen.queryAllByRole('listitem')
+}
+
+function mobileNames() {
+  return mobileEntries().map((entry) => within(entry).getByRole('link').textContent)
+}
+
+function moveSelect(index = 0) {
+  return within(mobileEntries()[index]).getByLabelText('Mover para') as HTMLSelectElement
+}
+
+function moveSelectLabels(index = 0) {
+  return Array.from(moveSelect(index).options).map((option) => option.textContent)
+}
+
+function columnSelect() {
+  return screen.getByLabelText('Coluna') as HTMLSelectElement
+}
+
+function cityInput() {
+  return screen.getByLabelText('Cidade') as HTMLInputElement
+}
+
+function columnSelectLabels() {
+  return Array.from(columnSelect().options).map((option) => option.textContent)
+}
+
+function queries() {
+  return vi.mocked(listLeads).mock.calls
+}
+
+function lastQuery() {
+  return queries().at(-1)
+}
+
+function columnCount(status: LeadStatus) {
+  return Number(columnFor(status).getByText(/^\d+$/).textContent)
+}
+
+let consoleError: ReturnType<typeof vi.spyOn>
+let consoleWarn: ReturnType<typeof vi.spyOn>
+
+afterEach(() => {
+  cleanup()
+  // Nenhum caminho renderizado pode gerar aviso de console (act, ref, DnD sem contexto).
+  expect(consoleError).not.toHaveBeenCalled()
+  expect(consoleWarn).not.toHaveBeenCalled()
+  consoleError.mockRestore()
+  consoleWarn.mockRestore()
+})
+
+beforeEach(() => {
+  seq = 0
+  vi.clearAllMocks()
+  consoleError = vi.spyOn(console, 'error')
+  consoleWarn = vi.spyOn(console, 'warn')
+  mockLeads(PIPELINE_LEADS)
+  vi.mocked(setLeadStatus).mockImplementation(async () => barbearia)
+})
+
+describe('PipelinePage quadro', () => {
+  it('rendera as 11 colunas com os rótulos de STATUS_LABELS', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    expect(screen.getAllByRole('group')).toHaveLength(LEAD_STATUSES.length)
+    for (const status of LEAD_STATUSES) {
+      const column = columnFor(status)
+      expect(column.getByRole('heading', { name: STATUS_LABELS[status] })).toBeTruthy()
+    }
+    // Ordem do quadro = ordem de LEAD_STATUSES.
+    expect(screen.getAllByRole('group').map((group) => group.getAttribute('aria-label'))).toEqual(
+      LEAD_STATUSES.map((status) => STATUS_LABELS[status]),
+    )
+  })
+
+  it('coloca cada lead na coluna do próprio status com a contagem da coluna', async () => {
+    const { container } = renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    expect(columnFor('novo').getByText(barbearia.name)).toBeTruthy()
+    expect(columnFor('novo').getByText(pizzaria.name)).toBeTruthy()
+    expect(columnFor('interessado').getByText(salao.name)).toBeTruthy()
+    expect(columnFor('contato_realizado').getByText(doceria.name)).toBeTruthy()
+    expect(columnFor('perdido').getByText(clinica.name)).toBeTruthy()
+    expect(columnFor('novo').queryByText(salao.name)).toBeNull()
+    expect(columnFor('perdido').queryByText(barbearia.name)).toBeNull()
+
+    expect(columnFor('novo').getByText('2')).toBeTruthy()
+    expect(columnFor('interessado').getByText('1')).toBeTruthy()
+    // Coluna sem lead continua existindo e vazia.
+    expect(columnFor('negociando').getByText('0')).toBeTruthy()
+    expect(columnFor('negociando').getByText('Arraste leads para cá')).toBeTruthy()
+    // Card não aninha controle interativo dentro de link.
+    expect(container.querySelectorAll('a button, a a')).toHaveLength(0)
+  })
+
+  it('mostra nicho, prioridade, valor estimado e data de próximo contato no card', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    const card = columnFor('novo').getByText(barbearia.name).closest('[aria-roledescription]') as HTMLElement
+    expect(card.textContent).toContain('Barbearia')
+    expect(card.textContent).toContain('Muito alta')
+    expect(card.textContent).toContain('R$')
+    expect((card.querySelector('a') as HTMLAnchorElement).getAttribute('href')).toBe(`/leads/${barbearia.id}`)
+    expect(card.textContent).toContain(formatBRL(barbearia.estimated_value))
+    expect(card.textContent).toContain('01/12/2026')
+    // Lead sem nicho e sem dados opcionais não inventa valor nem telefone.
+    const sparse = columnFor('contato_realizado').getByText(doceria.name).closest('[aria-roledescription]') as HTMLElement
+    expect(sparse.textContent).toContain('Sem nicho')
+    expect(sparse.textContent).not.toContain('(11)')
+  })
+
+  it('nunca chama o valor estimado de receita, faturamento ou cliente', async () => {
+    const { container } = renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    // O valor aparece no quadro (como valor do lead), mas nenhuma palavra de receita aparece.
+    expect(container.textContent).toContain(formatBRL(barbearia.estimated_value))
+    expect(container.textContent).not.toMatch(/faturamento|receita|recebido|ganhou/i)
+    expect(container.textContent).not.toMatch(/cliente/i)
+    expect(container.textContent).not.toMatch(/contratado/i)
+  })
+})
+
+describe('PipelinePage consulta', () => {
+  it('pede até 500 leads ordenados por score sem filtros', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    expect(listLeads).toHaveBeenCalledWith({}, 'score_desc', 0, PAGE_SIZE)
+    expect(queries().length).toBe(1)
+    // Com 5 leads na página nada é apresentado como janela truncada.
+    expect(screen.queryByText(/primeiros 500/)).toBeNull()
+  })
+
+  it('aplica nicho e prioridade combinados na consulta', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    fireEvent.change(screen.getByLabelText('Nicho'), { target: { value: 'pizzaria' } })
+    await waitFor(() => expect(lastQuery()).toEqual([{ niche: 'pizzaria' }, 'score_desc', 0, PAGE_SIZE]))
+    expect(screen.getByRole('group', { name: STATUS_LABELS.novo }).textContent).toContain(pizzaria.name)
+    expect(screen.queryByText(barbearia.name)).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('Prioridade'), { target: { value: 'alta' } })
+    await waitFor(() => expect(lastQuery()).toEqual([
+      { niche: 'pizzaria', priority: 'alta' }, 'score_desc', 0, PAGE_SIZE,
+    ]))
+  })
+
+  it('recarrega a consulta ao clicar em Atualizar', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+    const before = queries().length
+
+    fireEvent.click(screen.getByRole('button', { name: 'Atualizar' }))
+
+    await waitFor(() => expect(queries().length).toBe(before + 1))
+  })
+
+  it('não dispara uma consulta por tecla em Cidade: a consulta espera a última', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+    fireEvent.change(screen.getByLabelText('Nicho'), { target: { value: 'barbearia' } })
+    await waitFor(() => expect(lastQuery()).toEqual([{ niche: 'barbearia' }, 'score_desc', 0, PAGE_SIZE]))
+
+    const before = queries().length
+    const input = cityInput()
+
+    let city = ''
+    for (const character of 'São Paulo') {
+      city += character
+      fireEvent.change(input, { target: { value: city } })
+    }
+
+    // O input é controlado e responde na hora; a consulta ainda não saiu.
+    expect(input.value).toBe('São Paulo')
+    expect(queries().length).toBe(before)
+
+    await waitFor(() => expect(lastQuery()).toEqual([
+      { niche: 'barbearia', city: 'São Paulo' }, 'score_desc', 0, PAGE_SIZE,
+    ]))
+
+    // Uma única consulta com cidade para 9 teclas, com o valor final e o nicho preservado.
+    expect(queries().filter((call) => call[0].city !== undefined)).toHaveLength(1)
+    expect(queries().length).toBe(before + 1)
+    expect(columnFor('novo').getByText(barbearia.name)).toBeTruthy()
+    expect(columnFor('novo').queryByText(pizzaria.name)).toBeNull()
+  })
+
+  it('cancela o debounce pendente ao desmontar', async () => {
+    const { unmount } = renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+    const before = queries().length
+
+    fireEvent.change(cityInput(), { target: { value: 'Campinas' } })
+    unmount()
+    await act(async () => {
+      await new Promise((resolve) => { setTimeout(resolve, 400) })
+    })
+
+    expect(queries().length).toBe(before)
+  })
+})
+
+describe('PipelinePage mobile', () => {
+  it('lista uma coluna por vez e oferece as 11 colunas com a contagem de cada uma', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    expect(columnSelect().value).toBe('novo')
+    expect(columnSelectLabels()).toEqual(LEAD_STATUSES.map((status) => {
+      const count = PIPELINE_LEADS.filter((lead) => lead.status === status).length
+      return `${STATUS_LABELS[status]} (${count})`
+    }))
+    expect(mobileNames()).toEqual([barbearia.name, pizzaria.name])
+    expect(screen.getByRole('list', { name: 'Leads em Novo' })).toBeTruthy()
+  })
+
+  it('troca os leads listados quando o seletor de coluna muda', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    fireEvent.change(columnSelect(), { target: { value: 'interessado' } })
+    expect(mobileNames()).toEqual([salao.name])
+    expect(mobileEntries()).toHaveLength(1)
+
+    fireEvent.change(columnSelect(), { target: { value: 'negociando' } })
+    expect(mobileEntries()).toHaveLength(0)
+    expect(screen.queryByRole('list')).toBeNull()
+    expect(screen.getByText('Nenhum lead nesta coluna.')).toBeTruthy()
+
+    fireEvent.change(columnSelect(), { target: { value: 'perdido' } })
+    expect(mobileNames()).toEqual([clinica.name])
+  })
+
+  it('move pelo seletor "Mover para" antes mesmo da resposta e avisa no toast', async () => {
+    let resolveMove!: (lead: Lead) => void
+    vi.mocked(setLeadStatus).mockReturnValue(new Promise<Lead>((resolve) => { resolveMove = resolve }))
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    expect(moveSelectLabels()).toEqual([
+      'Escolha o novo status',
+      ...LEAD_STATUSES.map((status) => (status === 'novo' ? 'Novo (atual)' : STATUS_LABELS[status])),
+    ])
+
+    fireEvent.change(moveSelect(0), { target: { value: 'interessado' } })
+
+    // Otimista: o card já está em outra coluna do quadro e saiu da lista mobile de Novo.
+    expect(setLeadStatus).toHaveBeenCalledWith(barbearia.id, 'interessado')
+    expect(columnFor('novo').queryByText(barbearia.name)).toBeNull()
+    expect(columnFor('interessado').getByText(barbearia.name)).toBeTruthy()
+    expect(columnCount('novo')).toBe(1)
+    expect(columnCount('interessado')).toBe(2)
+    expect(mobileNames()).toEqual([pizzaria.name])
+    expect(columnSelectLabels()).toContain('Interessado (2)')
+    // Sem sucesso anunciado antes da confirmação do banco.
+    expect(toast).not.toHaveBeenCalled()
+
+    await act(async () => {
+      resolveMove({ ...barbearia, status: 'interessado' })
+    })
+
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(`"${barbearia.name}" movido para Interessado.`))
+    expect(columnFor('interessado').getByText(barbearia.name)).toBeTruthy()
+  })
+
+  it('não grava atividade no cliente: o histórico vem do trigger do banco', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    fireEvent.change(moveSelect(0), { target: { value: 'negociando' } })
+
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(`"${barbearia.name}" movido para Negociando.`))
+    expect(setLeadStatus).toHaveBeenCalledTimes(1)
+    expect(addActivity).not.toHaveBeenCalled()
+  })
+
+  it('não faz nada quando o status escolhido é o atual do lead', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    fireEvent.change(moveSelect(0), { target: { value: 'novo' } })
+    await act(async () => { await Promise.resolve() })
+
+    expect(setLeadStatus).not.toHaveBeenCalled()
+    expect(toast).not.toHaveBeenCalled()
+    expect(columnCount('novo')).toBe(2)
+    expect(mobileNames()).toEqual([barbearia.name, pizzaria.name])
+  })
+
+  it('reverte o card para a coluna anterior quando a atualização falha', async () => {
+    vi.mocked(setLeadStatus).mockRejectedValue(new Error('Não foi possível atualizar o status.'))
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    fireEvent.change(moveSelect(0), { target: { value: 'aceitou' } })
+    expect(columnFor('novo').queryByText(barbearia.name)).toBeNull()
+    expect(columnFor('aceitou').getByText(barbearia.name)).toBeTruthy()
+
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Não foi possível atualizar o status.', 'error'))
+    expect(columnFor('novo').getByText(barbearia.name)).toBeTruthy()
+    expect(columnFor('aceitou').queryByText(barbearia.name)).toBeNull()
+    expect(columnCount('novo')).toBe(2)
+    expect(columnCount('aceitou')).toBe(0)
+    expect(mobileNames()).toEqual([barbearia.name, pizzaria.name])
+  })
+
+  it('registra um único card arrastável por lead e nenhum no mobile', async () => {
+    // Ramificações desktop e mobile ficam montadas (só o CSS alterna): se o mobile montasse
+    // useDraggable, o mesmo id de draggable registraria duas vezes.
+    const { container } = renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    expect(container.querySelectorAll('[aria-roledescription="draggable"]')).toHaveLength(PIPELINE_LEADS.length)
+    for (const entry of mobileEntries()) {
+      expect(entry.querySelector('[aria-roledescription="draggable"]')).toBeNull()
+      expect(entry.querySelectorAll('select')).toHaveLength(1)
+    }
+  })
+})
+
+describe('PipelinePage janela de leads', () => {
+  it('avisa que só os primeiros 500 aparecem quando a consulta enche a página', async () => {
+    const many = Array.from({ length: PAGE_SIZE }, (_, index) => makeLead({
+      id: `muitos-${index}`,
+      name: `Estabelecimento ${index + 1}`,
+      status: LEAD_STATUSES[index % LEAD_STATUSES.length],
+      city: 'São Paulo',
+      score: PAGE_SIZE - index,
+    }))
+    mockLeads(many, 512)
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    const hint = screen.getByRole('status', { name: 'Janela do pipeline' })
+    expect(hint.textContent).toBe('Mostrando os primeiros 500 leads; há 512 no pipeline. Ajuste os filtros para reduzir a lista.')
+    // As contagens por coluna somam exatamente o que foi listado, não o total.
+    const listed = LEAD_STATUSES.reduce((sum, status) => sum + columnCount(status), 0)
+    expect(listed).toBe(PAGE_SIZE)
+    expect(screen.getByRole('option', { name: `Novo (${columnCount('novo')})` })).toBeTruthy()
+  })
+
+  it('não fala de janela quando a consulta devolve menos que a página', async () => {
+    mockLeads([barbearia, pizzaria], 2)
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    expect(screen.queryByRole('status', { name: 'Janela do pipeline' })).toBeNull()
+  })
+})
+
+describe('PipelinePage carregando, erro e vazio', () => {
+  it('mostra skeletons enquanto consulta e nunca um pipeline vazio em trânsito', async () => {
+    let resolveList!: (value: { leads: Lead[]; total: number }) => void
+    vi.mocked(listLeads).mockReturnValue(new Promise((resolve) => { resolveList = resolve }))
+    const { container } = renderPage()
+
+    expect(screen.queryByRole('group')).toBeNull()
+    expect(screen.queryByText('Pipeline vazio')).toBeNull()
+    expect(container.querySelectorAll('.animate-pulse')).toHaveLength(4)
+
+    await act(async () => {
+      resolveList({ leads: PIPELINE_LEADS, total: PIPELINE_LEADS.length })
+    })
+
+    expect(screen.getByRole('group', { name: STATUS_LABELS.novo })).toBeTruthy()
+    expect(container.querySelectorAll('.animate-pulse')).toHaveLength(0)
+  })
+
+  it('mostra o erro da consulta em vez de afirmar que o pipeline está vazio', async () => {
+    vi.mocked(listLeads).mockRejectedValue(new Error('Falha de conexão com o Supabase. Verifique sua internet.'))
+    renderPage()
+    const alert = await screen.findByRole('alert')
+
+    expect(alert.textContent).toContain('Falha de conexão com o Supabase')
+    expect(screen.getByRole('button', { name: 'Tentar novamente' })).toBeTruthy()
+    expect(screen.queryByText('Pipeline vazio')).toBeNull()
+    expect(screen.queryAllByRole('group')).toHaveLength(0)
+    expect(queries().length).toBe(1)
+
+    // Recuperar: a mesma consulta sai do erro e o quadro volta.
+    mockLeads(PIPELINE_LEADS)
+    fireEvent.click(screen.getByRole('button', { name: 'Tentar novamente' }))
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(queries().length).toBe(2)
+  })
+
+  it('explica o pipeline vazio quando a consulta realmente não devolve lead', async () => {
+    mockLeads([])
+    const { container } = renderPage()
+    await screen.findByRole('heading', { name: 'Pipeline vazio' })
+
+    expect(screen.getByText(/Cada coluna representa um status comercial/)).toBeTruthy()
+    expect(screen.queryByText('Nenhum lead com esses filtros')).toBeNull()
+    expect(container.querySelectorAll('a button, a a')).toHaveLength(0)
+  })
+
+  it('troca para o estado vazio filtrado e limpa os filtros', async () => {
+    mockLeads([])
+    renderPage()
+    await screen.findByRole('heading', { name: 'Pipeline vazio' })
+
+    fireEvent.change(screen.getByLabelText('Nicho'), { target: { value: 'pizzaria' } })
+    await screen.findByRole('heading', { name: 'Nenhum lead com esses filtros' })
+
+    // Resultado filtrado vazio não prova que não há leads cadastrados.
+    expect(screen.queryByText(/Cada coluna representa um status comercial/)).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Limpar filtros' }))
+    await waitFor(() => expect(lastQuery()).toEqual([{}, 'score_desc', 0, PAGE_SIZE]))
+    expect((screen.getByLabelText('Nicho') as HTMLSelectElement).value).toBe('')
+    await screen.findByRole('heading', { name: 'Pipeline vazio' })
+  })
+})
+
+describe('KanbanCard corpo e wrapper', () => {
+  it('o corpo rendera isolado, sem DndContext e sem registrar arraste', () => {
+    const { container } = render(
+      <MemoryRouter>
+        <KanbanCardBody lead={barbearia} />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByRole('link', { name: barbearia.name })).toBeTruthy()
+    // NBSP do formatBRL: o texto do card é comparado cru, não pelo normalizador de matcher.
+    const root = container.firstElementChild as HTMLElement
+    expect(root.textContent).toContain(formatBRL(barbearia.estimated_value))
+    expect(root.textContent).toContain('(11) 99999-0001')
+    expect(root.textContent).toContain('Barbearia')
+    expect(container.querySelector('[aria-roledescription]')).toBeNull()
+    // Sem contexto de arraste, o card mobile não finge ser arrastável nem bloqueia o scroll.
+    expect(root.className).not.toContain('touch-none')
+    expect(root.className).not.toContain('cursor-grab')
+  })
+
+  it('o wrapper dentro de DndContext é o único que anexa os atributos de arraste', () => {
+    const { container } = render(
+      <MemoryRouter>
+        <DndContext>
+          <KanbanCard lead={barbearia} />
+        </DndContext>
+      </MemoryRouter>,
+    )
+
+    const root = container.firstElementChild as HTMLElement
+    expect(root.getAttribute('aria-roledescription')).toBe('draggable')
+    expect(root.getAttribute('aria-describedby')).toBeTruthy()
+    expect(root.className).toContain('cursor-grab')
+    expect(root.className).toContain('touch-none')
+    // Mesma apresentação do corpo: link para a ficha continua lá.
+    expect(root.querySelector('a')?.getAttribute('href')).toBe(`/leads/${barbearia.id}`)
+  })
+})
