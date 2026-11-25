@@ -2,9 +2,11 @@
 
 CRM profissional construído por etapas, 100% em planos gratuitos.
 
-**Etapa atual: 2 — Leads / Prospecção** (lista com filtros e paginação, ficha do lead,
-checklist de presença digital, oportunidade e valores, timeline, follow-ups, WhatsApp
-manual e importação/exportação CSV).
+**Etapa atual: 2 (em andamento) — Plano 2 concluído: Leads / Prospecção** (lista com filtros
+e paginação, ficha do lead, checklist de presença digital, oportunidade e valores,
+timeline, follow-ups, WhatsApp manual e importação/exportação CSV).
+O **Plano 3** da mesma etapa — Oportunidades, Pipeline Kanban, página de Follow-ups,
+Dashboard com gráficos e Configurações — ainda não foi iniciado e depende de autorização.
 Módulos de Projetos e Financeiro serão implementados nas próximas etapas.
 
 ## Stack
@@ -118,6 +120,8 @@ Rotas: `/login` (pública) · `/status` (pública, diagnóstico) · `/` (protegi
 | Etapa | Escopo | Status |
 | ----- | ------ | ------ |
 | 1 | Fundação, auth, Supabase, deploy | ✅ concluída |
-| 2 | Leads / prospecção | ✅ concluída |
-| 3 | Projetos | aguardando autorização |
+| 2 · Plano 1 | Fundação do CRM: vitest, migration `0002`, types, services, kit UI, sidebar | ✅ concluída |
+| 2 · Plano 2 | Leads / prospecção: lista, ficha, follow-ups, WhatsApp, CSV | ✅ concluída |
+| 2 · Plano 3 | Oportunidades, pipeline Kanban, follow-ups, dashboard, configurações | aguardando autorização |
+| 3 | Projetos | planejada |
 | 4 | Financeiro | planejada |
