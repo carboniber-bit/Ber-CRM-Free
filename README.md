@@ -2,8 +2,10 @@
 
 CRM profissional construído por etapas, 100% em planos gratuitos.
 
-**Etapa atual: 1 — Fundação** (estrutura, autenticação, conexão Supabase e deploy).
-Módulos de Leads, Projetos e Financeiro serão implementados nas próximas etapas.
+**Etapa atual: 2 — Leads / Prospecção** (lista com filtros e paginação, ficha do lead,
+checklist de presença digital, oportunidade e valores, timeline, follow-ups, WhatsApp
+manual e importação/exportação CSV).
+Módulos de Projetos e Financeiro serão implementados nas próximas etapas.
 
 ## Stack
 
@@ -11,7 +13,7 @@ Módulos de Leads, Projetos e Financeiro serão implementados nas próximas etap
 - Tailwind CSS v4
 - React Router v7
 - Supabase Free (PostgreSQL + Auth)
-- Lucide Icons · Fonte Outfit
+- Lucide Icons · Montserrat (títulos) + Roboto (texto)
 - Deploy: Vercel Hobby + GitHub
 
 ## Execução local
@@ -29,6 +31,7 @@ em modo diagnóstico: a página `/status` mostra o que falta configurar.
 Outros comandos:
 
 ```bash
+npm test          # testes unitários (Vitest)
 npm run build     # typecheck + build de produção (dist/)
 npm run preview   # serve o build localmente
 npm run lint      # lint
@@ -73,20 +76,28 @@ Projeto Supabase: `nuzjlizqdldhygsliwwc`
 
 ```
 src/
-  components/   UI base (Button, Input, Card, StatusDot…) + AuthProvider + ErrorBoundary
-  pages/        LoginPage, DashboardPage, StatusPage, NotFoundPage
-  layouts/      AuthLayout (login) e AppLayout (app autenticado)
-  hooks/        useAuth
-  services/     authService (login/logout, tradução de erros)
-  lib/          supabase.ts (cliente único, lê variáveis de ambiente)
-  types/        Profile
-  utils/        helpers
-  routes/       AppRoutes + ProtectedRoute
+  components/
+    ui/           Button, Input, Card, Modal, Toast, StatusBadge, PresenceBadge, ScoreBar…
+    auth/         telas de autenticação
+    leads/        LeadForm, LeadFiltersBar, LeadChecklist, OpportunityPanel, LeadTimeline,
+                  LeadFollowups, FollowupDialog, ContactDialog, WhatsAppDialog, CsvImportModal
+  pages/          LoginPage, DashboardPage, StatusPage, NotFoundPage,
+                  LeadsPage, LeadNewPage, LeadDetailPage, LeadEditPage
+  layouts/        AuthLayout (login) e AppLayout (app autenticado, sidebar + drawer mobile)
+  hooks/          useAuth, useToast
+  services/       authService, leadService, activityService, followupService,
+                  digitalCheckService, settingsService
+  lib/            supabase.ts (cliente único), db.ts, csv.ts, format.ts, leadForm.ts,
+                  opportunity.ts, whatsapp.ts (+ testes próprios)
+  types/          Profile, Lead, Activity, Followup, Check, Settings
+  utils/          helpers
+  routes/         AppRoutes + ProtectedRoute
 supabase/
   migrations/   0001–0005 (profiles, leads, CRM, duplicidades e follow-ups atômicos)
 ```
 
-Rotas: `/login` (pública) · `/status` (pública, diagnóstico) · `/` (protegida) · 404.
+Rotas: `/login` (pública) · `/status` (pública, diagnóstico) · `/` (protegida) ·
+`/leads` · `/leads/novo` · `/leads/:id` · `/leads/:id/editar` · 404.
 
 ## Deploy na Vercel (plano Hobby, gratuito)
 
@@ -107,6 +118,6 @@ Rotas: `/login` (pública) · `/status` (pública, diagnóstico) · `/` (protegi
 | Etapa | Escopo | Status |
 | ----- | ------ | ------ |
 | 1 | Fundação, auth, Supabase, deploy | ✅ concluída |
-| 2 | Leads / prospecção | aguardando autorização |
-| 3 | Projetos | planejada |
+| 2 | Leads / prospecção | ✅ concluída |
+| 3 | Projetos | aguardando autorização |
 | 4 | Financeiro | planejada |

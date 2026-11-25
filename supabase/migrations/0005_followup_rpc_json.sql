@@ -1,3 +1,5 @@
+-- Substitui os RPCs criados pela 0004: `returns jsonb` faz um `return null` virar
+-- JSON null de verdade, em vez de um objeto com todos os campos nulos.
 begin;
 
 drop function if exists public.create_lead_followup(uuid, timestamp with time zone, text, text);
@@ -120,6 +122,9 @@ $$;
 revoke all on function public.create_lead_followup(uuid, timestamp with time zone, text, text) from public;
 revoke all on function public.complete_lead_followup(uuid, text) from public;
 revoke all on function public.cancel_lead_followup(uuid) from public;
+revoke all on function public.create_lead_followup(uuid, timestamp with time zone, text, text) from anon, service_role;
+revoke all on function public.complete_lead_followup(uuid, text) from anon, service_role;
+revoke all on function public.cancel_lead_followup(uuid) from anon, service_role;
 
 grant execute on function public.create_lead_followup(uuid, timestamp with time zone, text, text) to authenticated;
 grant execute on function public.complete_lead_followup(uuid, text) to authenticated;

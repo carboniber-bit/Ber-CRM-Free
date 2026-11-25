@@ -100,6 +100,10 @@ create trigger lead_followups_log_completion
 after update of status on public.lead_followups
 for each row execute function public.log_followup_completion();
 
+-- ATENÇÃO: as três funções abaixo foram substituídas pela migration 0005, que as
+-- recria com `returns jsonb`. A assinatura `returns public.lead_followups` serializa
+-- um `return null` como um objeto JSON com todos os campos nulos, o que o frontend
+-- interpretaria como sucesso. Estas definições só valem até a 0005 ser aplicada.
 create or replace function public.create_lead_followup(
   p_lead_id uuid,
   p_due_at timestamptz,
