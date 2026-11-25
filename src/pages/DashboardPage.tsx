@@ -42,7 +42,7 @@ const UNKNOWN_LEAD_NAME = 'Nome do lead não carregado'
 
 // Ação rápida é navegação, não botão: `<a>` com classes de botão em vez de `<button>` dentro do
 // `Link` (o kit compartilhado não tem API `asChild`).
-const ACTION_BASE = 'inline-flex h-10 items-center justify-center gap-2 rounded-xl px-4 text-sm font-medium transition-colors'
+const ACTION_BASE = 'inline-flex h-10 items-center justify-center gap-2 rounded-xl px-4 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent'
 const ACTION_VARIANTS = {
   mint: 'bg-mint text-bg hover:bg-mint/85',
   outline: 'border border-line bg-surface text-ink hover:bg-elevated',
@@ -73,6 +73,8 @@ export function DashboardPage() {
       (result) => {
         if (!active) return
         setData(result)
+        // Uma carga lenta não pode nascer com o relógio do início da requisição.
+        setNow(Date.now())
         setError(null)
         setLoading(false)
       },
@@ -94,8 +96,8 @@ export function DashboardPage() {
   }
 
   const indicators = useMemo(
-    () => (data ? computeIndicators(data.leads, data.followups) : null),
-    [data],
+    () => (data ? computeIndicators(data.leads, data.followups, now) : null),
+    [data, now],
   )
   // As séries agregam sobre até 1000 linhas: memos para a página não recontar a cada tecla do
   // relógio de render. `countBy(leads, 'priority')` é calculado uma vez e serve às barras e às
@@ -123,9 +125,7 @@ export function DashboardPage() {
     [data],
   )
   const statusChanges = useMemo(
-    () => (data ? data.recentActivities
-      .filter((activity) => activity.type === 'mudanca_status')
-      .slice(0, STATUS_CHANGE_LIMIT) : []),
+    () => (data ? data.recentStatusChanges.slice(0, STATUS_CHANGE_LIMIT) : []),
     [data],
   )
 
@@ -133,6 +133,10 @@ export function DashboardPage() {
     return (
       <div className="flex flex-col gap-5">
         <span role="status" className="sr-only">Carregando dashboard…</span>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h1 className="font-display text-xl font-bold text-ink">Dashboard</h1>
+          <Button variant="outline" onClick={reload}><RefreshCw className="h-4 w-4" /> Atualizar</Button>
+        </div>
         <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
           {Array.from({ length: 10 }, (_, index) => <Skeleton key={index} className="h-24" />)}
         </div>
@@ -149,12 +153,18 @@ export function DashboardPage() {
     )
   }
 
+  const hasAnyData = data.leads.length > 0
+    || data.followups.length > 0
+    || data.recentActivities.length > 0
+    || data.recentStatusChanges.length > 0
+    || data.recentLeads.length > 0
+
   // Frase montada como string (não como texto JSX espalhado) para que a quebra de linha do
   // código não insira espaço antes do ';' nem do '.' no aviso de janela de leads.
   const windowNote = data.leads.length === DASHBOARD_LEAD_WINDOW
-    ? `Indicadores e gráficos calculados sobre os ${DASHBOARD_LEAD_WINDOW} leads mais recentes${
+    ? `Os indicadores de leads (exceto o total) e os gráficos são calculados sobre os ${DASHBOARD_LEAD_WINDOW} leads mais recentes${
         data.totalLeads > DASHBOARD_LEAD_WINDOW ? `; há ${data.totalLeads} leads no total` : ''
-      }. Afine a lista nas páginas de Leads e de Oportunidades.`
+      }. As contagens de follow-ups usam todos os follow-ups carregados. Afine a lista nas páginas de Leads e de Oportunidades.`
     : null
 
   return (
@@ -174,7 +184,7 @@ export function DashboardPage() {
         <Link to="/followups" className={actionClass('outline')}><CalendarClock className="h-4 w-4" /> Ver follow-ups</Link>
       </nav>
 
-      {data.leads.length === 0 ? (
+      {!hasAnyData ? (
         <EmptyState
           icon={Users}
           title="Seu CRM está pronto para começar"
@@ -188,7 +198,7 @@ export function DashboardPage() {
       ) : (
         <>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
-            <IndicatorCard label="Total de leads" value={indicators.totalLeads} icon={Users} />
+            <IndicatorCard label="Total de leads" value={data.totalLeads} icon={Users} />
             <IndicatorCard label="Novos" value={indicators.novos} icon={UserPlus} tone="accent" />
             <IndicatorCard label="Contatados" value={indicators.contatados} icon={MessageSquare} tone="accent" />
             <IndicatorCard label="Interessados" value={indicators.interessados} icon={TrendingUp} tone="primary" />
@@ -305,7 +315,7 @@ export function DashboardPage() {
           <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
             <Card title="Últimos leads cadastrados" dot="mint">
               {data.recentLeads.length === 0 ? (
-                <p className="text-sm text-muted">Nenhum lead cadastrado ainda.</p>
+                <p className="text-sm text-muted">Nenhum lead recente carregado.</p>
               ) : (
                 <ul className="flex flex-col gap-2" aria-label="Últimos leads cadastrados">
                   {data.recentLeads.map((lead) => (
@@ -321,7 +331,7 @@ export function DashboardPage() {
             </Card>
             <Card title="Atividades recentes" dot="pink">
               {activities.length === 0 ? (
-                <p className="text-sm text-muted">Nenhuma atividade registrada ainda.</p>
+                <p className="text-sm text-muted">Nenhuma atividade recente carregada.</p>
               ) : (
                 <ul className="flex flex-col gap-2" aria-label="Atividades recentes">
                   {activities.map((activity) => (
@@ -342,10 +352,7 @@ export function DashboardPage() {
             </Card>
             <Card title="Mudanças de status recentes" dot="accent">
               {statusChanges.length === 0 ? (
-                <p className="text-sm text-muted">
-                  Nenhuma mudança de status entre as atividades recentes. Mover um lead no pipeline
-                  registra a mudança aqui.
-                </p>
+                <p className="text-sm text-muted">Nenhuma mudança de status recente carregada.</p>
               ) : (
                 <ul className="flex flex-col gap-2" aria-label="Mudanças de status recentes">
                   {statusChanges.map((activity) => (

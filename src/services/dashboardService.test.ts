@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as activityService from './activityService'
 import { listRecentActivities } from './activityService'
 import { listFollowups } from './followupService'
 import { listLeads, listRecentLeads } from './leadService'
@@ -7,7 +8,10 @@ import { emptyLeadDraft, type Lead } from '../types/lead'
 import type { Followup } from '../types/followup'
 import type { Activity } from '../types/activity'
 
-vi.mock('./activityService', () => ({ listRecentActivities: vi.fn() }))
+vi.mock('./activityService', () => ({
+  listRecentActivities: vi.fn(),
+  listRecentStatusChanges: vi.fn(),
+}))
 vi.mock('./followupService', () => ({ listFollowups: vi.fn() }))
 vi.mock('./leadService', () => ({ listLeads: vi.fn(), listRecentLeads: vi.fn() }))
 
@@ -45,11 +49,19 @@ const activity = {
   id: 'act-1',
   lead_id: 'l-1',
   owner_id: 'owner',
-  type: 'mudanca_status',
-  description: 'Status alterado para Negociando.',
+  type: 'observacao',
+  description: 'Observação registrada.',
   user_id: null,
   created_at: '2026-11-25T09:00:00.000Z',
   leadName: 'Barbearia do Bairro',
+} satisfies Activity & { leadName: string }
+
+const statusChange = {
+  ...activity,
+  id: 'status-1',
+  type: 'mudanca_status',
+  description: 'Status alterado para Negociando.',
+  created_at: '2026-11-25T10:00:00.000Z',
 } satisfies Activity & { leadName: string }
 
 beforeEach(() => {
@@ -57,27 +69,46 @@ beforeEach(() => {
   vi.mocked(listLeads).mockResolvedValue({ leads: [lead('l-1'), lead('l-2')], total: 2 })
   vi.mocked(listFollowups).mockResolvedValue([followup])
   vi.mocked(listRecentActivities).mockResolvedValue([activity])
+  vi.mocked(activityService.listRecentStatusChanges).mockResolvedValue([statusChange])
   vi.mocked(listRecentLeads).mockResolvedValue([lead('l-2')])
 })
 
 describe('getDashboardData', () => {
-  it('faz as quatro consultas que a página precisa, com os limites da tier free', async () => {
-    await getDashboardData()
+  it('inicia as cinco consultas em paralelo com os limites e a ordem exigidos', async () => {
+    const request = getDashboardData()
 
+    // Promise.all inicia todas antes de qualquer resposta: nenhuma consulta espera a anterior.
+    expect(listLeads).toHaveBeenCalledTimes(1)
+    expect(listFollowups).toHaveBeenCalledTimes(1)
+    expect(listRecentActivities).toHaveBeenCalledTimes(1)
+    expect(activityService.listRecentStatusChanges).toHaveBeenCalledTimes(1)
+    expect(listRecentLeads).toHaveBeenCalledTimes(1)
     // 'all' nos follow-ups: o painel de pendentes/atrasados filtra no cliente (computeIndicators).
     expect(listLeads).toHaveBeenCalledWith({}, 'created_desc', 0, DASHBOARD_LEAD_WINDOW)
     expect(listFollowups).toHaveBeenCalledWith('all')
-    expect(listRecentActivities).toHaveBeenCalledWith(12)
+    expect(listRecentActivities).toHaveBeenCalledWith(8)
+    expect(activityService.listRecentStatusChanges).toHaveBeenCalledWith(5)
     expect(listRecentLeads).toHaveBeenCalledWith(5)
     expect(DASHBOARD_LEAD_WINDOW).toBe(1000)
+    const startOrder = [
+      vi.mocked(listLeads).mock.invocationCallOrder[0],
+      vi.mocked(listFollowups).mock.invocationCallOrder[0],
+      vi.mocked(listRecentActivities).mock.invocationCallOrder[0],
+      vi.mocked(activityService.listRecentStatusChanges).mock.invocationCallOrder[0],
+      vi.mocked(listRecentLeads).mock.invocationCallOrder[0],
+    ]
+    expect(startOrder).toEqual([...startOrder].sort((a, b) => a - b))
+
+    await request
   })
 
-  it('devolve as quatro fontes juntas na forma que a página lê', async () => {
+  it('devolve as cinco fontes juntas na forma que a página lê', async () => {
     await expect(getDashboardData()).resolves.toEqual({
       leads: [lead('l-1'), lead('l-2')],
       totalLeads: 2,
       followups: [followup],
       recentActivities: [activity],
+      recentStatusChanges: [statusChange],
       recentLeads: [lead('l-2')],
     })
   })
@@ -94,11 +125,12 @@ describe('getDashboardData', () => {
     expect(result.totalLeads).toBe(1042)
   })
 
-  it('falha em qualquer uma das quatro derruba a carga inteira, sem painel pela metade', async () => {
+  it('falha em qualquer uma das cinco derruba a carga inteira, sem painel pela metade', async () => {
     vi.mocked(listFollowups).mockRejectedValue(new Error('Falha de conexão com o Supabase.'))
 
     await expect(getDashboardData()).rejects.toThrow('Falha de conexão com o Supabase.')
     expect(listRecentActivities).toHaveBeenCalledTimes(1)
+    expect(activityService.listRecentStatusChanges).toHaveBeenCalledTimes(1)
   })
 
   it('cada chamada é uma carga nova: nada é cacheado entre atualizações', async () => {
@@ -107,5 +139,6 @@ describe('getDashboardData', () => {
 
     expect(listLeads).toHaveBeenCalledTimes(2)
     expect(listRecentActivities).toHaveBeenCalledTimes(2)
+    expect(activityService.listRecentStatusChanges).toHaveBeenCalledTimes(2)
   })
 })

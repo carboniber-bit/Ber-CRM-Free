@@ -21,8 +21,11 @@ export interface DashboardIndicators {
 // Fonte única de verdade do grupo "contato realizado" (src/types/lead.ts).
 const CONTATADOS: LeadStatus[] = situationStatuses('contato_realizado')
 
-export function computeIndicators(leads: Lead[], followups: Followup[]): DashboardIndicators {
-  const now = Date.now()
+export function computeIndicators(
+  leads: Lead[],
+  followups: Followup[],
+  now = Date.now(),
+): DashboardIndicators {
   const opportunities = leads.filter(isEligibleOpportunity)
   const pending = followups.filter((f) => f.status === 'pendente')
   return {

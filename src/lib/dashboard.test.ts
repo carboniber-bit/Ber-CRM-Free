@@ -54,6 +54,15 @@ describe('computeIndicators', () => {
     expect(i.followupsAtrasados).toBe(1)
   })
 
+  it('usa o timestamp explícito para decidir atraso sem ler o relógio interno', () => {
+    const dueAt = '2020-01-01T00:00:00.000Z'
+    const pending = [followup({ due_at: dueAt })]
+
+    expect(computeIndicators([], pending, Date.parse('2019-12-31T23:59:59.999Z')).followupsAtrasados).toBe(0)
+    expect(computeIndicators([], pending, Date.parse(dueAt)).followupsAtrasados).toBe(0)
+    expect(computeIndicators([], pending, Date.parse('2020-01-01T00:00:00.001Z')).followupsAtrasados).toBe(1)
+  })
+
   it('trata os três status de contato como contatados', () => {
     const leads = [
       lead({ status: 'contato_realizado' }),

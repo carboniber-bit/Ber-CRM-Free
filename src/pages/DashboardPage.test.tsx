@@ -9,6 +9,27 @@ import type { Activity } from '../types/activity'
 import type { Followup } from '../types/followup'
 import { DashboardPage } from './DashboardPage'
 
+const { stateUpdates } = vi.hoisted(() => ({ stateUpdates: vi.fn() }))
+
+// React 19 não emite mais aviso ao chamar setState depois do unmount. O wrapper preserva o hook
+// real e apenas registra setters para que a proteção contra atualização após o unmount seja testável.
+vi.mock('react', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react')>()
+  const realUseState = actual.useState
+  return {
+    ...actual,
+    useState: ((...args: Parameters<typeof actual.useState>) => {
+      const [state, setState] = (realUseState as (...values: unknown[]) => [
+        unknown, (value: unknown) => void,
+      ])(...args)
+      return [state, (value: unknown) => {
+        stateUpdates(value)
+        return setState(value)
+      }]
+    }) as typeof actual.useState,
+  }
+})
+
 vi.mock('../services/dashboardService', () => ({
   // A página lê o limite da janela do service para escrever o aviso: o mock precisa expor a chave.
   DASHBOARD_LEAD_WINDOW: 1000,
@@ -27,6 +48,11 @@ vi.mock('recharts', () => {
     dataKey?: string
     fill?: string
     stroke?: string
+    strokeDasharray?: string
+    fontSize?: number
+    type?: string
+    allowDecimals?: boolean
+    contentStyle?: Record<string, unknown>
   }
   function Container({ children }: StubProps) {
     return <div className="chart-box">{children}</div>
@@ -48,8 +74,29 @@ vi.mock('recharts', () => {
   function CellStub({ fill }: StubProps) {
     return <i data-testid="cell" data-fill={fill} />
   }
-  function Nothing() {
-    return null
+  function GridStub({ stroke, strokeDasharray }: StubProps) {
+    return <span data-testid="grid" data-stroke={stroke} data-stroke-dasharray={strokeDasharray} />
+  }
+  function AxisStub({ axis, stroke, fontSize, type, dataKey, allowDecimals }: StubProps & { axis: 'x' | 'y' }) {
+    return (
+      <span
+        data-testid={`${axis}-axis`}
+        data-stroke={stroke}
+        data-fontsize={fontSize}
+        data-type={type}
+        data-datakey={dataKey}
+        data-allow-decimals={allowDecimals}
+      />
+    )
+  }
+  function XAxisStub(props: StubProps) {
+    return <AxisStub {...props} axis="x" />
+  }
+  function YAxisStub(props: StubProps) {
+    return <AxisStub {...props} axis="y" />
+  }
+  function TooltipStub({ contentStyle }: StubProps) {
+    return <span data-testid="tooltip" data-content-style={JSON.stringify(contentStyle)} />
   }
   return {
     ResponsiveContainer: Container,
@@ -58,10 +105,10 @@ vi.mock('recharts', () => {
     BarChart: Chart,
     Bar: Series,
     Cell: CellStub,
-    CartesianGrid: Nothing,
-    Tooltip: Nothing,
-    XAxis: Nothing,
-    YAxis: Nothing,
+    CartesianGrid: GridStub,
+    Tooltip: TooltipStub,
+    XAxis: XAxisStub,
+    YAxis: YAxisStub,
   }
 })
 
@@ -169,8 +216,8 @@ const FOLLOWUPS = [
   makeFollowup({ id: 'fu-7', lead_id: 'lead-1', due_at: offset(-2 * DAY), status: 'concluido' }),
 ]
 
-// 12 atividades: as 8 primeiras vão para "Atividades recentes"; 7 são mudança de status e só 5
-// cabem no painel próprio — os dois painéis saem do MESMO payload.
+// 12 atividades no fixture para provar o corte defensivo em 8 linhas. As mudanças de status do
+// painel próprio vêm de uma fonte independente, com descrições que não existem neste payload.
 const ACTIVITIES: Array<Activity & { leadName: string }> = [
   makeActivity({ id: 'act-1', type: 'mudanca_status', description: 'Mudança 1', lead_id: 'lead-1', leadName: barbearia.name }),
   makeActivity({ id: 'act-2', type: 'ligacao', description: 'Ligação 1', lead_id: 'lead-2', leadName: pizzaria.name }),
@@ -186,17 +233,33 @@ const ACTIVITIES: Array<Activity & { leadName: string }> = [
   makeActivity({ id: 'act-12', type: 'proposta', description: 'Proposta 1', lead_id: 'lead-6', leadName: cafeteria.name }),
 ]
 
+const STATUS_CHANGES: Array<Activity & { leadName: string }> = Array.from({ length: 7 }, (_, index) => (
+  makeActivity({
+    id: `status-${index + 1}`,
+    type: 'mudanca_status',
+    description: `Mudança dedicada ${index + 1}`,
+    lead_id: barbearia.id,
+    leadName: barbearia.name,
+    created_at: new Date(NOW.getTime() - index * HOUR).toISOString(),
+  })
+))
+
 const RECENT_LEADS = [cafeteria, barbearia2, barbearia, pizzaria, salao]
 
-function mockData(overrides: Partial<DashboardData> = {}) {
-  vi.mocked(getDashboardData).mockResolvedValue({
+function dashboardData(overrides: Partial<DashboardData> = {}): DashboardData {
+  return {
     leads: LEADS,
     totalLeads: LEADS.length,
     followups: FOLLOWUPS,
     recentActivities: ACTIVITIES,
+    recentStatusChanges: STATUS_CHANGES,
     recentLeads: RECENT_LEADS,
     ...overrides,
-  })
+  }
+}
+
+function mockData(overrides: Partial<DashboardData> = {}) {
+  vi.mocked(getDashboardData).mockResolvedValue(dashboardData(overrides))
 }
 
 async function settle() {
@@ -205,6 +268,16 @@ async function settle() {
   for (let i = 0; i < 8; i += 1) {
     await act(async () => { await Promise.resolve() })
   }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
 }
 
 function renderPage() {
@@ -273,7 +346,9 @@ afterEach(() => {
 
 beforeEach(() => {
   seq = 0
-  vi.clearAllMocks()
+  // Também descarta promessas/reações deixadas por um teste que falhou antes de consumir o mock.
+  vi.resetAllMocks()
+  stateUpdates.mockClear()
   vi.useFakeTimers()
   vi.setSystemTime(NOW)
   consoleError = vi.spyOn(console, 'error')
@@ -298,6 +373,92 @@ describe('DashboardPage estados da carga', () => {
     await renderLoaded()
 
     expect(getDashboardData).toHaveBeenCalledTimes(1)
+  })
+
+  it('sincroniza o relógio quando uma carga lenta termina', async () => {
+    const request = deferred<DashboardData>()
+    vi.mocked(getDashboardData).mockReturnValue(request.promise)
+    renderPage()
+
+    // setSystemTime simula o tempo passando sem disparar o intervalo de 60 s.
+    vi.setSystemTime(new Date(NOW.getTime() + 2 * HOUR))
+    await act(async () => {
+      request.resolve(dashboardData({
+        followups: [makeFollowup({ id: 'fu-carga-lenta', lead_id: 'lead-1', due_at: offset(HOUR / 2) })],
+      }))
+    })
+    await settle()
+
+    expect(indicatorValue('Follow-ups atrasados')).toBe('1')
+    expect(followupRows()[0].querySelector('time')?.textContent).toContain('· atrasado')
+  })
+
+  it('carga B resolve antes de A e a resposta obsoleta não sobrescreve B', async () => {
+    const loadA = deferred<DashboardData>()
+    const loadB = deferred<DashboardData>()
+    vi.mocked(getDashboardData)
+      .mockReturnValueOnce(loadA.promise)
+      .mockReturnValueOnce(loadB.promise)
+    renderPage()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Atualizar' }))
+    expect(getDashboardData).toHaveBeenCalledTimes(2)
+
+    const dataB = dashboardData({
+      leads: [barbearia, pizzaria], totalLeads: 2, followups: [], recentActivities: [],
+      recentStatusChanges: [], recentLeads: [barbearia, pizzaria],
+    })
+    await act(async () => { loadB.resolve(dataB) })
+    await settle()
+    expect(indicatorValue('Total de leads')).toBe('2')
+
+    const dataA = dashboardData({
+      leads: [salao], totalLeads: 1, followups: [], recentActivities: [],
+      recentStatusChanges: [], recentLeads: [salao],
+    })
+    await act(async () => { loadA.resolve(dataA) })
+    await settle()
+
+    expect(indicatorValue('Total de leads')).toBe('2')
+    expect(screen.getByText(barbearia.name)).toBeTruthy()
+    expect(screen.queryByText(salao.name)).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('rejeição de uma carga antiga não derruba a carga nova já resolvida', async () => {
+    const loadA = deferred<DashboardData>()
+    const loadB = deferred<DashboardData>()
+    vi.mocked(getDashboardData)
+      .mockReturnValueOnce(loadA.promise)
+      .mockReturnValueOnce(loadB.promise)
+    renderPage()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Atualizar' }))
+    await act(async () => { loadB.resolve(dashboardData({ totalLeads: 42 })) })
+    await settle()
+    expect(indicatorValue('Total de leads')).toBe('42')
+
+    await act(async () => { loadA.reject(new Error('Falha obsoleta')) })
+    await settle()
+
+    expect(indicatorValue('Total de leads')).toBe('42')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('resolução após unmount não atualiza estado nem emite aviso de console', async () => {
+    const request = deferred<DashboardData>()
+    vi.mocked(getDashboardData).mockReturnValue(request.promise)
+    const { unmount } = renderPage()
+    unmount()
+    stateUpdates.mockClear()
+
+    await act(async () => { request.resolve(dashboardData()) })
+    await settle()
+
+    expect(getDashboardData).toHaveBeenCalledTimes(1)
+    expect(stateUpdates).not.toHaveBeenCalled()
+    expect(consoleError).not.toHaveBeenCalled()
+    expect(consoleWarn).not.toHaveBeenCalled()
   })
 
   it('mostra o erro em vez de afirmar dashboard vazio e o retry chama o service de novo', async () => {
@@ -342,12 +503,13 @@ describe('DashboardPage estados da carga', () => {
     expect(indicatorValue('Total de leads')).toBe('6')
   })
 
-  it('sem lead cadastrado diz isso e não mostra indicador nem gráfico', async () => {
+  it('só mostra o estado global quando todas as cinco fontes estão vazias', async () => {
     const { container } = await renderLoaded({
       leads: [],
       totalLeads: 0,
       followups: [],
       recentActivities: [],
+      recentStatusChanges: [],
       recentLeads: [],
     })
 
@@ -356,13 +518,37 @@ describe('DashboardPage estados da carga', () => {
     expect(screen.queryByRole('group', { name: 'Total de leads' })).toBeNull()
     expect(screen.queryAllByTestId('chart')).toHaveLength(0)
     expect(screen.queryByText('Atividades recentes')).toBeNull()
-    // Nenhum indicador aparece antes do primeiro lead: sem dado, sem número na tela.
+    // Nenhum indicador aparece sem nenhuma fonte: sem dado, sem número na tela.
     expect(screen.queryAllByRole('group')).toHaveLength(0)
     expect(container.textContent).not.toMatch(/lorem/i)
     expect(container.textContent).not.toContain('R$')
     // O CTA é link estilizado: nenhum botão dentro de link.
-    expect(screen.getByRole('link', { name: /Cadastrar primeiro lead/ }).getAttribute('href')).toBe('/leads/novo')
+    const cta = screen.getByRole('link', { name: /Cadastrar primeiro lead/ })
+    expect(cta.getAttribute('href')).toBe('/leads/novo')
+    expect(cta.className).toContain('focus-visible:outline-2')
+    expect(cta.className).toContain('focus-visible:outline-offset-2')
+    expect(cta.className).toContain('focus-visible:outline-accent')
     expect(container.querySelectorAll('a button, a a')).toHaveLength(0)
+  })
+
+  const nonEmptySources: Array<[string, Partial<DashboardData>, string]> = [
+    ['follow-ups', { followups: [makeFollowup({ lead_id: 'lead-fora-da-janela' })] }, UNKNOWN_LEAD_NAME],
+    ['atividades', { recentActivities: [makeActivity({ description: 'Atividade carregada' })] }, 'Observação — Atividade carregada'],
+    ['mudanças de status', { recentStatusChanges: [makeActivity({ type: 'mudanca_status', description: 'Status carregado' })] }, 'Status carregado'],
+    ['leads recentes', { recentLeads: [barbearia] }, barbearia.name],
+  ]
+
+  it.each(nonEmptySources)('mantém o dashboard quando só %s tem dados', async (_source, override, visibleText) => {
+    const { container } = await renderLoaded({
+      leads: [], totalLeads: 0, followups: [], recentActivities: [], recentStatusChanges: [], recentLeads: [],
+      ...override,
+    })
+
+    expect(screen.queryByRole('heading', { name: 'Seu CRM está pronto para começar' })).toBeNull()
+    expect(indicatorValue('Total de leads')).toBe('0')
+    expect(container.querySelectorAll('[data-testid="chart"]')).toHaveLength(5)
+    expect(screen.getByText(visibleText)).toBeTruthy()
+    expect(container.textContent).not.toMatch(/Nenhum dado fictício é exibido aqui/)
   })
 })
 
@@ -394,7 +580,7 @@ describe('DashboardPage indicadores', () => {
 })
 
 describe('DashboardPage janela de leads', () => {
-  it('avisa que tudo é calculado sobre os 1000 mais recentes quando a janela enche', async () => {
+  it('avisa o recorte dos indicadores de leads e gráficos sem esconder o total exato', async () => {
     const windowed = Array.from({ length: LEAD_WINDOW }, (_, index) => makeLead({
       id: `janela-${index}`,
       name: `Lead da janela ${index + 1}`,
@@ -405,11 +591,14 @@ describe('DashboardPage janela de leads', () => {
 
     const hint = screen.getByRole('status')
     expect(hint.textContent).toBe(
-      'Indicadores e gráficos calculados sobre os 1000 leads mais recentes; há 1042 leads no total. '
-      + 'Afine a lista nas páginas de Leads e de Oportunidades.',
+      'Os indicadores de leads (exceto o total) e os gráficos são calculados sobre os 1000 leads '
+      + 'mais recentes; há 1042 leads no total. As contagens de follow-ups usam todos os follow-ups '
+      + 'carregados. Afine a lista nas páginas de Leads e de Oportunidades.',
     )
-    // O cartão mostra a janela carregada; o parágrafo acima é o que diz que o banco tem mais.
-    expect(indicatorValue('Total de leads')).toBe('1000')
+    // O cartão usa o count exato do banco; apenas os derivados de leads usam a janela.
+    expect(indicatorValue('Total de leads')).toBe('1042')
+    expect(indicatorValue('Follow-ups pendentes')).toBe('7')
+    expect(indicatorValue('Follow-ups atrasados')).toBe('1')
     expect(chartRows('Leads cadastrados ao longo do tempo').at(-1)).toEqual({ month: '11/26', total: 1000 })
   })
 
@@ -423,7 +612,8 @@ describe('DashboardPage janela de leads', () => {
     await renderLoaded({ leads: windowed, totalLeads: LEAD_WINDOW })
 
     expect(screen.getByRole('status').textContent).toBe(
-      'Indicadores e gráficos calculados sobre os 1000 leads mais recentes. '
+      'Os indicadores de leads (exceto o total) e os gráficos são calculados sobre os 1000 leads '
+      + 'mais recentes. As contagens de follow-ups usam todos os follow-ups carregados. '
       + 'Afine a lista nas páginas de Leads e de Oportunidades.',
     )
   })
@@ -438,6 +628,36 @@ describe('DashboardPage janela de leads', () => {
 })
 
 describe('DashboardPage gráficos', () => {
+  it('aplica grid, texto dos eixos e tooltip com o estilo mandado em todos os gráficos', async () => {
+    await renderLoaded()
+
+    const titles = [
+      'Leads cadastrados ao longo do tempo',
+      'Leads por nicho',
+      'Leads por status',
+      'Oportunidades por prioridade',
+      'Conversão de leads',
+    ]
+    for (const title of titles) {
+      const chart = chartOf(title)
+      const grid = within(chart).getByTestId('grid')
+      expect(grid.getAttribute('data-stroke')).toBe('#2a2a2a')
+      expect(grid.getAttribute('data-stroke-dasharray')).toBe('3 3')
+      for (const axis of ['x', 'y']) {
+        const element = within(chart).getByTestId(`${axis}-axis`)
+        expect(element.getAttribute('data-stroke')).toBe('#a3a3a3')
+        expect(element.getAttribute('data-fontsize')).toBe('11')
+      }
+      expect(JSON.parse(within(chart).getByTestId('tooltip').getAttribute('data-content-style') ?? '{}')).toEqual({
+        backgroundColor: '#1e1e1e',
+        border: '1px solid #2a2a2a',
+        borderRadius: 12,
+        color: '#fff',
+        fontSize: 12,
+      })
+    }
+  })
+
   it('plota os 6 meses relativos a hoje com os leads de cada mês', async () => {
     await renderLoaded()
 
@@ -575,6 +795,23 @@ describe('DashboardPage próximos follow-ups', () => {
     expect(row.textContent).not.toMatch(/removido|exclu/i)
   })
 
+  it('atualiza KPI e marcador quando um pendente vence sem refetchar os dados', async () => {
+    await renderLoaded({
+      // Vence um segundo antes do tick de 60 s: o relógio compartilhado já passou do vencimento
+      // quando a página renderiza de novo, sem depender de uma nova consulta.
+      followups: [makeFollowup({ id: 'fu-relogio', lead_id: 'lead-1', due_at: offset(HOUR - 1000) })],
+    })
+
+    expect(indicatorValue('Follow-ups atrasados')).toBe('0')
+    expect(followupRows()[0].querySelector('time')?.textContent).not.toContain('atrasado')
+
+    await act(async () => { vi.advanceTimersByTime(HOUR) })
+
+    expect(indicatorValue('Follow-ups atrasados')).toBe('1')
+    expect(followupRows()[0].querySelector('time')?.textContent).toContain('· atrasado')
+    expect(getDashboardData).toHaveBeenCalledTimes(1)
+  })
+
   it('sem follow-up pendente orienta agendar em vez de sumir com o painel', async () => {
     await renderLoaded({ followups: [makeFollowup({ lead_id: 'lead-2', due_at: offset(DAY), status: 'concluido' })] })
 
@@ -597,11 +834,11 @@ describe('DashboardPage atividades e mudanças de status', () => {
     expect(rows[0].getAttribute('href')).toBe(`/leads/${cafeteria.id}`)
   })
 
-  it('painel de últimos leads não fica em branco se a consulta recente vier vazia', async () => {
+  it('painel de últimos leads não fica em branco nem nega leads quando só a consulta recente vem vazia', async () => {
     const { container } = await renderLoaded({ recentLeads: [] })
 
     const panel = card('Últimos leads cadastrados')
-    expect(within(panel).getByText('Nenhum lead cadastrado ainda.')).toBeTruthy()
+    expect(within(panel).getByText('Nenhum lead recente carregado.')).toBeTruthy()
     expect(within(panel).queryAllByRole('listitem')).toHaveLength(0)
     // Os demais painéis seguem com os dados carregados: o painel vazio não derruba a página.
     expect(container.querySelectorAll('a button, a a')).toHaveLength(0)
@@ -621,41 +858,41 @@ describe('DashboardPage atividades e mudanças de status', () => {
     expect(within(panel).getByText(clinica.name)).toBeTruthy()
   })
 
-  it('filtra mudanças de status do mesmo payload, com no máximo 5 linhas', async () => {
+  it('renderiza a fonte dedicada de mudanças de status, com no máximo 5 linhas', async () => {
     const { container } = await renderLoaded()
 
     const panel = card('Mudanças de status recentes')
     const items = within(panel).getAllByRole('listitem')
     expect(items.map((item) => (item.lastElementChild as HTMLElement).textContent)).toEqual([
-      'Mudança 1', 'Mudança 2', 'Mudança 3', 'Mudança 4', 'Mudança 5',
+      'Mudança dedicada 1', 'Mudança dedicada 2', 'Mudança dedicada 3',
+      'Mudança dedicada 4', 'Mudança dedicada 5',
     ])
-    // A 6ª e a 7ª mudanças existem no payload, mas não cabem no painel.
-    expect(within(panel).queryByText('Mudança 6')).toBeNull()
-    expect(within(panel).queryByText('Mudança 7')).toBeNull()
-    // Atividade que não é mudança de status não entra.
+    // A 6ª e a 7ª mudanças existem na fonte dedicada, mas não cabem no painel.
+    expect(within(panel).queryByText('Mudança dedicada 6')).toBeNull()
+    expect(within(panel).queryByText('Mudança dedicada 7')).toBeNull()
+    // O painel não deriva mudanças do payload genérico de atividades.
+    expect(within(panel).queryByText('Mudança 1')).toBeNull()
     expect(within(panel).queryByText('Ligação 1')).toBeNull()
-    // Uma única carga serve os dois painéis: nenhuma segunda consulta foi pedida.
     expect(getDashboardData).toHaveBeenCalledTimes(1)
     expect(container.querySelectorAll('a button, a a')).toHaveLength(0)
   })
 
-  it('sem atividade nenhuma, os dois painéis dizem o que falta sem negar o histórico', async () => {
-    await renderLoaded({ recentActivities: [] })
+  it('fontes de atividade vazias têm copy neutra e independem uma da outra', async () => {
+    await renderLoaded({ recentActivities: [], recentStatusChanges: [] })
 
-    expect(within(card('Atividades recentes')).getByText('Nenhuma atividade registrada ainda.')).toBeTruthy()
-    expect(within(card('Mudanças de status recentes')).getByText(/Nenhuma mudança de status/)).toBeTruthy()
-    expect(screen.getByText(/entre as atividades recentes/)).toBeTruthy()
+    expect(within(card('Atividades recentes')).getByText('Nenhuma atividade recente carregada.')).toBeTruthy()
+    expect(within(card('Mudanças de status recentes')).getByText('Nenhuma mudança de status recente carregada.')).toBeTruthy()
   })
 
-  it('atividade sem lead no join aparece como Lead removido, não como nome inventado', async () => {
-    await renderLoaded({
-      recentActivities: [makeActivity({
-        id: 'act-orfa', type: 'mudanca_status', description: 'Mudança órfã', leadName: 'Lead removido',
-      })],
+  it('atividade sem lead no join informa que o nome não carregou, sem inventar nome', async () => {
+    const orphan = makeActivity({
+      id: 'act-orfa', type: 'mudanca_status', description: 'Mudança órfã', leadName: UNKNOWN_LEAD_NAME,
     })
+    await renderLoaded({ recentActivities: [orphan], recentStatusChanges: [orphan] })
 
-    expect(within(card('Atividades recentes')).getByRole('link', { name: 'Lead removido' }).getAttribute('href'))
+    expect(within(card('Atividades recentes')).getByRole('link', { name: UNKNOWN_LEAD_NAME }).getAttribute('href'))
       .toBe('/leads/lead-1')
+    expect(within(card('Mudanças de status recentes')).getByRole('link', { name: UNKNOWN_LEAD_NAME })).toBeTruthy()
     expect(within(card('Mudanças de status recentes')).getByText('Mudança órfã')).toBeTruthy()
   })
 })
@@ -671,6 +908,11 @@ describe('DashboardPage navegação', () => {
       ['Abrir pipeline', '/pipeline'],
       ['Ver follow-ups', '/followups'],
     ])
+    for (const link of actions) {
+      expect(link.className).toContain('focus-visible:outline-2')
+      expect(link.className).toContain('focus-visible:outline-offset-2')
+      expect(link.className).toContain('focus-visible:outline-accent')
+    }
     expect(container.querySelectorAll('a button, a a')).toHaveLength(0)
     expect(container.querySelectorAll('nav button')).toHaveLength(0)
   })

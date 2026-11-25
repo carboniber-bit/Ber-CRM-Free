@@ -1,6 +1,16 @@
 import { requireSupabase, throwDbError } from '../lib/db'
 import type { Activity, ActivityType } from '../types/activity'
 
+type ActivityWithLeadName = Activity & { leadName: string }
+type ActivityRow = Activity & { leads: { name: string } | null }
+
+const UNKNOWN_LEAD_NAME = 'Nome do lead não carregado'
+
+function mapActivityWithLead(row: ActivityRow): ActivityWithLeadName {
+  const { leads, ...activity } = row
+  return { ...activity, leadName: leads?.name ?? UNKNOWN_LEAD_NAME }
+}
+
 export async function listActivities(leadId: string): Promise<Activity[]> {
   const client = requireSupabase()
   const { data, error } = await client
@@ -15,8 +25,7 @@ export async function listActivities(leadId: string): Promise<Activity[]> {
 /**
  * Atividades mais recentes de todos os leads do usuário, já com o nome do lead vindo pelo join
  * `leads(name)` — o dashboard precisa rotular a linha sem pagar uma segunda consulta de leads.
- * O FK de `lead_activities.lead_id` é `on delete cascade`, então atividade sem lead nomeado não
- * deveria existir; ainda assim o rótulo diz o que falta ('Lead removido') em vez de inventar nome.
+ * Um join sem nome não confirma exclusão: o rótulo informa apenas que o nome não carregou.
  */
 export async function listRecentActivities(limit: number): Promise<Array<Activity & { leadName: string }>> {
   const client = requireSupabase()
@@ -26,10 +35,20 @@ export async function listRecentActivities(limit: number): Promise<Array<Activit
     .order('created_at', { ascending: false })
     .limit(limit)
   throwDbError(error)
-  return (data ?? []).map((row) => {
-    const { leads, ...activity } = row as Activity & { leads: { name: string } | null }
-    return { ...activity, leadName: leads?.name ?? 'Lead removido' }
-  })
+  return (data ?? []).map((row) => mapActivityWithLead(row as ActivityRow))
+}
+
+/** Últimas mudanças de status reais, independentes da janela de atividades genéricas. */
+export async function listRecentStatusChanges(limit: number): Promise<Array<Activity & { leadName: string }>> {
+  const client = requireSupabase()
+  const { data, error } = await client
+    .from('lead_activities')
+    .select('*, leads(name)')
+    .eq('type', 'mudanca_status')
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  throwDbError(error)
+  return (data ?? []).map((row) => mapActivityWithLead(row as ActivityRow))
 }
 
 export async function addActivity(leadId: string, type: ActivityType, description: string): Promise<Activity> {
