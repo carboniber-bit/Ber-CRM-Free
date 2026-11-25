@@ -1,3 +1,4 @@
+import { INELIGIBLE_STATUSES } from '../types/lead'
 import type { Lead, Need, Niche, Priority } from '../types/lead'
 
 export type OpportunityInput = Pick<
@@ -93,4 +94,8 @@ export function computeOpportunity(input: OpportunityInput): OpportunityResult {
 
   score = Math.min(100, score)
   return { score, priority: priorityFromScore(score), needs: [...needs], reasons }
+}
+
+export function isEligibleOpportunity(lead: Pick<Lead, 'needs' | 'status'>): boolean {
+  return lead.needs.length > 0 && !INELIGIBLE_STATUSES.includes(lead.status)
 }
