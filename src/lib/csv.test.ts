@@ -113,6 +113,32 @@ describe('parseLeadsCsv', () => {
   })
 
   it.each([
+    ['R$ 1,500.00', 1500],
+    ['R$1,500.00', 1500],
+    ['R$ 1,500.00', 1500],
+    ['R$ 1,500.5', 1500.5],
+    ['R$ 12,345,678.90', 12345678.9],
+    ['R$ 1500.00', 1500],
+    ['R$ 1500', 1500],
+    ['r$ 1500,50', 1500.5],
+    ['R$ 1.500,00', 1500],
+    ['R$ 0.00', 0],
+  ])('aceita valor com símbolo de moeda exportado de planilha %j', (value, expected) => {
+    const rows = parseLeadsCsv(`nome,valor_estimado\nA,"${value}"`)
+    expect(rows[0].errors).toEqual([])
+    expect(rows[0].draft?.estimated_value).toBe(expected)
+  })
+
+  it.each([
+    'R$', 'R$ ', 'R$ abc', 'R$ 1.500', 'R$ 1,500', 'R$ 1,5000.00', 'R$ 1,50.00',
+    'R$ -1,500.00', 'R$ R$ 1500', 'R$ 10,000,000,000.00',
+  ])('continua rejeitando valor com símbolo de moeda ambíguo ou inválido %j', (value) => {
+    const rows = parseLeadsCsv(`nome,valor_estimado\nA,"${value}"`)
+    expect(rows[0].draft).toBeNull()
+    expect(rows[0].errors.join(' ')).toMatch(/valor_estimado/)
+  })
+
+  it.each([
     '1.500', '1.500.00', '1,500.50', '1,2,3', '1.2,3', '12,34,56',
     '1500.', '.50', ',50', '1500.500', '1.500,500', '1e3', '1E3',
     '-1', '+1', 'NaN', 'Infinity', 'abc', '1 500,00', '10000000000',
