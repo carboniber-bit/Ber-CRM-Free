@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { DndContext } from '@dnd-kit/core'
+import { DndContext, closestCenter, pointerWithin, type CollisionDetection, type DndContextProps, type DragEndEvent, type UniqueIdentifier } from '@dnd-kit/core'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastContext } from '../hooks/useToast'
@@ -13,6 +13,20 @@ import { PipelinePage } from './PipelinePage'
 
 vi.mock('../services/leadService', () => ({ listLeads: vi.fn(), setLeadStatus: vi.fn() }))
 vi.mock('../services/activityService', () => ({ addActivity: vi.fn(), listActivities: vi.fn() }))
+
+// Espia as props do `DndContext` do quadro sem substituí-lo (por dentro renderiza o contexto real,
+// então `useDraggable`/`useDroppable` seguem funcionando). É o único jeito de provar em jsdom a
+// estratégia de colisão efetivamente ligada e o caminho `onDragEnd` → `moveLead`: o arraste em si
+// não tem rects mensuráveis aqui.
+const dnd = vi.hoisted(() => ({ props: null as DndContextProps | null }))
+vi.mock('@dnd-kit/core', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@dnd-kit/core')>()
+  function DndContextSpy(props: DndContextProps) {
+    dnd.props = props
+    return <actual.DndContext {...props} />
+  }
+  return { ...actual, DndContext: DndContextSpy }
+})
 
 const toast = vi.fn()
 const PAGE_SIZE = 500
@@ -119,6 +133,12 @@ function columnFor(status: LeadStatus) {
   return within(screen.getByRole('group', { name: STATUS_LABELS[status] }))
 }
 
+// Cards arrastáveis também são `role="group"` (sem rótulo): as colunas do quadro são os groups
+// nomeados por STATUS_LABELS.
+function columns() {
+  return screen.getAllByRole('group').filter((group) => group.getAttribute('aria-label') !== null)
+}
+
 // A lista mobile é a única `list` do quadro: sem isso o card duplicado pela ramificação
 // desktop/mobile (só CSS) tornaria qualquer consulta de nome ambígua.
 function mobileEntries() {
@@ -161,6 +181,33 @@ function columnCount(status: LeadStatus) {
   return Number(columnFor(status).getByText(/^\d+$/).textContent)
 }
 
+// Termina o arraste do quadro exatamente como o dnd-kit o entregaria ao `onDragEnd` da página:
+// do evento só `active.id` e `over` participam da decisão.
+function endDrag(over: { id: UniqueIdentifier } | null | undefined, activeId = barbearia.id) {
+  const onDragEnd = dnd.props?.onDragEnd
+  expect(onDragEnd).toBeTruthy()
+  act(() => {
+    onDragEnd?.({ active: { id: activeId }, over } as unknown as DragEndEvent)
+  })
+}
+
+// Geometria do quadro desktop: 11 colunas de 288 px lado a lado, com scroll horizontal.
+function boardRects(): Parameters<CollisionDetection>[0] {
+  const droppableRects = new Map(
+    LEAD_STATUSES.map((status, index) => {
+      const left = index * 300
+      return [status, { width: 288, height: 400, top: 120, left, right: left + 288, bottom: 520 }]
+    }),
+  )
+  return {
+    droppableRects,
+    droppableContainers: LEAD_STATUSES.map((status) => ({ id: status })),
+    // Solto na largura da 5ª coluna, mas muito abaixo do quadro: fundo da página.
+    pointerCoordinates: { x: 1300, y: 4000 },
+    collisionRect: { width: 260, height: 90, top: 3955, left: 1170, right: 1430, bottom: 4045 },
+  } as unknown as Parameters<CollisionDetection>[0]
+}
+
 let consoleError: ReturnType<typeof vi.spyOn>
 let consoleWarn: ReturnType<typeof vi.spyOn>
 
@@ -175,6 +222,7 @@ afterEach(() => {
 
 beforeEach(() => {
   seq = 0
+  dnd.props = null
   vi.clearAllMocks()
   consoleError = vi.spyOn(console, 'error')
   consoleWarn = vi.spyOn(console, 'warn')
@@ -187,13 +235,13 @@ describe('PipelinePage quadro', () => {
     renderPage()
     await screen.findByRole('group', { name: STATUS_LABELS.novo })
 
-    expect(screen.getAllByRole('group')).toHaveLength(LEAD_STATUSES.length)
+    expect(columns()).toHaveLength(LEAD_STATUSES.length)
     for (const status of LEAD_STATUSES) {
       const column = columnFor(status)
       expect(column.getByRole('heading', { name: STATUS_LABELS[status] })).toBeTruthy()
     }
     // Ordem do quadro = ordem de LEAD_STATUSES.
-    expect(screen.getAllByRole('group').map((group) => group.getAttribute('aria-label'))).toEqual(
+    expect(columns().map((group) => group.getAttribute('aria-label'))).toEqual(
       LEAD_STATUSES.map((status) => STATUS_LABELS[status]),
     )
   })
@@ -227,6 +275,8 @@ describe('PipelinePage quadro', () => {
     expect(card.textContent).toContain('Barbearia')
     expect(card.textContent).toContain('Muito alta')
     expect(card.textContent).toContain('R$')
+    // O número é potencial, nunca receita: rótulo idêntico ao da Central de Oportunidades.
+    expect(card.textContent).toContain('Potencial estimado')
     expect((card.querySelector('a') as HTMLAnchorElement).getAttribute('href')).toBe(`/leads/${barbearia.id}`)
     expect(card.textContent).toContain(formatBRL(barbearia.estimated_value))
     expect(card.textContent).toContain('01/12/2026')
@@ -234,6 +284,9 @@ describe('PipelinePage quadro', () => {
     const sparse = columnFor('contato_realizado').getByText(doceria.name).closest('[aria-roledescription]') as HTMLElement
     expect(sparse.textContent).toContain('Sem nicho')
     expect(sparse.textContent).not.toContain('(11)')
+    // estimated_value 0 é o default do draft: "ainda não estimado" não pode virar "R$ 0,00".
+    expect(sparse.textContent).toContain('Sem valor estimado')
+    expect(sparse.textContent).not.toContain('R$')
   })
 
   it('nunca chama o valor estimado de receita, faturamento ou cliente', async () => {
@@ -272,6 +325,43 @@ describe('PipelinePage consulta', () => {
     await waitFor(() => expect(lastQuery()).toEqual([
       { niche: 'pizzaria', priority: 'alta' }, 'score_desc', 0, PAGE_SIZE,
     ]))
+  })
+
+  it('select de nicho consulta na hora: escolha deliberada não espera o debounce', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+    const before = queries().length
+
+    fireEvent.change(screen.getByLabelText('Nicho'), { target: { value: 'pizzaria' } })
+
+    // No mesmo tick do change a consulta já saiu: nenhum skeleton de 300 ms antes de pedir.
+    expect(queries().length).toBe(before + 1)
+    expect(lastQuery()).toEqual([{ niche: 'pizzaria' }, 'score_desc', 0, PAGE_SIZE])
+    expect(screen.queryByText(barbearia.name)).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('Prioridade'), { target: { value: 'alta' } })
+    expect(queries().length).toBe(before + 2)
+    expect(lastQuery()).toEqual([{ niche: 'pizzaria', priority: 'alta' }, 'score_desc', 0, PAGE_SIZE])
+  })
+
+  it('nicho escolhido durante a digitação da cidade consulta na hora e descarta o timer', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+    const before = queries().length
+
+    fireEvent.change(cityInput(), { target: { value: 'Campinas' } })
+    // Texto livre continua atrasado: a cidade sozinha não dispara consulta.
+    expect(queries().length).toBe(before)
+
+    fireEvent.change(screen.getByLabelText('Nicho'), { target: { value: 'pizzaria' } })
+    expect(queries().length).toBe(before + 1)
+    expect(lastQuery()).toEqual([{ city: 'Campinas', niche: 'pizzaria' }, 'score_desc', 0, PAGE_SIZE])
+
+    // O timer pendente foi cancelado: a mesma cidade não sai em duas consultas.
+    await act(async () => {
+      await new Promise((resolve) => { setTimeout(resolve, 400) })
+    })
+    expect(queries().length).toBe(before + 1)
   })
 
   it('recarrega a consulta ao clicar em Atualizar', async () => {
@@ -440,6 +530,16 @@ describe('PipelinePage mobile', () => {
     await screen.findByRole('group', { name: STATUS_LABELS.novo })
 
     expect(container.querySelectorAll('[aria-roledescription="draggable"]')).toHaveLength(PIPELINE_LEADS.length)
+    // Card não é botão: `role="button"` sobre conteúdo apresentacional (o Link da ficha) tira do
+    // leitor de tela a semântica de link, e `tabIndex=0` sem KeyboardSensor é parada de tab morta.
+    expect(container.querySelectorAll('[aria-roledescription="draggable"][role="button"]')).toHaveLength(0)
+    for (const node of Array.from(container.querySelectorAll<HTMLElement>('[aria-roledescription="draggable"]'))) {
+      expect(node.getAttribute('role')).toBe('group')
+      expect(node.getAttribute('tabindex')).toBe('-1')
+      expect(node.hasAttribute('aria-pressed')).toBe(false)
+      // A navegação para a ficha continua um link de verdade dentro do grupo arrastável.
+      expect(within(node).getAllByRole('link')).toHaveLength(1)
+    }
     for (const entry of mobileEntries()) {
       expect(entry.querySelector('[aria-roledescription="draggable"]')).toBeNull()
       expect(entry.querySelectorAll('select')).toHaveLength(1)
@@ -448,19 +548,25 @@ describe('PipelinePage mobile', () => {
 })
 
 describe('PipelinePage janela de leads', () => {
-  it('avisa que só os primeiros 500 aparecem quando a consulta enche a página', async () => {
-    const many = Array.from({ length: PAGE_SIZE }, (_, index) => makeLead({
+  function manyLeads(count: number) {
+    return Array.from({ length: count }, (_, index) => makeLead({
       id: `muitos-${index}`,
       name: `Estabelecimento ${index + 1}`,
       status: LEAD_STATUSES[index % LEAD_STATUSES.length],
       city: 'São Paulo',
-      score: PAGE_SIZE - index,
+      score: count - index,
     }))
-    mockLeads(many, 512)
+  }
+
+  it('avisa que só os primeiros 500 aparecem quando a consulta enche a página', async () => {
+    mockLeads(manyLeads(PAGE_SIZE), 512)
     renderPage()
     await screen.findByRole('group', { name: STATUS_LABELS.novo })
 
-    const hint = screen.getByRole('status', { name: 'Janela do pipeline' })
+    // Sem aria-label no parágrafo: o texto É a mensagem, um rótulo o substituiria.
+    const hint = screen.getByText(/^Mostrando os primeiros 500 leads/)
+    expect(hint.getAttribute('role')).toBe('status')
+    expect(hint.getAttribute('aria-label')).toBeNull()
     expect(hint.textContent).toBe('Mostrando os primeiros 500 leads; há 512 no pipeline. Ajuste os filtros para reduzir a lista.')
     // As contagens por coluna somam exatamente o que foi listado, não o total.
     const listed = LEAD_STATUSES.reduce((sum, status) => sum + columnCount(status), 0)
@@ -468,12 +574,86 @@ describe('PipelinePage janela de leads', () => {
     expect(screen.getByRole('option', { name: `Novo (${columnCount('novo')})` })).toBeTruthy()
   })
 
+  it('diz apenas que mostra os primeiros 500 quando o total cabe na página', async () => {
+    mockLeads(manyLeads(PAGE_SIZE), PAGE_SIZE)
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    const hint = screen.getByText(/^Mostrando os primeiros 500 leads/)
+    expect(hint.getAttribute('role')).toBe('status')
+    expect(hint.getAttribute('aria-label')).toBeNull()
+    // Nada de "há X no pipeline": não há leads além dos listados.
+    expect(hint.textContent).toBe('Mostrando os primeiros 500 leads. Ajuste os filtros para reduzir a lista.')
+    expect(hint.textContent).not.toMatch(/há\b/)
+  })
+
   it('não fala de janela quando a consulta devolve menos que a página', async () => {
     mockLeads([barbearia, pizzaria], 2)
     renderPage()
     await screen.findByRole('group', { name: STATUS_LABELS.novo })
 
-    expect(screen.queryByRole('status', { name: 'Janela do pipeline' })).toBeNull()
+    expect(screen.queryByText(/^Mostrando os primeiros/)).toBeNull()
+  })
+})
+
+describe('PipelinePage arraste', () => {
+  it('decide o destino pelo ponteiro: solto fora do quadro não há coluna sob ele', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    const strategy = dnd.props?.collisionDetection
+    const args = boardRects()
+    // A estratégia ligada é a que ignora o vazio (closestCenter sempre devolveria uma coluna).
+    expect(strategy).toBe(pointerWithin)
+    expect(strategy?.(args)).toEqual([])
+    expect(closestCenter(args).length).toBeGreaterThan(0)
+    expect(LEAD_STATUSES).toContain(closestCenter(args)[0]?.id)
+    // Continue resolvendo a coluna realmente sobre o ponteiro: o arraste normal não quebra.
+    expect(strategy?.({
+      ...args,
+      pointerCoordinates: { x: 4 * 300 + 100, y: 300 },
+    }).map((collision) => String(collision.id))).toEqual(['interessado'])
+  })
+
+  it('soltar o card sobre outra coluna grava o status da coluna', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    endDrag({ id: 'interessado' })
+
+    expect(setLeadStatus).toHaveBeenCalledWith(barbearia.id, 'interessado')
+    expect(columnFor('interessado').getByText(barbearia.name)).toBeTruthy()
+    await act(async () => { await Promise.resolve() })
+    expect(toast).toHaveBeenCalledWith(`"${barbearia.name}" movido para Interessado.`)
+  })
+
+  it('soltar no vazio não muda status nem escreve histórico', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    endDrag(null)
+    // `over` ausente do evento é o outro caminho de "nenhum destino".
+    endDrag(undefined)
+    await act(async () => { await Promise.resolve() })
+
+    expect(setLeadStatus).not.toHaveBeenCalled()
+    expect(addActivity).not.toHaveBeenCalled()
+    expect(toast).not.toHaveBeenCalled()
+    expect(columnCount('novo')).toBe(2)
+    expect(columnFor('novo').getByText(barbearia.name)).toBeTruthy()
+  })
+
+  it('ignora id de drop que não é coluna do pipeline', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    endDrag({ id: pizzaria.id })
+    endDrag({ id: 'droppable-de-outro-contexto' })
+    await act(async () => { await Promise.resolve() })
+
+    expect(setLeadStatus).not.toHaveBeenCalled()
+    expect(toast).not.toHaveBeenCalled()
+    expect(columnCount('novo')).toBe(2)
   })
 })
 
@@ -554,12 +734,28 @@ describe('KanbanCard corpo e wrapper', () => {
     // NBSP do formatBRL: o texto do card é comparado cru, não pelo normalizador de matcher.
     const root = container.firstElementChild as HTMLElement
     expect(root.textContent).toContain(formatBRL(barbearia.estimated_value))
+    expect(root.textContent).toContain('Potencial estimado')
     expect(root.textContent).toContain('(11) 99999-0001')
     expect(root.textContent).toContain('Barbearia')
     expect(container.querySelector('[aria-roledescription]')).toBeNull()
     // Sem contexto de arraste, o card mobile não finge ser arrastável nem bloqueia o scroll.
     expect(root.className).not.toContain('touch-none')
     expect(root.className).not.toContain('cursor-grab')
+  })
+
+  it('não apresenta valor estimado inexistente como moeda', () => {
+    // formatBRL converte não-finito em 0: sem o guard, "não estimado" viraria "R$ 0,00".
+    for (const value of [0, -100, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const { container, unmount } = render(
+        <MemoryRouter>
+          <KanbanCardBody lead={{ ...barbearia, estimated_value: value }} />
+        </MemoryRouter>,
+      )
+
+      expect(container.textContent).toContain('Sem valor estimado')
+      expect(container.textContent).not.toContain('R$')
+      unmount()
+    }
   })
 
   it('o wrapper dentro de DndContext é o único que anexa os atributos de arraste', () => {
@@ -576,6 +772,11 @@ describe('KanbanCard corpo e wrapper', () => {
     expect(root.getAttribute('aria-describedby')).toBeTruthy()
     expect(root.className).toContain('cursor-grab')
     expect(root.className).toContain('touch-none')
+    // Grupo (não botão) e fora da ordem de tab: o card tem conteúdo apresentacional e o único
+    // destino de teclado dele é o próprio Link da ficha.
+    expect(root.getAttribute('role')).toBe('group')
+    expect(root.getAttribute('tabindex')).toBe('-1')
+    expect(root.hasAttribute('aria-pressed')).toBe(false)
     // Mesma apresentação do corpo: link para a ficha continua lá.
     expect(root.querySelector('a')?.getAttribute('href')).toBe(`/leads/${barbearia.id}`)
   })

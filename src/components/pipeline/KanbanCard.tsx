@@ -30,6 +30,10 @@ const dragClasses = 'cursor-grab touch-none active:cursor-grabbing'
  * (useDraggable) fica no wrapper `KanbanCard`, nunca em quem não tem contexto.
  */
 export function KanbanCardBody({ lead, drag, dragging = false, style }: KanbanCardBodyProps) {
+  // estimated_value vem 0 do draft: "não estimado" não é "não vale nada" (regra do tri-estado),
+  // e formatBRL converte valor não finito em moeda — daí o guard antes de qualquer R$.
+  const hasPotentialValue = Number.isFinite(lead.estimated_value) && lead.estimated_value > 0
+
   return (
     <div
       ref={drag?.setNodeRef}
@@ -44,7 +48,11 @@ export function KanbanCardBody({ lead, drag, dragging = false, style }: KanbanCa
       <p className="mt-0.5 text-xs text-muted">{lead.niche ? NICHE_LABELS[lead.niche as Niche] ?? lead.niche : 'Sem nicho'}</p>
       <div className="mt-2 flex items-center justify-between gap-2">
         <PriorityBadge priority={lead.priority} />
-        <span className="text-xs text-muted">{formatBRL(lead.estimated_value)}</span>
+        {hasPotentialValue ? (
+          <span className="text-right text-xs text-muted">Potencial estimado {formatBRL(lead.estimated_value)}</span>
+        ) : (
+          <span className="text-right text-xs text-muted/60">Sem valor estimado</span>
+        )}
       </div>
       <div className="mt-2 flex flex-col gap-1 text-xs text-muted">
         {lead.phone && <span className="inline-flex items-center gap-1"><Phone className="h-3 w-3" /> {formatPhone(lead.phone)}</span>}
@@ -56,7 +64,14 @@ export function KanbanCardBody({ lead, drag, dragging = false, style }: KanbanCa
 
 /** Card arrastável do quadro: precisa estar dentro de um `DndContext`. */
 export function KanbanCard({ lead }: { lead: Lead }) {
-  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: lead.id })
+  // Atributos explícitos: o padrão do dnd-kit é `role="button"` + `tabIndex=0`, mas o card tem
+  // conteúdo apresentacional (o Link da ficha) — botão faria o leitor de tela engolir o único
+  // caminho de navegação — e sem KeyboardSensor a parada de tab extra não levaria a lugar nenhum.
+  // `role="group"` mantém o card uma região nomeável; arrastar continua pelo ponteiro (listeners).
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
+    id: lead.id,
+    attributes: { role: 'group', tabIndex: -1 },
+  })
   const style = transform ? { transform: `translate(${transform.x}px, ${transform.y}px)` } : undefined
 
   return (

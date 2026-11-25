@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
-import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { DndContext, PointerSensor, pointerWithin, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { FolderKanban, RefreshCw } from 'lucide-react'
 import { listLeads, setLeadStatus } from '../services/leadService'
+import { statusFromDragEnd } from '../lib/pipeline'
 import {
   LEAD_STATUSES, NICHES, NICHE_LABELS, PRIORITIES, PRIORITY_LABELS,
   STATUS_LABELS, type Lead, type LeadFilters, type LeadStatus,
@@ -17,18 +18,9 @@ import { KanbanColumn } from '../components/pipeline/KanbanColumn'
 import { useToast } from '../hooks/useToast'
 
 const PIPELINE_PAGE_SIZE = 500
-// Cidade é texto livre: tecla não pode virar consulta. Aqui basta um valor atrasado
-// (o quadro inteiro depende do mesmo objeto de filtros).
-const DEBOUNCE_MS = 300
-
-function useDebouncedValue<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value)
-  useEffect(() => {
-    const timer = setTimeout(() => { setDebounced(value) }, delayMs)
-    return () => { clearTimeout(timer) }
-  }, [value, delayMs])
-  return debounced
-}
+// Só Cidade é texto livre: uma tecla não pode virar consulta. Nicho e Prioridade são escolhas
+// deliberadas de select — atrasá-las em 300 ms exibe skeletons antes de a consulta sair.
+const FREE_TEXT_DEBOUNCE_MS = 300
 
 // O quadro desenha apenas a página carregada: quando ela enche, dizer "500" sem dizer que
 // há mais seria uma contagem que os próprios dados contradizem.
@@ -42,16 +34,27 @@ function windowHint(listed: number, total: number): string | null {
 
 export function PipelinePage() {
   const { toast } = useToast()
+  // `filters` alimenta o formulário (tecla a tecla); `queryFilters` é o que foi confirmado para a
+  // consulta — os dois só divergem enquanto há digitação em Cidade atrasada.
   const [filters, setFilters] = useState<LeadFilters>({})
+  const [queryFilters, setQueryFilters] = useState<LeadFilters>({})
   const [leads, setLeads] = useState<Lead[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [refreshKey, setRefreshKey] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [mobileColumn, setMobileColumn] = useState<LeadStatus>('novo')
+  const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
 
-  const queryFilters = useDebouncedValue(filters, DEBOUNCE_MS)
+  const cancelPendingCommit = () => {
+    if (commitTimer.current) {
+      clearTimeout(commitTimer.current)
+      commitTimer.current = null
+    }
+  }
+  // Desmontar com tecla pendente não pode disparar consulta órfã.
+  useEffect(() => () => { cancelPendingCommit() }, [])
 
   useEffect(() => {
     let active = true
@@ -97,25 +100,43 @@ export function PipelinePage() {
     }
   }
 
+  // O arraste é a confirmação: sem coluna sob o ponteiro não há `over` (pointerWithin) e
+  // status algum é gravado — soltar no vazio não reescreve o pipeline.
   const onDragEnd = (event: DragEndEvent) => {
-    const status = event.over?.id as LeadStatus | undefined
+    const status = statusFromDragEnd(event)
     if (status) void moveLead(String(event.active.id), status)
   }
 
-  const set = (patch: Partial<LeadFilters>) => {
+  const commit = (next: LeadFilters) => {
+    setQueryFilters(next)
     setLoading(true)
     setError(null)
-    setFilters((current) => ({ ...current, ...patch }))
+  }
+  const changeFilters = (patch: Partial<LeadFilters>, freeText = false) => {
+    const next = { ...filters, ...patch }
+    setFilters(next)
+    cancelPendingCommit()
+    if (!freeText) {
+      commit(next)
+      return
+    }
+    commitTimer.current = setTimeout(() => {
+      commitTimer.current = null
+      commit(next)
+    }, FREE_TEXT_DEBOUNCE_MS)
   }
   const reload = () => {
+    cancelPendingCommit()
     setLoading(true)
     setError(null)
+    // "Atualizar" confirma inclusive a cidade ainda em digitação: recarregar é um pedido explícito.
+    setQueryFilters(filters)
     setRefreshKey((key) => key + 1)
   }
   const clearFilters = () => {
-    setLoading(true)
-    setError(null)
+    cancelPendingCommit()
     setFilters({})
+    commit({})
   }
 
   return (
@@ -134,20 +155,20 @@ export function PipelinePage() {
             label="Nicho"
             placeholder="Todos"
             value={filters.niche ?? ''}
-            onChange={(e) => set({ niche: e.target.value || undefined })}
+            onChange={(e) => changeFilters({ niche: e.target.value || undefined })}
             options={NICHES.map((n) => ({ value: n, label: NICHE_LABELS[n] }))}
           />
           <Input
             label="Cidade"
             placeholder="Todas"
             value={filters.city ?? ''}
-            onChange={(e) => set({ city: e.target.value || undefined })}
+            onChange={(e) => changeFilters({ city: e.target.value || undefined }, true)}
           />
           <Select
             label="Prioridade"
             placeholder="Todas"
             value={filters.priority ?? ''}
-            onChange={(e) => set({ priority: (e.target.value || undefined) as LeadFilters['priority'] })}
+            onChange={(e) => changeFilters({ priority: (e.target.value || undefined) as LeadFilters['priority'] })}
             options={PRIORITIES.map((p) => ({ value: p, label: PRIORITY_LABELS[p] }))}
           />
         </div>
@@ -177,12 +198,11 @@ export function PipelinePage() {
         )
       ) : (
         <>
-          {hint && (
-            <p role="status" aria-label="Janela do pipeline" className="text-xs text-muted">{hint}</p>
-          )}
+          {/* Sem aria-label na dica: o texto É a mensagem — um rótulo o substituiria na fala. */}
+          {hint && <p role="status" className="text-xs text-muted">{hint}</p>}
           {/* Desktop: quadro completo com scroll horizontal e arraste. */}
           <div className="hidden md:block">
-            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+            <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragEnd={onDragEnd}>
               <div className="flex gap-4 overflow-x-auto pb-4">
                 {LEAD_STATUSES.map((status) => <KanbanColumn key={status} status={status} leads={byStatus.get(status) ?? []} />)}
               </div>
