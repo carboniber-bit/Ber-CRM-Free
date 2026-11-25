@@ -401,6 +401,7 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
           />
           <LeadFollowups
             leadId={lead.id}
+            leadName={lead.name}
             refreshKey={refreshKey}
             onChanged={handleLeadChanged}
           />

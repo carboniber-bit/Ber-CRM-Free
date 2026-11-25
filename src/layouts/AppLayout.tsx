@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { NavLink, Outlet } from 'react-router-dom'
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
 import {
-  BarChart3, FolderKanban, LayoutDashboard, Lock, LogOut, Menu,
+  BarChart3, Bell, FolderKanban, LayoutDashboard, Lock, LogOut, Menu,
   Settings, Target, Users, Wallet, X, type LucideIcon,
 } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
+import { countOverdue } from '../services/followupService'
 import { Logo } from '../components/ui/Logo'
 import { cn } from '../utils/cn'
 
@@ -81,11 +82,26 @@ function NavContent({ onNavigate, className }: { onNavigate?: () => void; classN
 
 export function AppLayout() {
   const { user, signOut } = useAuth()
+  const location = useLocation()
   const [drawerOpen, setDrawerOpen] = useState(false)
+  // null = ainda sem número confirmado (em trânsito ou consulta falhou): badge só existe com
+  // contagem real, porque sino sem badge não afirma que não há atrasado.
+  const [overdueCount, setOverdueCount] = useState<number | null>(null)
   const hamburgerRef = useRef<HTMLButtonElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const drawerRef = useRef<HTMLElement>(null)
   const closeDrawer = useCallback(() => setDrawerOpen(false), [])
+
+  // Sem timer nem polling: o contador é relido a cada troca de rota, então sair de /followups
+  // depois de concluir um atrasado já devolve o número novo.
+  useEffect(() => {
+    let active = true
+    void countOverdue().then(
+      (count) => { if (active) setOverdueCount(count) },
+      () => { if (active) setOverdueCount(null) },
+    )
+    return () => { active = false }
+  }, [location.pathname])
 
   useEffect(() => {
     if (!drawerOpen) return
@@ -196,6 +212,18 @@ export function AppLayout() {
             <span className="hidden text-sm text-muted lg:block">CRM de prospecção comercial</span>
           </div>
           <div className="flex items-center gap-3">
+            <Link
+              to="/followups"
+              aria-label={overdueCount === null ? 'Follow-ups atrasados' : `Follow-ups atrasados: ${overdueCount}`}
+              className="relative rounded-lg p-1.5 text-muted transition-colors hover:bg-elevated hover:text-ink"
+            >
+              <Bell className="h-5 w-5" aria-hidden="true" />
+              {overdueCount !== null && overdueCount > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-danger px-1 text-[10px] font-bold text-bg">
+                  {overdueCount}
+                </span>
+              )}
+            </Link>
             <span className="hidden max-w-48 truncate text-sm text-muted sm:block">{user?.email}</span>
             <button
               onClick={() => void signOut()}
