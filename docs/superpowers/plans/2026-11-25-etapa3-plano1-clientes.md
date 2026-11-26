@@ -1105,7 +1105,7 @@ begin
     or exists (
       select 1 from public.leads
       where id = v_second_lead and owner_id = v_owner
-        and (status <> 'novo' or contracted_value <> 100.00 or received_value <> 0)
+        and (status <> 'novo' or contracted_value <> 0 or received_value <> 0)
     ) then
     raise exception 'A exceção tardia não reverteu cliente, vínculo, contrato, projeto, atividade e snapshot.';
   end if;
