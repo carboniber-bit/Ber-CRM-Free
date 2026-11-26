@@ -62,7 +62,7 @@ O anexo de 2026-11-26 amplia a mesma Etapa 3 e supersede apenas a exclusão de r
 - `src/lib/reports.ts`: períodos, filtros e normalizações puras.
 - `src/pages/SettingsPage.tsx`: seções comerciais, prospecção, projetos, financeiro, interface e perfil.
 - `src/pages/BackupPage.tsx`: exportação, diagnóstico, importação e limites.
-- Relatórios, Backup e Recharts carregados sob demanda.
+- Relatórios e Backup carregados sob demanda; Recharts é isolado em chunks sob demanda tanto no Dashboard quanto nos Relatórios.
 - Supabase direto e RPCs; sem nova biblioteca global de estado.
 
 ### 4.2 Banco
@@ -98,7 +98,7 @@ interface ReportFilters {
 }
 ```
 
-- O servidor recebe limites UTC normalizados a partir de `America/Sao_Paulo`.
+- `startDate` e `endDate` são datas locais inclusivas; o servidor recebe `[início do startDate, início do dia seguinte a endDate)` em UTC, normalizado a partir de `America/Sao_Paulo`.
 - Controles inaplicáveis ficam desabilitados e explicados.
 - Nichos/status usam códigos canônicos; rótulos personalizados são apresentação.
 - Serviço compara `offered_service`, `projects.service` ou `contracts.service`.
@@ -109,14 +109,12 @@ interface ReportFilters {
 
 ### 6.1 Prospecção
 
-- Cadastros: `leads.created_at` no período.
-- Novos, interessados, negociando, perdidos e não interessados: status atual na coorte, explicitamente rotulado como snapshot.
-- Contatados: lead com atividade `primeiro_contato`, `mensagem` ou `ligacao`.
-- Responderam: lead com atividade `resposta`.
-- Convertidos: `lead_client_links`, nunca status `aceitou` isolado.
-- Total de contatos: quantidade de atividades `primeiro_contato`, `mensagem` ou `ligacao`.
-- Taxa de resposta: leads com resposta / leads com contato no período; `null` sem contatos.
-- Taxa de conversão: leads da coorte com vínculo convertido antes do fim / total da coorte; `null` sem leads.
+- Coorte de cadastro: `leads.created_at` no período. Novos, interessados, negociando, perdidos e não interessados usam o status atual dessa coorte, explicitamente rotulado como snapshot.
+- Contatados e responderam são eventos de todos os leads no período: lead com atividade `primeiro_contato`, `mensagem` ou `ligacao`, e lead com atividade `resposta`, respectivamente.
+- Convertidos por período usam `lead_client_links.converted_at`; nunca status `aceitou` isolado.
+- Total de contatos: quantidade de atividades `primeiro_contato`, `mensagem` ou `ligacao` no período.
+- Taxa de resposta: leads distintos com resposta no período / leads distintos com contato no período; `null` sem contatos.
+- Taxa de conversão: leads da coorte com vínculo convertido dentro do período / total da coorte; `null` sem leads.
 - Gráficos: cadastros por período, nicho, cidade, status, conversões e evolução da conversão.
 - Ranking requer 3 registros; taxa requer denominador 5. Abaixo disso: contagem e “Dados insuficientes para conclusão”.
 
@@ -145,8 +143,8 @@ interface ReportFilters {
 - Contagens por status canônico.
 - Atrasado: prazo vencido e status não concluído/entregue/cancelado.
 - Prazo médio: `completed_at - start_date` com ambas as datas; `null` sem amostra.
-- Taxa de conclusão: concluídos/entregues / projetos elegíveis; `null` sem denominador.
-- Produtividade: conclusões/entregas por período.
+- Taxa de conclusão: projetos da coorte criada no período que estão concluídos/entregues / projetos da coorte não cancelados; `null` sem denominador.
+- Produtividade: conclusões/entregas por `completed_at` no período.
 - Atenção: atrasados, revisão/aprovação pendente ou tarefas vencidas.
 
 ### 6.5 Financeiro
@@ -201,6 +199,9 @@ interface UserPreferences {
     defaultStatus: string
     followupIntervalsDays: number[]
     scoringThresholds: { veryHigh: number; high: number; medium: number }
+  }
+  opportunities: {
+    needLabels: Record<string, string>
   }
   projects: {
     statusLabels: Record<string, string>
@@ -277,7 +278,7 @@ interface UserPreferences {
 - Revogar UPDATE/DELETE direto em trilhas e tabelas financeiras desnecessárias.
 - Impedir autoedição de `profiles.role`.
 - Corrigir `search_path` de `handle_new_user` e funções sensíveis.
-- Checks monetários, datas, status e FKs compostas verificados.
+- Checks monetários, datas, status e FKs compostas com `owner_id` verificados e corrigidos também nas tabelas legadas.
 - Teste com dois proprietários sintéticos preparado para execução manual autenticada; sem evidência real, fica dependente de configuração externa.
 
 ### 10.3 Auditoria append-only
@@ -311,8 +312,9 @@ interface UserPreferences {
 - Integração de páginas com serviços mockados e componentes reais.
 - Smoke browser local mockado para jornadas e responsividade.
 - Gate final: `npm test -- --maxWorkers=2`, `npm run build`, `npm run lint`.
-- GitHub Actions Node 24 com `npm ci`, testes, lint e build; sem segredos no gate público.
-- Vercel Hobby: rewrite SPA, headers, variáveis públicas e instruções de deploy.
+- `README.md` e `docs/supabase-schema.md` documentam instalação, migrações, RLS, tabelas, relacionamentos, testes, manutenção e limitações free tier.
+- GitHub Actions Node 24 em `.github/workflows/ci.yml` com `npm ci`, testes, lint e build; sem segredos no gate público.
+- Vercel Hobby: rewrite SPA, headers, variáveis públicas e instruções em `docs/vercel-deploy.md`.
 - Nenhum deploy sem autorização.
 - Migrations, RLS real entre dois usuários, persistência autenticada e publicação ficam “dependentes de configuração externa” quando não executados.
 
