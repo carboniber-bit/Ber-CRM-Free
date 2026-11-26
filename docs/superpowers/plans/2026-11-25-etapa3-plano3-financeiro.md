@@ -2029,7 +2029,7 @@ begin
     end if;
   end;
 
-  -- O segundo proprietário é um usuário real de auth.users, não apenas um claim.
+  -- O segundo proprietário é um usuário sintético de auth.users, não apenas um claim.
   perform set_config('request.jwt.claim.sub', v_other::text, true);
   v_other_client := public.create_client(jsonb_build_object(
     'creation_key', gen_random_uuid(),
@@ -2411,7 +2411,7 @@ Esperado: lock consultivo por proprietário/chave antes da consulta de idempotê
 
 - [ ] **Etapa 5: Provar idempotência e serialização de contratos/pagamentos**
 
-Execute o bloco abaixo **somente em um banco descartável de teste**, com as migrations 0001–0009 aplicadas e a extensão `dblink` disponível. Nunca execute este harness no projeto Supabase de produção. A conexão `dblink` usa o socket local com o banco e o usuário atuais; ela precisa ser aceita pela configuração de autenticação do banco descartável. O harness cria e remove somente o usuário sintético de ID reservado `00000000-0000-4000-8000-000000000101`; não consulta, altera nem remove usuários reais. Não há `psql`, loop de sincronização nem `pg_sleep`: a sessão remota primeiro confirma os locks e somente depois a sessão local faz probes com `lock_timeout`. O timeout é apenas uma proteção contra bloqueio infinito; como cada lock conflitante já está comprovadamente adquirido, o resultado esperado é sempre `55P03`, nunca `40P01`. Além dos locks de cliente/contrato/parcela/pagamento, o harness isola uma única advisory `:contract:<id>` para `update_client`, `cancel_contract` e `adjust_contract`, e mantém advisories de contrato separadas para cada RPC de projeto. O cleanup dos fixtures e do usuário sintético é tentado em transação remota mesmo quando uma asserção falha; rollback, cleanup e disconnect são tentados individualmente nos caminhos normal e de exceção.
+Execute o bloco abaixo **somente em um banco descartável de teste**, com as migrations 0001–0009 aplicadas e a extensão `dblink` disponível. Nunca execute este harness no projeto Supabase de produção. A conexão `dblink` usa o socket local com o banco e o usuário atuais; ela precisa ser aceita pela configuração de autenticação do banco descartável. O harness cria e remove somente o usuário sintético de ID reservado `00000000-0000-4000-8000-000000000101`; não consulta, altera nem remove usuários reais. Não há `psql`, loop de sincronização nem `pg_sleep`: a sessão remota primeiro confirma os locks e somente depois a sessão local faz probes com `lock_timeout`. O timeout é apenas uma proteção contra bloqueio infinito; como cada lock conflitante já está comprovadamente adquirido, o resultado esperado é sempre `55P03`, nunca `40P01`. Além dos locks de cliente/contrato/parcela/pagamento, o harness isola uma única advisory `:contract:<id>` para `update_client`, `cancel_contract` e `adjust_contract`, e mantém advisories de contrato separadas para cada RPC de projeto. O cleanup dos fixtures e do usuário sintético é tentado em transação remota mesmo quando uma asserção falha; o bloco de exceção também cobre falhas na conexão e na criação do usuário sintético. Rollback, cleanup e disconnect são tentados individualmente nos caminhos normal e de exceção.
 
 ```sql
 create extension if not exists dblink;
@@ -2455,8 +2455,9 @@ declare
   v_setup_committed boolean := false;
   v_state text;
 begin
-  v_owner := '00000000-0000-4000-8000-000000000101'::uuid;
-  perform dblink_connect(v_conn, format('dbname=%L user=%L', current_database(), current_user));
+  begin
+    v_owner := '00000000-0000-4000-8000-000000000101'::uuid;
+    perform dblink_connect(v_conn, format('dbname=%L user=%L', current_database(), current_user));
   perform dblink_exec(v_conn, $user$
     insert into auth.users (
       id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -2470,8 +2471,7 @@ begin
     ) on conflict (id) do nothing;
   $user$);
 
-  begin
-    -- Fixtures visíveis às duas sessões; a transação de locks abaixo não os cria.
+  -- Fixtures visíveis às duas sessões; a transação de locks abaixo não os cria.
     perform dblink_exec(v_conn, 'begin');
     perform dblink_exec(v_conn, 'set local role authenticated');
     perform dblink_exec(v_conn, format('select set_config(''request.jwt.claim.sub'', %L, true)', v_owner::text));
@@ -3672,7 +3672,7 @@ Esperado: categoria única por proprietário/nome em minúsculas; criação/edi�
 
 - [ ] **Etapa 5: Provar serialização entre `set_project_status` e despesa vinculada**
 
-Execute o bloco abaixo **somente em um banco descartável de teste**, após as migrations 0001–0009 e com `dblink` disponível. Nunca execute no projeto Supabase de produção. Assim como no harness anterior, a conexão remota usa o socket local e depende da autenticação configurada no banco descartável. O harness cria e remove somente o usuário sintético de ID reservado `00000000-0000-4000-8000-000000000201`; não consulta, altera nem remove usuários reais. O fixture é commitado para que as duas sessões o vejam; em seguida, locks já confirmados são usados em probes determinísticos com `lock_timeout`. `set_project_status(project_id,status)` adquire `:contract:<id>` antes de travar projeto e contrato; a despesa criada carrega ambos os vínculos. O teste cobre a criação da despesa durante o status, a criação normal após a liberação e a direção inversa contra os locks FK; os dois probes de bloqueio esperam `55P03`, sem loops, `pg_sleep`, `psql` ou comandos meta. Rollback, cleanup dos fixtures, cleanup do usuário sintético e disconnect são tentados individualmente nos caminhos normal e de exceção.
+Execute o bloco abaixo **somente em um banco descartável de teste**, após as migrations 0001–0009 e com `dblink` disponível. Nunca execute no projeto Supabase de produção. Assim como no harness anterior, a conexão remota usa o socket local e depende da autenticação configurada no banco descartável. O harness cria e remove somente o usuário sintético de ID reservado `00000000-0000-4000-8000-000000000201`; não consulta, altera nem remove usuários reais. O fixture é commitado para que as duas sessões o vejam; em seguida, locks já confirmados são usados em probes determinísticos com `lock_timeout`. `set_project_status(project_id,status)` adquire `:contract:<id>` antes de travar projeto e contrato; a despesa criada carrega ambos os vínculos. O teste cobre a criação da despesa durante o status, a criação normal após a liberação e a direção inversa contra os locks FK; os dois probes de bloqueio esperam `55P03`, sem loops, `pg_sleep`, `psql` ou comandos meta. O bloco de exceção cobre também falhas na conexão e na criação do usuário sintético. Rollback, cleanup dos fixtures, cleanup do usuário sintético e disconnect são tentados individualmente nos caminhos normal e de exceção.
 
 ```sql
 create extension if not exists dblink;
@@ -3697,8 +3697,9 @@ declare
   v_setup_committed boolean := false;
   v_state text;
 begin
-  v_owner := '00000000-0000-4000-8000-000000000201'::uuid;
-  perform dblink_connect(v_conn, format('dbname=%L user=%L', current_database(), current_user));
+  begin
+    v_owner := '00000000-0000-4000-8000-000000000201'::uuid;
+    perform dblink_connect(v_conn, format('dbname=%L user=%L', current_database(), current_user));
   perform dblink_exec(v_conn, $user$
     insert into auth.users (
       id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -3712,7 +3713,6 @@ begin
     ) on conflict (id) do nothing;
   $user$);
 
-  begin
     perform dblink_exec(v_conn, 'begin');
     perform dblink_exec(v_conn, 'set local role authenticated');
     perform dblink_exec(v_conn, format('select set_config(''request.jwt.claim.sub'', %L, true)', v_owner::text));
@@ -3915,7 +3915,7 @@ begin
   select id into v_owner from auth.users where id = '00000000-0000-4000-8000-000000000001';
   select id into v_other from auth.users where id = '00000000-0000-4000-8000-000000000002';
   if v_owner is null or v_other is null then
-    raise exception 'Usuários reais da Tarefa 5 não estão disponíveis para o teste de isolamento.';
+    raise exception 'Usuários sintéticos da Tarefa 5 não estão disponíveis para o teste de isolamento.';
   end if;
   perform set_config('request.jwt.claim.sub', v_other::text, true);
   set local role authenticated;
