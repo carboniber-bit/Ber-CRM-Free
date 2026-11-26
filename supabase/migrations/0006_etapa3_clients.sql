@@ -237,4 +237,173 @@ create trigger contracts_set_updated_at before update on public.contracts
 create trigger projects_set_updated_at before update on public.projects
   for each row execute function public.set_updated_at();
 
+create or replace function public.convert_lead_to_client(
+  p_lead_id uuid,
+  p_service text,
+  p_contracted_value numeric,
+  p_contracted_at date,
+  p_payment_method text default null,
+  p_payment_terms text default null,
+  p_notes text default null,
+  p_project_name text default null,
+  p_project_start_date date default null,
+  p_project_due_date date default null
+)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_owner uuid := auth.uid();
+  v_lead public.leads;
+  v_link public.lead_client_links;
+  v_client public.clients;
+  v_contract public.contracts;
+  v_project public.projects;
+  v_cnpj text;
+  v_contracted_value numeric(14,2);
+begin
+  if v_owner is null then
+    raise exception 'Sessão autenticada necessária.' using errcode = '42501';
+  end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_owner::text || ':clients', 0)
+  );
+  select * into v_lead
+  from public.leads
+  where id = p_lead_id and owner_id = v_owner
+  for update;
+  if not found then
+    raise exception 'Lead não encontrado ou acesso negado.' using errcode = '42501';
+  end if;
+
+  select * into v_link
+  from public.lead_client_links
+  where lead_id = p_lead_id and owner_id = v_owner
+  for update;
+  if found then
+    select * into v_contract from public.contracts
+      where source_link_id = v_link.id and owner_id = v_owner;
+    select * into v_project from public.projects
+      where source_link_id = v_link.id and owner_id = v_owner;
+    return jsonb_build_object(
+      'client_id', v_link.client_id,
+      'link_id', v_link.id,
+      'contract_id', v_contract.id,
+      'project_id', v_project.id,
+      'already_existed', true
+    );
+  end if;
+
+  if p_service is null or pg_catalog.btrim(p_service) = '' then
+    raise exception 'Informe o serviço contratado.' using errcode = '22023';
+  end if;
+  if p_contracted_value is null
+    or p_contracted_value::text !~ '^[0-9]{1,12}(\.[0-9]{1,2})?$' then
+    raise exception 'Valor contratado inválido.' using errcode = '22023';
+  end if;
+  v_contracted_value := p_contracted_value::numeric(14,2);
+  if p_contracted_at is null then
+    raise exception 'Informe a data da contratação.' using errcode = '22023';
+  end if;
+  if p_project_start_date is not null and p_project_due_date is not null
+    and p_project_due_date < p_project_start_date then
+    raise exception 'O prazo do projeto não pode anteceder o início.' using errcode = '22023';
+  end if;
+
+  v_cnpj := nullif(pg_catalog.regexp_replace(v_lead.cnpj, '[^0-9]', '', 'g'), '');
+  if v_cnpj is not null then
+    select * into v_client
+    from public.clients
+    where owner_id = v_owner and cnpj_digits = v_cnpj
+    for update;
+  end if;
+
+  if not found then
+    begin
+      insert into public.clients (
+        owner_id, creation_key, name, responsible_name, phone, whatsapp,
+        email, cnpj, website, instagram, address, city, district, zip_code,
+        state, niche, status, source, converted_at, notes
+      ) values (
+        v_owner, p_lead_id, v_lead.name, v_lead.responsible_name, v_lead.phone,
+        v_lead.whatsapp, v_lead.email, v_lead.cnpj, v_lead.website,
+        v_lead.instagram, v_lead.address, v_lead.city, v_lead.district,
+        v_lead.zip_code, v_lead.state, v_lead.niche, 'active',
+        coalesce(nullif(v_lead.source, ''), 'lead'), now(), p_notes
+      )
+      on conflict (creation_key) do nothing
+      returning * into v_client;
+    exception when unique_violation then
+      select * into v_client from public.clients
+        where owner_id = v_owner and cnpj_digits = v_cnpj for update;
+      if not found then raise; end if;
+    end;
+
+    if not found then
+      select * into v_client from public.clients
+        where owner_id = v_owner and creation_key = p_lead_id for update;
+    end if;
+  end if;
+
+  update public.leads
+  set status = 'aceitou', contracted_value = v_contracted_value
+  where id = p_lead_id and owner_id = v_owner;
+
+  insert into public.lead_client_links (owner_id, lead_id, client_id)
+  values (v_owner, p_lead_id, v_client.id)
+  returning * into v_link;
+
+  insert into public.contracts (
+    owner_id, client_id, source_link_id, service, total_value,
+    contracted_at, payment_method, payment_terms, notes
+  ) values (
+    v_owner, v_client.id, v_link.id, pg_catalog.btrim(p_service),
+    v_contracted_value, p_contracted_at, nullif(pg_catalog.btrim(p_payment_method), ''),
+    nullif(pg_catalog.btrim(p_payment_terms), ''), nullif(pg_catalog.btrim(p_notes), '')
+  )
+  returning * into v_contract;
+
+  if nullif(pg_catalog.btrim(p_project_name), '') is not null then
+    insert into public.projects (
+      owner_id, client_id, contract_id, source_link_id, name, service,
+      contracted_value, start_date, due_date
+    ) values (
+      v_owner, v_client.id, v_contract.id, v_link.id,
+      pg_catalog.btrim(p_project_name), pg_catalog.btrim(p_service),
+      v_contracted_value, p_project_start_date, p_project_due_date
+    )
+    returning * into v_project;
+  end if;
+
+  insert into public.lead_activities (owner_id, lead_id, type, description)
+  values (
+    v_owner, p_lead_id, 'conversao',
+    'Lead convertido em cliente: ' || pg_catalog.btrim(p_service) || '.'
+  );
+
+  insert into public.client_activities (
+    owner_id, client_id, contract_id, project_id, type, description, metadata
+  ) values (
+    v_owner, v_client.id, v_contract.id, v_project.id, 'conversion',
+    'Cliente originado da conversão do lead ' || v_lead.name || '.',
+    jsonb_build_object('lead_id', p_lead_id, 'link_id', v_link.id)
+  );
+
+  return jsonb_build_object(
+    'client_id', v_client.id,
+    'link_id', v_link.id,
+    'contract_id', v_contract.id,
+    'project_id', v_project.id,
+    'already_existed', false
+  );
+end;
+$$;
+
+revoke all on function public.convert_lead_to_client(uuid, text, numeric, date, text, text, text, text, date, date) from public, anon;
+grant execute on function public.convert_lead_to_client(uuid, text, numeric, date, text, text, text, text, date, date) to authenticated;
+
 commit;
