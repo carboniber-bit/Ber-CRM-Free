@@ -284,9 +284,14 @@ interface UserPreferences {
 ### 10.3 Auditoria append-only
 
 - Tabela `audit_events` própria: `owner_id`, `actor_id`, `action`, `entity_type`, `entity_id`, metadados mínimos e `created_at`.
+- `0013_etapa3_security_audit.sql` é o único dono do schema e da writer `public.write_audit_event(uuid,uuid,text,text,text,jsonb) returns uuid`; `entity_id` é `text` para acomodar IDs UUID e o hash do backup, e `actor_id = owner_id` porque todas as ações são do proprietário autenticado.
+- `0011` e `0012` não criam tabela, função ou trigger de auditoria. O restore de `0012` invoca a writer canônica; a migration pode ser aplicada antes de `0013`, mas nenhum restore é executado ou declarado testado antes de `0013`.
 - `audit_events` concede somente SELECT ao proprietário; INSERT/UPDATE/DELETE direto revogados e escrita por triggers/RPCs `security definer` com `search_path = ''`.
+- O bloqueio de UPDATE/DELETE usa trigger de linha; o bloqueio de TRUNCATE usa trigger de statement separado.
 - `lead_activities` e `client_activities` seguem como histórico de negócio; UPDATE/DELETE de eventos importantes são revogados.
 - Eventos de lead, cliente, projeto, pagamento, estorno, despesa, cancelamento, restore e settings gravados por triggers/RPCs.
+- A allowlist de metadados é a união: `previous_status`, `status`, `amount_cents`, `kind`, `reason_code`, `contract_id`, `project_id`, `client_id`, `lead_id`, `restore_id`, `settings_version`, `count`, `version`, `backup_id`, `payment_type`, `reason`.
+- Durante `ber.restore = 'on'`, o trigger genérico de auditoria não duplica os eventos explícitos de restore; `set_updated_at` preserva os timestamps do pacote.
 - Usuário, tipo, IDs, data e metadados mínimos allowlisted.
 - Sem senhas, tokens, chaves ou payloads brutos.
 - Falha de auditoria obrigatória reverte a operação principal.
