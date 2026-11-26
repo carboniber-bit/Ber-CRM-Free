@@ -12,6 +12,8 @@ vi.mock('../services/leadService', () => ({
   setLeadStatus: vi.fn(),
 }))
 
+vi.mock('../services/clientService', () => ({ getLeadClientLink: vi.fn().mockResolvedValue(null), convertLeadToClient: vi.fn() }))
+
 vi.mock('../components/leads/LeadTimeline', () => ({ LeadTimeline: () => null }))
 vi.mock('../components/leads/LeadChecklist', () => ({ LeadChecklist: () => null }))
 vi.mock('../components/leads/LeadFollowups', () => ({ LeadFollowups: () => null }))

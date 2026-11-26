@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft, CalendarClock, FileQuestion, MessageCircle, MessageSquare, Pencil } from 'lucide-react'
 import { getLead, setLeadStatus } from '../services/leadService'
+import { getLeadClientLink } from '../services/clientService'
 import {
   LEAD_STATUSES, NICHE_LABELS, PRESENCE_FIELDS, PRESENCE_FIELD_LABELS,
   STATUS_LABELS, type Lead, type LeadStatus, type Niche,
 } from '../types/lead'
+import type { LeadClientLink } from '../types/client'
 import { formatBRL, formatDateTime, formatPhone } from '../lib/format'
 import { buildMapsSearchUrl, normalizeInstagramUrl, normalizeMapsUrl, normalizeUrl } from '../lib/url'
 import { useToast } from '../hooks/useToast'
@@ -19,6 +21,7 @@ import { Skeleton } from '../components/ui/Skeleton'
 import { Spinner } from '../components/ui/Spinner'
 import { StatusBadge } from '../components/ui/StatusBadge'
 import { ContactDialog } from '../components/leads/ContactDialog'
+import { ConversionDialog } from '../components/leads/ConversionDialog'
 import { FollowupDialog } from '../components/leads/FollowupDialog'
 import { LeadChecklist } from '../components/leads/LeadChecklist'
 import { LeadFollowups } from '../components/leads/LeadFollowups'
@@ -30,8 +33,12 @@ type LeadLoadState =
   | { status: 'loading' }
   | { status: 'ready'; lead: Lead }
   | { status: 'error'; message: string }
-  | { status: 'empty' }
   | { status: 'refresh-error'; lead: Lead; message: string }
+
+type LinkLoadState =
+  | { status: 'loading' }
+  | { status: 'ready'; link: LeadClientLink | null }
+  | { status: 'error'; message: string; link: LeadClientLink | null }
 
 function InfoRow({ label, value }: { label: string; value: string | null }) {
   return (
@@ -64,6 +71,9 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
   const navigate = useNavigate()
   const { toast } = useToast()
   const [loadState, setLoadState] = useState<LeadLoadState | null>(null)
+  const [linkLoadState, setLinkLoadState] = useState<LinkLoadState>({ status: 'loading' })
+  const [conversionOpen, setConversionOpen] = useState(false)
+  const [timelineRefreshKey, setTimelineRefreshKey] = useState(0)
   const [refreshing, setRefreshing] = useState(false)
   const [contactOpen, setContactOpen] = useState(false)
   const [followupOpen, setFollowupOpen] = useState(false)
@@ -74,75 +84,81 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
   const requestRef = useRef(0)
   const activeRef = useRef(true)
   const statusSavingRef = useRef(false)
-  const focusOpenerRef = useRef<HTMLButtonElement | HTMLSelectElement | null>(null)
+  const pendingConversionFocusRef = useRef(false)
+  const convertedClientLinkRef = useRef<HTMLAnchorElement | null>(null)
+  const focusOpenerRef = useRef<HTMLButtonElement | HTMLSelectElement | HTMLAnchorElement | null>(null)
+  const link = linkLoadState.status === 'ready' || linkLoadState.status === 'error'
+    ? linkLoadState.link
+    : null
 
-  const fetchLead = useCallback(async (background = false) => {
+  const fetchLeadAndLink = useCallback(async (background = false) => {
     if (!activeRef.current) return
     const request = ++requestRef.current
+    if (background) {
+      setRefreshing(true)
+    } else {
+      setRefreshing(false)
+      setLoadState({ status: 'loading' })
+      setLinkLoadState({ status: 'loading' })
+    }
 
-    try {
-      const lead = await getLead(leadId)
-      if (!activeRef.current || request !== requestRef.current) return
-      if (!lead) {
-        setLoadState({ status: 'empty' })
-        return
-      }
-      setLoadState({ status: 'ready', lead })
-    } catch (error) {
-      if (!activeRef.current || request !== requestRef.current) return
-      const message = error instanceof Error ? error.message : 'Erro ao carregar lead.'
+    const [leadResult, linkResult] = await Promise.allSettled([
+      getLead(leadId),
+      getLeadClientLink(leadId),
+    ])
+    if (!activeRef.current || request !== requestRef.current) return
+
+    if (leadResult.status === 'rejected') {
+      const message = leadResult.reason instanceof Error ? leadResult.reason.message : 'Erro ao carregar lead.'
       setLoadState((current) => {
         if (background && current && (current.status === 'ready' || current.status === 'refresh-error')) {
           return { status: 'refresh-error', lead: current.lead, message }
         }
         return { status: 'error', message }
       })
-    } finally {
-      if (activeRef.current && request === requestRef.current) setRefreshing(false)
+      setRefreshing(false)
+      return
     }
+    setLoadState({ status: 'ready', lead: leadResult.value })
+    if (linkResult.status === 'rejected') {
+      const message = linkResult.reason instanceof Error ? linkResult.reason.message : 'Erro ao consultar vínculo.'
+      setLinkLoadState((current) => ({
+        status: 'error',
+        message,
+        link: background && (current.status === 'ready' || current.status === 'error') ? current.link : null,
+      }))
+    } else {
+      setLinkLoadState({ status: 'ready', link: linkResult.value })
+    }
+    setRefreshing(false)
   }, [leadId])
 
   const reload = useCallback(async (background = false) => {
     if (!activeRef.current) return
-    if (background) {
-      setRefreshing(true)
-    } else {
-      setRefreshing(false)
-      setLoadState({ status: 'loading' })
-    }
-    await fetchLead(background)
-  }, [fetchLead])
+    await fetchLeadAndLink(background)
+  }, [fetchLeadAndLink])
 
   useEffect(() => {
     activeRef.current = true
-    const request = ++requestRef.current
-    void getLead(leadId).then(
-      (lead) => {
-        if (!activeRef.current || request !== requestRef.current) return
-        setRefreshing(false)
-        setLoadState(lead ? { status: 'ready', lead } : { status: 'empty' })
-      },
-      (error: unknown) => {
-        if (!activeRef.current || request !== requestRef.current) return
-        setRefreshing(false)
-        setLoadState({
-          status: 'error',
-          message: error instanceof Error ? error.message : 'Erro ao carregar lead.',
-        })
-      },
-    )
+    void fetchLeadAndLink()
     return () => {
       activeRef.current = false
       requestRef.current += 1
     }
-  }, [leadId])
+  }, [fetchLeadAndLink])
 
   useEffect(() => {
-    if (contactOpen || followupOpen || whatsappOpen || pendingStatus !== null || statusSaving || refreshing) return
+    if (contactOpen || followupOpen || whatsappOpen || conversionOpen || pendingStatus !== null || statusSaving || refreshing) return
     const opener = focusOpenerRef.current
     focusOpenerRef.current = null
-    if (opener?.isConnected && !opener.disabled) opener.focus()
-  }, [contactOpen, followupOpen, whatsappOpen, pendingStatus, statusSaving, refreshing])
+    if (opener?.isConnected && !('disabled' in opener && opener.disabled)) opener.focus()
+  }, [contactOpen, followupOpen, whatsappOpen, conversionOpen, pendingStatus, statusSaving, refreshing])
+
+  useEffect(() => {
+    if (!pendingConversionFocusRef.current || conversionOpen || refreshing || !link) return
+    pendingConversionFocusRef.current = false
+    convertedClientLinkRef.current?.focus()
+  }, [conversionOpen, refreshing, link])
 
   const handleLeadChanged = useCallback(() => {
     setRefreshKey((key) => key + 1)
@@ -177,20 +193,9 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
     )
   }
 
-  if (loadState.status === 'empty') {
-    return (
-      <EmptyState
-        icon={FileQuestion}
-        title="Lead não encontrado"
-        description="O registro pode ter sido excluído ou não está disponível."
-        action={<Button variant="outline" onClick={() => navigate('/leads')}>Voltar para leads</Button>}
-      />
-    )
-  }
-
   const lead = loadState.lead
   const location = [lead.address, lead.district, lead.city, lead.state, lead.zip_code].filter(Boolean).join(', ')
-  const statusControlsDisabled = statusSaving || contactOpen || followupOpen || whatsappOpen || pendingStatus !== null || refreshing
+  const statusControlsDisabled = statusSaving || contactOpen || followupOpen || whatsappOpen || conversionOpen || pendingStatus !== null || refreshing
 
   const requestStatusChange = (status: LeadStatus, opener: HTMLSelectElement) => {
     if (statusControlsDisabled || status === lead.status) return
@@ -308,6 +313,28 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
           >
             <MessageSquare className="h-4 w-4" aria-hidden="true" /> Registrar contato
           </Button>
+          {link ? (
+            <Link
+              ref={convertedClientLinkRef}
+              to={`/clientes/${link.client_id}`}
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-line bg-surface px-4 text-sm font-medium text-ink transition-colors hover:bg-elevated focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              Ver cliente
+            </Link>
+          ) : (
+            <Button
+              type="button"
+              variant="mint"
+              onClick={(event) => {
+                if (statusControlsDisabled || linkLoadState.status !== 'ready') return
+                focusOpenerRef.current = event.currentTarget
+                setConversionOpen(true)
+              }}
+              disabled={statusControlsDisabled || linkLoadState.status !== 'ready'}
+            >
+              Converter em cliente
+            </Button>
+          )}
           <Button
             type="button"
             variant="outline"
@@ -325,6 +352,16 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
           <p className="mt-1 text-sm text-muted">
             {loadState.message} Exibindo os últimos dados carregados.
           </p>
+          <Button variant="outline" className="mt-3" disabled={refreshing} onClick={() => void reload(true)}>
+            Tentar novamente
+          </Button>
+        </Card>
+      )}
+
+      {linkLoadState.status === 'error' && (
+        <Card className="border-danger/40" role="alert">
+          <p className="text-sm font-medium text-danger">Não foi possível verificar o vínculo com o cliente.</p>
+          <p className="mt-1 text-sm text-muted">{linkLoadState.message}</p>
           <Button variant="outline" className="mt-3" disabled={refreshing} onClick={() => void reload(true)}>
             Tentar novamente
           </Button>
@@ -395,7 +432,7 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
             <p className="mt-3 text-xs text-muted">Valores estimados não são faturamento nem dinheiro recebido.</p>
           </Card>
 
-          <LeadTimeline leadId={lead.id} refreshKey={refreshKey} />
+          <LeadTimeline leadId={lead.id} refreshKey={timelineRefreshKey} />
         </div>
 
         <div className="flex flex-col gap-5">
@@ -443,6 +480,18 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
         lead={lead}
         onClose={() => setWhatsappOpen(false)}
         onLogged={handleLeadChanged}
+      />
+      <ConversionDialog
+        open={conversionOpen}
+        lead={lead}
+        existingClientId={link?.client_id ?? null}
+        onClose={() => setConversionOpen(false)}
+        onConverted={() => {
+          pendingConversionFocusRef.current = true
+          setConversionOpen(false)
+          setTimelineRefreshKey((key) => key + 1)
+          void reload(true)
+        }}
       />
     </div>
   )
