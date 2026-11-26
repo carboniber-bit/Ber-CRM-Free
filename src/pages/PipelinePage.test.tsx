@@ -8,11 +8,35 @@ import { formatBRL } from '../lib/format'
 import { LEAD_STATUSES, STATUS_LABELS, emptyLeadDraft, type Lead, type LeadStatus } from '../types/lead'
 import { listLeads, setLeadStatus } from '../services/leadService'
 import { addActivity } from '../services/activityService'
+import type { ConversionDialogProps } from '../components/leads/ConversionDialog'
+import type { LeadClientLink } from '../types/client'
+import { listLeadClientLinks } from '../services/clientService'
 import { KanbanCard, KanbanCardBody } from '../components/pipeline/KanbanCard'
 import { PipelinePage } from './PipelinePage'
 
 vi.mock('../services/leadService', () => ({ listLeads: vi.fn(), setLeadStatus: vi.fn() }))
 vi.mock('../services/activityService', () => ({ addActivity: vi.fn(), listActivities: vi.fn() }))
+vi.mock('../services/clientService', () => ({ listLeadClientLinks: vi.fn() }))
+vi.mock('../components/leads/ConversionDialog', () => ({
+  ConversionDialog: ({ open, lead, onClose, onConverted }: ConversionDialogProps) => open ? (
+    <div role="dialog" aria-label="Converter lead em cliente">
+      <p>{lead.name}</p>
+      <button type="button" onClick={onClose}>Cancelar</button>
+      <button
+        type="button"
+        onClick={() => onConverted({
+          client_id: 'client-1',
+          link_id: 'link-1',
+          contract_id: 'contract-1',
+          project_id: null,
+          already_existed: false,
+        })}
+      >
+        Confirmar conversão
+      </button>
+    </div>
+  ) : null,
+}))
 
 // Espia as props do `DndContext` do quadro sem substituí-lo (por dentro renderiza o contexto real,
 // então `useDraggable`/`useDroppable` seguem funcionando). É o único jeito de provar em jsdom a
@@ -123,6 +147,7 @@ function renderPage() {
         <Routes>
           <Route path="/pipeline" element={<PipelinePage />} />
           <Route path="/leads/:id" element={<div>Ficha do lead</div>} />
+          <Route path="/clientes/:id" element={<div>Ficha do cliente</div>} />
         </Routes>
       </MemoryRouter>
     </ToastContext.Provider>,
@@ -146,7 +171,12 @@ function mobileEntries() {
 }
 
 function mobileNames() {
-  return mobileEntries().map((entry) => within(entry).getByRole('link').textContent)
+  return mobileEntries().map((entry) => {
+    const leadLink = within(entry).getAllByRole('link')
+      .find((link) => link.getAttribute('href')?.startsWith('/leads/'))
+    expect(leadLink).toBeTruthy()
+    return leadLink!.textContent
+  })
 }
 
 function moveSelect(index = 0) {
@@ -179,6 +209,38 @@ function lastQuery() {
 
 function columnCount(status: LeadStatus) {
   return Number(columnFor(status).getByText(/^\d+$/).textContent)
+}
+
+async function desktopCard(lead: Lead) {
+  const column = await screen.findByRole('group', { name: STATUS_LABELS[lead.status] })
+  const card = within(column).getByRole('link', { name: lead.name })
+    .closest('[aria-roledescription="draggable"]')
+  expect(card).toBeTruthy()
+  return within(card as HTMLElement)
+}
+
+async function mobileEntry(leadName: string) {
+  await screen.findAllByRole('listitem')
+  const entry = mobileEntries().find((item) => within(item).queryByRole('link', { name: leadName }))
+  expect(entry).toBeTruthy()
+  return within(entry as HTMLElement)
+}
+
+function makeLink(lead: Lead, clientId: string): LeadClientLink {
+  return {
+    id: `link-${lead.id}`,
+    owner_id: lead.owner_id,
+    lead_id: lead.id,
+    client_id: clientId,
+    converted_at: '2026-11-25T12:00:00Z',
+    created_at: '2026-11-25T12:00:00Z',
+  }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
 }
 
 // Termina o arraste do quadro exatamente como o dnd-kit o entregaria ao `onDragEnd` da página:
@@ -227,6 +289,7 @@ beforeEach(() => {
   consoleError = vi.spyOn(console, 'error')
   consoleWarn = vi.spyOn(console, 'warn')
   mockLeads(PIPELINE_LEADS)
+  vi.mocked(listLeadClientLinks).mockResolvedValue([])
   vi.mocked(setLeadStatus).mockImplementation(async () => barbearia)
 })
 
@@ -319,6 +382,226 @@ describe('PipelinePage quadro', () => {
     expect(container.textContent).not.toMatch(/faturamento|receita|recebido|ganhou/i)
     expect(container.textContent).not.toMatch(/cliente/i)
     expect(container.textContent).not.toMatch(/contratado/i)
+  })
+})
+
+describe('PipelinePage — conversão', () => {
+  it('mostra Ver cliente no desktop e no mobile quando existe vínculo real', async () => {
+    const clientLink = makeLink(barbearia, 'client-barbearia')
+    vi.mocked(listLeadClientLinks).mockResolvedValue([clientLink])
+    renderPage()
+
+    const desktop = await desktopCard(barbearia)
+    const desktopLink = await desktop.findByRole('link', { name: 'Ver cliente' })
+    const mobile = await mobileEntry(barbearia.name)
+    const mobileLink = mobile.getByRole('link', { name: 'Ver cliente' })
+
+    expect(desktopLink.getAttribute('href')).toBe('/clientes/client-barbearia')
+    expect(mobileLink.getAttribute('href')).toBe('/clientes/client-barbearia')
+    expect(desktop.queryByRole('button', { name: 'Converter' })).toBeNull()
+    expect(mobile.queryByRole('button', { name: 'Converter' })).toBeNull()
+  })
+
+  it('mostra Converter e abre o diálogo para lead sem vínculo, nas duas ramificações', async () => {
+    renderPage()
+
+    const desktop = await desktopCard(barbearia)
+    const desktopAction = await desktop.findByRole('button', { name: 'Converter' })
+    const mobile = await mobileEntry(barbearia.name)
+    expect(mobile.getByRole('button', { name: 'Converter' })).toBeTruthy()
+
+    fireEvent.click(desktopAction)
+    const dialog = screen.getByRole('dialog', { name: 'Converter lead em cliente' })
+    expect(within(dialog).getByText(barbearia.name)).toBeTruthy()
+  })
+
+  it('não inicia arraste nem altera status ao clicar ou pressionar Converter', async () => {
+    renderPage()
+    const desktop = await desktopCard(barbearia)
+    const action = await desktop.findByRole('button', { name: 'Converter' })
+    const card = action.closest('[aria-roledescription="draggable"]') as HTMLElement
+
+    fireEvent.pointerDown(action)
+    fireEvent.click(action)
+
+    expect(card.getAttribute('aria-pressed')).not.toBe('true')
+    expect(card.className).not.toContain('opacity-60')
+    expect(setLeadStatus).not.toHaveBeenCalled()
+    expect((await desktopCard(barbearia)).getByRole('link', { name: barbearia.name })).toBeTruthy()
+    expect(columnCount('novo')).toBe(2)
+    expect(screen.getByRole('dialog', { name: 'Converter lead em cliente' })).toBeTruthy()
+  })
+
+  it('navega em Ver cliente sem gravar mudança de status', async () => {
+    vi.mocked(listLeadClientLinks).mockResolvedValue([makeLink(barbearia, 'client-barbearia')])
+    renderPage()
+    const desktop = await desktopCard(barbearia)
+    const link = await desktop.findByRole('link', { name: 'Ver cliente' })
+
+    fireEvent.pointerDown(link)
+    fireEvent.click(link)
+
+    expect(await screen.findByText('Ficha do cliente')).toBeTruthy()
+    expect(setLeadStatus).not.toHaveBeenCalled()
+  })
+
+  it('preserva leads e vínculos conhecidos e permite retry quando a consulta falha', async () => {
+    const clientLink = makeLink(barbearia, 'client-barbearia')
+    vi.mocked(listLeadClientLinks)
+      .mockResolvedValueOnce([clientLink])
+      .mockRejectedValueOnce(new Error('Falha ao listar vínculos.'))
+      .mockResolvedValueOnce([clientLink])
+    renderPage()
+    await (await desktopCard(barbearia)).findByRole('link', { name: 'Ver cliente' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Atualizar' }))
+    const alert = await screen.findByRole('alert')
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+
+    expect(alert.textContent).toContain('Não foi possível carregar os vínculos de conversão.')
+    expect(alert.textContent).toContain('Falha ao listar vínculos.')
+    expect(alert.textContent).toContain('A conversão não pode ser verificada; os leads continuam visíveis.')
+    expect(alert.textContent).not.toMatch(/não convertido/i)
+    const desktop = await desktopCard(barbearia)
+    const mobile = await mobileEntry(barbearia.name)
+    expect(desktop.getByRole('link', { name: barbearia.name })).toBeTruthy()
+    expect(mobile.getByRole('link', { name: barbearia.name })).toBeTruthy()
+    expect(desktop.getByRole('link', { name: 'Ver cliente' }).getAttribute('href')).toBe('/clientes/client-barbearia')
+    expect(mobile.getByRole('link', { name: 'Ver cliente' }).getAttribute('href')).toBe('/clientes/client-barbearia')
+    expect(desktop.queryByRole('button', { name: 'Converter' })).toBeNull()
+    expect(mobile.queryByRole('button', { name: 'Converter' })).toBeNull()
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Tentar novamente' }))
+    await (await desktopCard(barbearia)).findByRole('link', { name: 'Ver cliente' })
+    expect(listLeadClientLinks).toHaveBeenCalledTimes(3)
+    expect(listLeads).toHaveBeenCalledTimes(2)
+  })
+
+  it('preserva o snapshot de leads e a fila quando a listagem falha e permite retry', async () => {
+    vi.mocked(listLeads)
+      .mockResolvedValueOnce({ leads: PIPELINE_LEADS, total: PIPELINE_LEADS.length })
+      .mockRejectedValueOnce(new Error('Falha temporária na listagem.'))
+      .mockResolvedValueOnce({ leads: PIPELINE_LEADS, total: PIPELINE_LEADS.length })
+    renderPage()
+    await (await desktopCard(barbearia)).findByRole('link', { name: barbearia.name })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Atualizar' }))
+    const alert = await screen.findByRole('alert')
+
+    expect(alert.textContent).toContain('Falha temporária na listagem.')
+    expect(alert.textContent).toContain('último snapshot')
+    expect(screen.getByRole('group', { name: STATUS_LABELS.novo })).toBeTruthy()
+    expect((await desktopCard(barbearia)).getByRole('link', { name: barbearia.name })).toBeTruthy()
+    expect((await mobileEntry(barbearia.name)).getByRole('link', { name: barbearia.name })).toBeTruthy()
+    expect(dnd.props?.onDragEnd).toBeTypeOf('function')
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Tentar novamente' }))
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    expect(listLeads).toHaveBeenCalledTimes(3)
+    expect((await desktopCard(barbearia)).getByRole('link', { name: barbearia.name })).toBeTruthy()
+  })
+
+  it('não reutiliza o snapshot de leads quando uma consulta com filtros diferentes falha', async () => {
+    const filtered = PIPELINE_LEADS.filter((lead) => lead.niche === 'pizzaria')
+    vi.mocked(listLeads)
+      .mockResolvedValueOnce({ leads: PIPELINE_LEADS, total: PIPELINE_LEADS.length })
+      .mockRejectedValueOnce(new Error('Falha na consulta filtrada.'))
+      .mockResolvedValueOnce({ leads: filtered, total: filtered.length })
+    renderPage()
+    await (await desktopCard(barbearia)).findByRole('link', { name: barbearia.name })
+
+    fireEvent.change(screen.getByLabelText('Nicho'), { target: { value: 'pizzaria' } })
+    const alert = await screen.findByRole('alert')
+
+    expect(alert.textContent).toContain('Falha na consulta filtrada.')
+    expect(screen.queryByRole('group', { name: STATUS_LABELS.novo })).toBeNull()
+    expect(screen.queryByText(barbearia.name)).toBeNull()
+    expect(alert.textContent).not.toContain('último snapshot')
+
+    fireEvent.click(within(alert).getByRole('button', { name: 'Tentar novamente' }))
+    await screen.findByRole('group', { name: STATUS_LABELS.novo })
+    expect(screen.getAllByText(pizzaria.name)).toHaveLength(2)
+    expect(screen.queryByText(barbearia.name)).toBeNull()
+  })
+
+  it('mantém o seletor de status e a mesma ação no mobile', async () => {
+    const updated = { ...barbearia, status: 'interessado' as const }
+    vi.mocked(setLeadStatus).mockResolvedValue(updated)
+    renderPage()
+    const mobile = await mobileEntry(barbearia.name)
+    const selector = mobile.getByRole('combobox', { name: `Mover ${barbearia.name} para` })
+
+    expect(mobile.getByRole('button', { name: 'Converter' })).toBeTruthy()
+    fireEvent.click(mobile.getByRole('button', { name: 'Converter' }))
+    expect(screen.getByRole('dialog', { name: 'Converter lead em cliente' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }))
+    fireEvent.change(selector, { target: { value: 'interessado' } })
+
+    await waitFor(() => expect(setLeadStatus).toHaveBeenCalledWith(barbearia.id, 'interessado'))
+    await waitFor(() => expect(mobileNames()).toEqual([pizzaria.name]))
+    const remaining = await mobileEntry(pizzaria.name)
+    expect(remaining.getByRole('combobox', { name: `Mover ${pizzaria.name} para` })).toBeTruthy()
+    expect(remaining.getByRole('button', { name: 'Converter' })).toBeTruthy()
+    expect(await (await desktopCard(updated)).findByRole('button', { name: 'Converter' })).toBeTruthy()
+  })
+
+  it('fecha o diálogo e atualiza vínculos e leads em background após converter', async () => {
+    const pendingLinks = deferred<LeadClientLink[]>()
+    const pendingLeads = deferred<{ leads: Lead[]; total: number }>()
+    vi.mocked(listLeads)
+      .mockResolvedValueOnce({ leads: PIPELINE_LEADS, total: PIPELINE_LEADS.length })
+      .mockReturnValueOnce(pendingLeads.promise)
+    vi.mocked(listLeadClientLinks)
+      .mockResolvedValueOnce([])
+      .mockReturnValueOnce(pendingLinks.promise)
+    const { container } = renderPage()
+
+    const desktop = await desktopCard(barbearia)
+    fireEvent.click(await desktop.findByRole('button', { name: 'Converter' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar conversão' }))
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+    await waitFor(() => expect(listLeadClientLinks).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(listLeads).toHaveBeenCalledTimes(2))
+    expect(screen.getByRole('group', { name: STATUS_LABELS.novo })).toBeTruthy()
+    expect(container.querySelectorAll('.animate-pulse')).toHaveLength(0)
+    expect(setLeadStatus).not.toHaveBeenCalled()
+
+    const converted = { ...barbearia, status: 'aceitou' as const }
+    const clientLink = makeLink(barbearia, 'client-barbearia')
+    await act(async () => {
+      pendingLinks.resolve([clientLink])
+      pendingLeads.resolve({ leads: [converted, pizzaria, salao, clinica, doceria], total: PIPELINE_LEADS.length })
+      await Promise.all([pendingLinks.promise, pendingLeads.promise])
+    })
+
+    expect(await (await desktopCard(converted)).findByRole('link', { name: 'Ver cliente' })).toBeTruthy()
+    await waitFor(() => expect(mobileNames()).toEqual([pizzaria.name]))
+  })
+
+  it('descarta resposta de vínculos obsoleta quando Atualizar inicia outro efeito', async () => {
+    const first = deferred<LeadClientLink[]>()
+    const second = deferred<LeadClientLink[]>()
+    vi.mocked(listLeadClientLinks)
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+    renderPage()
+    await waitFor(() => expect(listLeadClientLinks).toHaveBeenCalledTimes(1))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Atualizar' }))
+    await waitFor(() => expect(listLeadClientLinks).toHaveBeenCalledTimes(2))
+    await act(async () => {
+      second.resolve([makeLink(barbearia, 'client-atual')])
+      await second.promise
+    })
+    await (await desktopCard(barbearia)).findByRole('link', { name: 'Ver cliente' })
+
+    await act(async () => {
+      first.resolve([makeLink(barbearia, 'client-obsoleto')])
+      await first.promise
+    })
+    expect((await desktopCard(barbearia)).getByRole('link', { name: 'Ver cliente' }).getAttribute('href'))
+      .toBe('/clientes/client-atual')
   })
 })
 

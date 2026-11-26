@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { DndContext, PointerSensor, pointerWithin, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { FolderKanban, RefreshCw } from 'lucide-react'
 import { listLeads, setLeadStatus } from '../services/leadService'
+import { listLeadClientLinks } from '../services/clientService'
 import { statusFromDragEnd } from '../lib/pipeline'
 import {
   LEAD_STATUSES, NICHES, NICHE_LABELS, PRIORITIES, PRIORITY_LABELS,
@@ -13,8 +14,9 @@ import { EmptyState } from '../components/ui/EmptyState'
 import { Input } from '../components/ui/Input'
 import { Select } from '../components/ui/Select'
 import { Skeleton } from '../components/ui/Skeleton'
-import { KanbanCardBody } from '../components/pipeline/KanbanCard'
+import { KanbanCardBody, LeadConversionAction } from '../components/pipeline/KanbanCard'
 import { KanbanColumn } from '../components/pipeline/KanbanColumn'
+import { ConversionDialog } from '../components/leads/ConversionDialog'
 import { useToast } from '../hooks/useToast'
 
 const PIPELINE_PAGE_SIZE = 500
@@ -32,6 +34,10 @@ function windowHint(listed: number, total: number): string | null {
     : `${shown}. Ajuste os filtros para reduzir a lista.`
 }
 
+function pipelineQueryKey(filters: LeadFilters): string {
+  return JSON.stringify([filters.niche ?? null, filters.city ?? null, filters.priority ?? null])
+}
+
 export function PipelinePage() {
   const { toast } = useToast()
   // `filters` alimenta o formulário (tecla a tecla); `queryFilters` é o que foi confirmado para a
@@ -44,8 +50,14 @@ export function PipelinePage() {
   const [refreshKey, setRefreshKey] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [mobileColumn, setMobileColumn] = useState<LeadStatus>('novo')
+  const [convertedClientIds, setConvertedClientIds] = useState<ReadonlyMap<string, string>>(() => new Map())
+  const [linksReady, setLinksReady] = useState(false)
+  const [linksError, setLinksError] = useState<string | null>(null)
+  const [linksRetryKey, setLinksRetryKey] = useState(0)
+  const [conversionLead, setConversionLead] = useState<Lead | null>(null)
   const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const leadsRef = useRef<Lead[]>([])
+  const loadedQueryKeyRef = useRef<string | null>(null)
   const mutationVersionRef = useRef(0)
   const pendingMovesRef = useRef(0)
   const refreshAfterMovesRef = useRef(false)
@@ -87,6 +99,7 @@ export function PipelinePage() {
         setLeads(result.leads)
         setTotal(result.total)
         setError(null)
+        loadedQueryKeyRef.current = pipelineQueryKey(queryFilters)
         setLoading(false)
       },
       (e: unknown) => {
@@ -97,6 +110,27 @@ export function PipelinePage() {
     )
     return () => { active = false }
   }, [queryFilters, refreshKey])
+
+  useEffect(() => {
+    let active = true
+    setLinksReady(false)
+    setLinksError(null)
+    void listLeadClientLinks().then(
+      (links) => {
+        if (!active) return
+        const next = new Map<string, string>()
+        for (const link of links) next.set(link.lead_id, link.client_id)
+        setConvertedClientIds(next)
+        setLinksReady(true)
+      },
+      (cause: unknown) => {
+        if (!active) return
+        setLinksReady(false)
+        setLinksError(cause instanceof Error ? cause.message : 'Erro ao carregar vínculos de conversão.')
+      },
+    )
+    return () => { active = false }
+  }, [refreshKey, linksRetryKey])
 
   const byStatus = useMemo(() => {
     const map = new Map<LeadStatus, Lead[]>(LEAD_STATUSES.map((s) => [s, []]))
@@ -154,6 +188,17 @@ export function PipelinePage() {
     if (status) void moveLead(String(event.active.id), status)
   }
 
+  const handleOpenConversion = (lead: Lead) => {
+    if (!linksReady || linksError || convertedClientIds.has(lead.id)) return
+    setConversionLead(lead)
+  }
+
+  const handleConverted = () => {
+    setConversionLead(null)
+    setLinksRetryKey((key) => key + 1)
+    setRefreshKey((key) => key + 1)
+  }
+
   const commit = (next: LeadFilters) => {
     setQueryFilters(next)
     setLoading(true)
@@ -185,6 +230,8 @@ export function PipelinePage() {
     setFilters({})
     commit({})
   }
+
+  const hasLeadSnapshot = loadedQueryKeyRef.current === pipelineQueryKey(queryFilters)
 
   return (
     <div className="flex flex-col gap-5">
@@ -221,7 +268,25 @@ export function PipelinePage() {
         </div>
       </Card>
 
-      {error ? (
+      {error && hasLeadSnapshot && (
+        <Card className="border-danger/40" role="alert">
+          <p className="text-sm font-medium text-danger">Não foi possível atualizar o pipeline.</p>
+          <p className="mt-1 text-sm text-muted">{error} Exibindo o último snapshot carregado.</p>
+          <Button variant="outline" className="mt-3" onClick={reload}>Tentar novamente</Button>
+        </Card>
+      )}
+
+      {linksError && (
+        <Card className="border-danger/40" role="alert">
+          <p className="text-sm font-medium text-danger">Não foi possível carregar os vínculos de conversão.</p>
+          <p className="mt-1 text-sm text-muted">{linksError} A conversão não pode ser verificada; os leads continuam visíveis.</p>
+          <Button variant="outline" className="mt-3" onClick={() => setLinksRetryKey((key) => key + 1)}>
+            Tentar novamente
+          </Button>
+        </Card>
+      )}
+
+      {error && !hasLeadSnapshot ? (
         <Card className="border-danger/40" role="alert">
           <p className="text-sm text-danger">{error}</p>
           <Button variant="outline" className="mt-3" onClick={reload}>Tentar novamente</Button>
@@ -252,7 +317,14 @@ export function PipelinePage() {
             <DndContext sensors={sensors} collisionDetection={pointerWithin} onDragEnd={onDragEnd}>
               <div className="flex gap-4 overflow-x-auto pb-4">
                 {LEAD_STATUSES.map((status) => (
-                  <KanbanColumn key={status} status={status} leads={byStatus.get(status) ?? []} onMove={moveLead} />
+                  <KanbanColumn
+                    key={status}
+                    status={status}
+                    leads={byStatus.get(status) ?? []}
+                    onMove={moveLead}
+                    convertedClientIds={convertedClientIds}
+                    onConvert={linksReady && !linksError ? handleOpenConversion : undefined}
+                  />
                 ))}
               </div>
             </DndContext>
@@ -270,7 +342,16 @@ export function PipelinePage() {
               <div role="list" aria-label={`Leads em ${STATUS_LABELS[mobileColumn]}`} className="flex flex-col gap-3">
                 {mobileLeads.map((lead) => (
                   <div key={lead.id} role="listitem" className="flex flex-col gap-2">
-                    <KanbanCardBody lead={lead} />
+                    <KanbanCardBody
+                      lead={lead}
+                      conversionAction={(
+                        <LeadConversionAction
+                          lead={lead}
+                          convertedClientId={convertedClientIds.get(lead.id)}
+                          onConvert={linksReady && !linksError ? handleOpenConversion : undefined}
+                        />
+                      )}
+                    />
                     <Select
                       label={`Mover ${lead.name} para`}
                       placeholder="Escolha o novo status"
@@ -289,6 +370,16 @@ export function PipelinePage() {
             )}
           </div>
         </>
+      )}
+
+      {conversionLead && (
+        <ConversionDialog
+          open
+          lead={conversionLead}
+          existingClientId={convertedClientIds.get(conversionLead.id) ?? null}
+          onClose={() => setConversionLead(null)}
+          onConverted={handleConverted}
+        />
       )}
     </div>
   )
