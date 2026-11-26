@@ -608,7 +608,8 @@ declare
   v_allocated numeric;
 begin
   -- Validação defensiva somente: authenticated não escreve contracts diretamente.
-  -- A serialização ocorre nas RPCs update_client/adjust_contract, antes do UPDATE da linha.
+  -- A serialização ocorre nas RPCs de projeto e na correção de update_client da Task 3;
+  -- adjust_contract será criada pelo Plano 3. Todas aguardam a advisory antes do UPDATE.
   if new.total_value is distinct from old.total_value then
     select coalesce(sum(contracted_value), 0) into v_allocated
       from public.projects
@@ -637,7 +638,7 @@ commit;
 - [ ] **Step 2: Review RLS and trigger behavior**
 
 Run: `git diff --check && git diff -- supabase/migrations/0008_etapa3_projects.sql`
-Expected: tasks have owner CRUD policies; revisions have owner read/insert/update but no delete; both have composite owner/project FKs; direct INSERT of a completed/approved revision is normalized and logged; the allocation trigger defensively rejects contract totals below the sum of non-cancelled projects without acquiring an advisory after the row; `update_client` and `adjust_contract` own serialization and acquire `:contract:<id>` before any `FOR UPDATE`; task writes and reorders share a transactional per-owner advisory lock; tables and trigger functions explicitly revoke `public` and `anon`, leaving only the minimum grants for `authenticated`; trigger functions are `security definer` with empty `search_path` and are never granted for direct client execution.
+Expected: tasks have owner CRUD policies; revisions have owner read/insert/update but no delete; both have composite owner/project FKs; direct INSERT of a completed/approved revision is normalized and logged; the allocation trigger defensively rejects contract totals below the sum of non-cancelled projects without acquiring an advisory after the row; the project RPCs added in Task 3 and the corrected `update_client` will acquire `:contract:<id>` before any `FOR UPDATE`, while `adjust_contract` belongs to Plan 3; task writes and reorders share a transactional per-owner advisory lock; tables and trigger functions explicitly revoke `public` and `anon`, leaving only the minimum grants for `authenticated`; trigger functions are `security definer` with empty `search_path` and are never granted for direct client execution.
 
 - [ ] **Step 3: Commit**
 
@@ -659,8 +660,8 @@ git commit -m "feat: criar tarefas e revisoes de projeto"
 - Consumes: `public.contracts`, `public.projects`, `public.client_activities`.
 
 **Contrato de alocação compartilhado com os Planos 1 e 3:**
-- `authenticated` possui somente `SELECT` em `public.contracts`; toda escrita passa por RPC `security definer`. `update_client(uuid,jsonb)` e `adjust_contract(uuid,numeric(14,2))` devem adquirir `pg_advisory_xact_lock(hashtextextended(owner_id || ':contract:' || contract_id, 0))` antes de selecionar o contrato com `FOR UPDATE` e antes de validar ou gravar qualquer alteração.
-- Nenhum dos dois aceita total menor que `sum(projects.contracted_value)` com `status <> 'cancelled'`; a falha usa `23514` e o marcador `PROJECT_ALLOCATION_EXCEEDS_CONTRACT`.
+- `authenticated` possui somente `SELECT` em `public.contracts`; toda escrita passa por RPC `security definer`. O Plano 2 corrige `update_client(uuid,jsonb)` para adquirir `pg_advisory_xact_lock(hashtextextended(owner_id || ':contract:' || contract_id, 0))` antes de qualquer row lock. `adjust_contract(uuid,numeric(14,2))` será criada pelo Plano 3 com a mesma ordem e não é chamada por este plano.
+- Nenhuma das duas RPCs aceita total menor que `sum(projects.contracted_value)` com `status <> 'cancelled'`; a falha usa `23514` e o marcador `PROJECT_ALLOCATION_EXCEEDS_CONTRACT`.
 - O Plano 1 pode manter a rejeição mais restrita `CONTRACT_ADJUST_REQUIRED` para toda mudança de total; ambos os erros preservam cliente, contrato e projetos por rollback transacional.
 - O Plano 3 deve validar a alocação antes de reescrever parcelas. A trigger `contracts_enforce_project_allocation` desta migration é uma validação defensiva para UPDATE privilegiado, sem advisory própria; ela não substitui a serialização das RPCs.
 - Toda RPC que altera um contrato existente adquire primeiro a advisory `:contract:<id>`; somente depois bloqueia projeto e/ou contrato. Nenhuma RPC pode segurar uma linha e esperar essa advisory.
@@ -674,8 +675,9 @@ begin;
 
 do $$
 declare
-  v_owner uuid;
+  v_owner uuid := gen_random_uuid();
   v_other uuid := gen_random_uuid();
+  v_today date := DATE '2026-02-01';
   v_client jsonb;
   v_client_id uuid;
   v_contract_id uuid;
@@ -693,18 +695,28 @@ declare
   v_archived_at timestamptz := '2026-02-03T04:05:06Z';
   v_invalid_value text;
   v_invalid_url text;
+  v_update_client_definition text;
   v_events int;
 begin
-  select id into v_owner from auth.users order by created_at limit 1;
-  if v_owner is null then
-    raise exception 'Crie ao menos um usuário autenticado antes de executar este teste.';
-  end if;
-
-  -- O trigger handle_new_user cria o perfil; o rollback final remove usuário, perfil e dados.
+  -- O trigger handle_new_user cria o perfil; o rollback final remove usuários, perfis e dados.
   insert into auth.users (id, email)
-  values (v_other, 'etapa3-projects-' || v_other::text || '@example.test');
+  values
+    (v_owner, 'etapa3-projects-owner-' || v_owner::text || '@example.test'),
+    (v_other, 'etapa3-projects-' || v_other::text || '@example.test');
 
   perform set_config('request.jwt.claim.sub', v_owner::text, true);
+
+  v_update_client_definition := pg_catalog.lower(pg_catalog.pg_get_functiondef(
+    'public.update_client(uuid,jsonb)'::pg_catalog.regprocedure
+  ));
+  if pg_catalog.strpos(v_update_client_definition, ':clients') = 0
+    or pg_catalog.strpos(v_update_client_definition, ':clients')
+      > pg_catalog.strpos(v_update_client_definition, ':contract:')
+    or pg_catalog.strpos(v_update_client_definition, ':contract:') = 0
+    or pg_catalog.strpos(v_update_client_definition, ':contract:')
+      > pg_catalog.strpos(v_update_client_definition, 'for update') then
+    raise exception 'update_client não adquiriu :clients e :contract antes do primeiro row lock.';
+  end if;
 
   if has_table_privilege('anon', 'public.project_tasks', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
     or has_table_privilege('anon', 'public.project_revisions', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
@@ -722,7 +734,7 @@ begin
 
   v_client := public.create_client(jsonb_build_object(
     'creation_key', gen_random_uuid(), 'name', 'Cliente de projeto',
-    'service', 'Site', 'total_value', '1000.00', 'contracted_at', current_date
+    'service', 'Site', 'total_value', '1000.00', 'contracted_at', v_today
   ));
   v_client_id := ((v_client ->> 'client')::jsonb ->> 'id')::uuid;
   v_contract_id := ((v_client ->> 'contract')::jsonb ->> 'id')::uuid;
@@ -731,7 +743,7 @@ begin
     'client_id', v_client_id,
     'contract_id', v_contract_id, 'name', 'Projeto principal',
     'service', 'Site', 'contracted_value', '600.00',
-    'start_date', current_date, 'due_date', current_date + 15,
+    'start_date', v_today, 'due_date', v_today + 15,
     'responsible_name', 'Responsável', 'priority', 'high', 'description', 'Teste'
   ));
   v_project_id := (v_project ->> 'id')::uuid;
@@ -740,7 +752,7 @@ begin
     'client_id', v_client_id,
     'contract_id', v_contract_id, 'name', 'Projeto complementar',
     'service', 'Conteúdo', 'contracted_value', '400.00',
-    'start_date', current_date, 'due_date', current_date + 7,
+    'start_date', v_today, 'due_date', v_today + 7,
     'responsible_name', null, 'priority', 'medium', 'description', null
   ));
   v_second_project_id := (v_second ->> 'id')::uuid;
@@ -750,7 +762,7 @@ begin
       'client_id', v_client_id,
       'contract_id', v_contract_id, 'name', 'Projeto excedente',
       'service', 'Extra', 'contracted_value', '0.01',
-      'start_date', current_date, 'due_date', current_date + 7,
+      'start_date', v_today, 'due_date', v_today + 7,
       'responsible_name', null, 'priority', 'low', 'description', null
     ));
     raise exception 'Alocação acima do contrato foi aceita.';
@@ -764,7 +776,7 @@ begin
         'client_id', v_client_id,
         'contract_id', v_contract_id, 'name', 'Projeto com valor inválido',
         'service', 'Extra', 'contracted_value', v_invalid_value,
-        'start_date', current_date, 'due_date', current_date + 7,
+        'start_date', v_today, 'due_date', v_today + 7,
         'responsible_name', null, 'priority', 'low', 'description', null
       ));
       raise exception 'create_project aceitou valor inválido: %', v_invalid_value;
@@ -777,7 +789,7 @@ begin
         'client_id', v_client_id,
         'contract_id', v_contract_id, 'name', 'Projeto principal',
         'service', 'Site', 'contracted_value', v_invalid_value,
-        'start_date', current_date, 'due_date', current_date + 15,
+        'start_date', v_today, 'due_date', v_today + 15,
         'responsible_name', 'Responsável', 'priority', 'high', 'description', 'Teste'
       ));
       raise exception 'update_project aceitou valor inválido: %', v_invalid_value;
@@ -796,7 +808,7 @@ begin
       v_client_id,
       (v_client ->> 'client')::jsonb || (v_client ->> 'contract')::jsonb || jsonb_build_object(
         'contract_id', v_contract_id, 'name', 'Nome que não deve persistir',
-        'service', 'Site', 'total_value', '999.99', 'contracted_at', current_date
+        'service', 'Site', 'total_value', '999.99', 'contracted_at', v_today
       )
     );
     raise exception 'update_client reduziu o total abaixo dos projetos.';
@@ -812,16 +824,7 @@ begin
     raise exception 'A falha de alocação não preservou cliente e contrato.';
   end if;
 
-  begin
-    perform public.adjust_contract(v_contract_id, 999.99);
-    raise exception 'adjust_contract reduziu o total abaixo dos projetos.';
-  exception when others then
-    if sqlerrm = 'adjust_contract reduziu o total abaixo dos projetos.' then raise; end if;
-    if sqlstate <> '23514' or not (
-      sqlerrm like 'PROJECT_ALLOCATION_EXCEEDS_CONTRACT:%'
-      or sqlerrm like 'CONTRACT_ADJUST_REQUIRED:%'
-    ) then raise; end if;
-  end;
+  -- adjust_contract é implementada e testada no Plano 3; este plano não pressupõe sua existência.
 
   -- UPDATE privilegiado continua encontrando a validação defensiva da trigger, sem advisory própria.
   begin
@@ -974,7 +977,7 @@ begin
     'client_id', v_client_id,
     'contract_id', v_contract_id, 'name', 'Projeto complementar',
     'service', 'Conteúdo', 'contracted_value', '999.99',
-    'start_date', current_date, 'due_date', current_date + 7,
+    'start_date', v_today, 'due_date', v_today + 7,
     'responsible_name', null, 'priority', 'medium', 'description', null
   ));
   if (select contracted_value from public.projects where id = v_second_project_id) <> 400.00
@@ -1016,7 +1019,7 @@ begin
       'client_id', v_client_id,
       'contract_id', v_contract_id, 'name', 'Nome que não deve persistir',
       'service', 'Site', 'contracted_value', '600.01',
-      'start_date', current_date, 'due_date', current_date + 15,
+      'start_date', v_today, 'due_date', v_today + 15,
       'responsible_name', 'Responsável', 'priority', 'high', 'description', 'Teste'
     ));
     raise exception 'update_project editou projeto com contrato cancelado.';
@@ -1056,7 +1059,7 @@ begin
       'client_id', v_client_id,
       'contract_id', v_contract_id, 'name', 'Alteração cross-owner',
       'service', 'Site', 'contracted_value', '600.00',
-      'start_date', current_date, 'due_date', current_date + 15,
+      'start_date', v_today, 'due_date', v_today + 15,
       'responsible_name', 'Responsável', 'priority', 'high', 'description', 'Teste'
     ));
     raise exception 'update_project permitiu alteração de projeto de outro proprietário.';
@@ -1069,7 +1072,7 @@ begin
       'client_id', v_client_id,
       'contract_id', v_contract_id, 'name', 'Criação cross-owner',
       'service', 'Site', 'contracted_value', '0.01',
-      'start_date', current_date, 'due_date', current_date + 7,
+      'start_date', v_today, 'due_date', v_today + 7,
       'responsible_name', null, 'priority', 'low', 'description', null
     ));
     raise exception 'create_project permitiu uso de contrato de outro proprietário.';
@@ -1088,9 +1091,138 @@ rollback;
 
 - [ ] **Step 2: Confirm the test is red**
 
-Expected before implementation: `public.create_project(jsonb)` does not exist, so the complete contract test fails RED. Against a baseline implementation, the old numeric cast rounds `0.001` and the old delivery validation accepts non-HTTP schemes, so the new SQL assertions also fail before the fixes. Runtime execution requires migrations 0001–0008 applied by the user.
+Expected before implementation: `public.create_project(jsonb)` does not exist, so the complete contract test fails RED. Against a baseline implementation, the source-order assertion fails because `update_client` lacks `:contract:<id>`, the old numeric cast rounds `0.001` and the old delivery validation accepts non-HTTP schemes, so the new SQL assertions also fail before the fixes. Runtime execution requires migrations 0001–0008 applied by the user.
 
-- [ ] **Step 3: Insert project RPCs before `commit;`**
+- [ ] **Step 3: Correct `update_client` lock order and insert project RPCs before `commit;`**
+
+In `supabase/migrations/0008_etapa3_projects.sql`, replace `public.update_client(uuid,jsonb)` with the following definition. The replacement preserves its signature, validation, JSON return and privileges; it only reads `contract_id` earlier and acquires `:clients` then `:contract:<id>` before the first `FOR UPDATE`.
+
+```sql
+create or replace function public.update_client(p_client_id uuid, p_payload jsonb)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_owner uuid := auth.uid();
+  v_client public.clients;
+  v_contract public.contracts;
+  v_old_status text;
+  v_contract_id uuid;
+  v_cnpj text;
+  v_service text;
+  v_total numeric(14,2);
+  v_total_text text;
+  v_contracted_at date;
+  v_due_date date;
+begin
+  if v_owner is null then
+    raise exception 'Sessão autenticada necessária.' using errcode = '42501';
+  end if;
+
+  v_contract_id := nullif(p_payload ->> 'contract_id', '')::uuid;
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_owner::text || ':clients', 0)
+  );
+  if v_contract_id is not null then
+    perform pg_catalog.pg_advisory_xact_lock(
+      pg_catalog.hashtextextended(v_owner::text || ':contract:' || v_contract_id::text, 0)
+    );
+  end if;
+
+  select * into v_client from public.clients
+    where id = p_client_id and owner_id = v_owner for update;
+  if not found then
+    raise exception 'Cliente não encontrado ou acesso negado.' using errcode = '42501';
+  end if;
+
+  v_old_status := v_client.status;
+  select * into v_contract from public.contracts
+    where owner_id = v_owner and client_id = p_client_id and id = v_contract_id
+    for update;
+  if not found then
+    raise exception 'Contrato do cliente não encontrado ou acesso negado.' using errcode = '42501';
+  end if;
+
+  v_service := nullif(pg_catalog.btrim(p_payload ->> 'service'), '');
+  v_total_text := nullif(pg_catalog.btrim(p_payload ->> 'total_value'), '');
+  v_contracted_at := (p_payload ->> 'contracted_at')::date;
+  v_due_date := nullif(p_payload ->> 'due_date', '')::date;
+  if nullif(pg_catalog.btrim(p_payload ->> 'name'), '') is null
+    or v_service is null or v_total_text is null
+    or v_total_text !~ '^[0-9]{1,12}(\.[0-9]{1,2})?$' or v_contracted_at is null then
+    raise exception 'Informe nome, serviço, valor e data da contratação.' using errcode = '22023';
+  end if;
+  v_total := v_total_text::numeric(14,2);
+  if v_due_date is not null and v_due_date < v_contracted_at then
+    raise exception 'O vencimento não pode anteceder a contratação.' using errcode = '22023';
+  end if;
+
+  v_cnpj := nullif(pg_catalog.regexp_replace(p_payload ->> 'cnpj', '[^0-9]', '', 'g'), '');
+  if v_cnpj is not null and exists (
+    select 1 from public.clients where owner_id = v_owner and cnpj_digits = v_cnpj and id <> p_client_id
+  ) then
+    select name into v_service from public.clients where owner_id = v_owner and cnpj_digits = v_cnpj limit 1;
+    raise exception 'CLIENT_CNPJ_DUPLICATE:%', v_service using errcode = '23505';
+  end if;
+
+  update public.clients set
+    name = pg_catalog.btrim(p_payload ->> 'name'),
+    responsible_name = nullif(pg_catalog.btrim(p_payload ->> 'responsible_name'), ''),
+    phone = nullif(pg_catalog.btrim(p_payload ->> 'phone'), ''),
+    whatsapp = nullif(pg_catalog.btrim(p_payload ->> 'whatsapp'), ''),
+    email = nullif(pg_catalog.btrim(p_payload ->> 'email'), ''),
+    cnpj = nullif(pg_catalog.btrim(p_payload ->> 'cnpj'), ''),
+    website = nullif(pg_catalog.btrim(p_payload ->> 'website'), ''),
+    instagram = nullif(pg_catalog.btrim(p_payload ->> 'instagram'), ''),
+    address = nullif(pg_catalog.btrim(p_payload ->> 'address'), ''),
+    city = nullif(pg_catalog.btrim(p_payload ->> 'city'), ''),
+    district = nullif(pg_catalog.btrim(p_payload ->> 'district'), ''),
+    zip_code = nullif(pg_catalog.btrim(p_payload ->> 'zip_code'), ''),
+    state = nullif(pg_catalog.btrim(p_payload ->> 'state'), ''),
+    niche = nullif(pg_catalog.btrim(p_payload ->> 'niche'), ''),
+    status = coalesce(nullif(p_payload ->> 'status', ''), v_client.status),
+    notes = nullif(p_payload ->> 'notes', ''),
+    archived_at = case
+      when coalesce(nullif(p_payload ->> 'status', ''), v_client.status) = 'inactive'
+        then coalesce(v_client.archived_at, now())
+      else null
+    end
+  where id = p_client_id and owner_id = v_owner
+  returning * into v_client;
+
+  if v_total is distinct from v_contract.total_value then
+    raise exception 'CONTRACT_ADJUST_REQUIRED: use o ajuste financeiro do contrato.' using errcode = '23514';
+  end if;
+
+  update public.contracts set
+    service = v_service,
+    total_value = v_total,
+    contracted_at = v_contracted_at,
+    due_date = v_due_date,
+    payment_method = nullif(pg_catalog.btrim(p_payload ->> 'payment_method'), ''),
+    payment_terms = nullif(pg_catalog.btrim(p_payload ->> 'payment_terms'), ''),
+    notes = nullif(p_payload ->> 'contract_notes', '')
+  where id = v_contract.id and owner_id = v_owner
+  returning * into v_contract;
+
+  if v_old_status is distinct from v_client.status then
+    insert into public.client_activities (owner_id, client_id, type, description, metadata)
+    values (
+      v_owner, v_client.id, 'status_change',
+      'Status alterado de ' || v_old_status || ' para ' || v_client.status || '.',
+      jsonb_build_object('previous_status', v_old_status, 'new_status', v_client.status)
+    );
+  end if;
+
+  return jsonb_build_object('client', to_jsonb(v_client), 'contract', to_jsonb(v_contract));
+end;
+$$;
+```
+
+Then insert the project RPCs in the same migration:
 
 ```sql
 create or replace function public.create_project(p_payload jsonb)
@@ -1379,10 +1511,10 @@ grant execute on function public.deliver_project(uuid, jsonb) to authenticated;
 - [ ] **Step 4: Review invariants and run the SQL contract test (GREEN)**
 
 After applying the RPCs, rerun the complete `supabase/tests/etapa3_projects.sql` in the SQL Editor.
-Expected: PASS with notice `Contrato SQL de projetos aprovado.`; both RPCs reject `0.001` and `1000000000000.00` with `22023`; `update_client` and `adjust_contract` reject a total below the active allocation; a privileged direct UPDATE is rejected by the defensive trigger; a direct authenticated UPDATE of `contracts` fails with `42501` and preserves the total; repeated cancellation preserves the fixture timestamp and successful reactivation clears it; `update_project` preserves a cancelled project's current value, does not reallocate it and records `contracted_value_preserved = true`; editing through a cancelled contract fails with a clear `42501`; invalid delivery/files URLs are rejected, the valid HTTPS delivery passes, and repeated delivery ignores a new invalid payload.
+Expected: PASS with notice `Contrato SQL de projetos aprovado.`; `create_project` and `update_project` reject `0.001` and `1000000000000.00` with `22023`; `update_client` rejects a total below the active allocation; a privileged direct UPDATE is rejected by the defensive trigger; a direct authenticated UPDATE of `contracts` fails with `42501` and preserves the total; repeated cancellation preserves the fixture timestamp and successful reactivation clears it; `update_project` preserves a cancelled project's current value, does not reallocate it and records `contracted_value_preserved = true`; editing through a cancelled contract fails with a clear `42501`; invalid delivery/files URLs are rejected, the valid HTTPS delivery passes, and repeated delivery ignores a new invalid payload. The `adjust_contract` allocation assertion remains exclusively in Plan 3, where that RPC is created.
 
 Then run: `git diff --check`
-Expected: `update_client` and `adjust_contract` acquire the contract advisory before any row lock and before the allocation sum; the allocation trigger validates without acquiring an advisory; cancelled projects are excluded from active allocation; update replaces only the current active project allocation, while a cancelled project preserves its value; entering/leaving `cancelled` shares the contract advisory and row lock and leaving it revalidates capacity; `set_project_status` rejects `delivered` and cannot revert a delivered project; first delivery requires a non-empty HTTP(S) URL without whitespace and `confirmed = true`; repeated `deliver_project` returns before validating the new payload and without another event; every project RPC validates owner and logs mutations; no RPC writes financial tables.
+Expected: `update_client` acquires the contract advisory before any row lock and before the allocation sum; `adjust_contract` is not present until Plan 3; the allocation trigger validates without acquiring an advisory; cancelled projects are excluded from active allocation; update replaces only the current active project allocation, while a cancelled project preserves its value; entering/leaving `cancelled` shares the contract advisory and row lock and leaving it revalidates capacity; `set_project_status` rejects `delivered` and cannot revert a delivered project; first delivery requires a non-empty HTTP(S) URL without whitespace and `confirmed = true`; repeated `deliver_project` returns before validating the new payload and without another event; every project RPC validates owner and logs mutations; no RPC writes financial tables.
 
 - [ ] **Step 5: Commit**
 
@@ -1549,7 +1681,8 @@ Acrescente este segundo bloco `do` imediatamente antes do `rollback;` final de `
 ```sql
 do $$
 declare
-  v_owner uuid;
+  v_owner uuid := gen_random_uuid();
+  v_today date := DATE '2026-02-01';
   v_client jsonb;
   v_contract_id uuid;
   v_project_id uuid;
@@ -1558,15 +1691,13 @@ declare
   v_actual uuid[];
   v_positions integer[];
 begin
-  select id into v_owner from auth.users order by created_at limit 1;
-  if v_owner is null then
-    raise exception 'Crie ao menos um usuário autenticado antes de executar este teste.';
-  end if;
+  insert into auth.users (id, email)
+  values (v_owner, 'etapa3-projects-order-' || v_owner::text || '@example.test');
   perform set_config('request.jwt.claim.sub', v_owner::text, true);
 
   v_client := public.create_client(jsonb_build_object(
     'creation_key', gen_random_uuid(), 'name', 'Cliente de ordenação',
-    'service', 'Site', 'total_value', '0.00', 'contracted_at', current_date
+    'service', 'Site', 'total_value', '0.00', 'contracted_at', v_today
   ));
   v_contract_id := ((v_client ->> 'contract')::jsonb ->> 'id')::uuid;
   v_project_id := (public.create_project(jsonb_build_object(
@@ -1640,7 +1771,8 @@ do $$
 declare
   v_conn_a text := 'task_concurrency_a_' || gen_random_uuid()::text;
   v_conn_b text := 'task_concurrency_b_' || gen_random_uuid()::text;
-  v_owner uuid;
+  v_owner uuid := gen_random_uuid();
+  v_today date := DATE '2026-02-01';
   v_client_id uuid;
   v_project_id uuid;
   v_task_ids uuid[];
@@ -1654,20 +1786,22 @@ declare
   v_direct_sql text;
   v_reorder_sql text;
 begin
-  select id into v_owner from auth.users order by created_at, id limit 1;
-  if v_owner is null then raise exception 'Crie ao menos um usuário autenticado antes do teste.'; end if;
   perform dblink_connect(v_conn_a, format('dbname=%L user=%L', current_database(), current_user));
   perform dblink_connect(v_conn_b, format('dbname=%L user=%L', current_database(), current_user));
 
   begin
     perform dblink_exec(v_conn_a, 'begin');
+    perform dblink_exec(v_conn_a, format(
+      'insert into auth.users (id, email) values (%L::uuid, %L)',
+      v_owner::text, 'etapa3-task-concurrency-' || v_owner::text || '@example.test'
+    ));
     perform dblink_exec(v_conn_a, 'set local role authenticated');
     perform dblink_exec(v_conn_a, format('select set_config(''request.jwt.claim.sub'', %L, true)', v_owner::text));
     select dblink_eval(v_conn_a, format(
       'select public.create_client(%L::jsonb)',
       jsonb_build_object(
         'creation_key', gen_random_uuid(), 'name', 'Cliente de concorrência de tarefas',
-        'service', 'Site', 'total_value', '0.00', 'contracted_at', current_date
+        'service', 'Site', 'total_value', '0.00', 'contracted_at', v_today
       )::text
     )) into v_result;
     v_client_id := ((v_result::jsonb ->> 'client')::jsonb ->> 'id')::uuid;
@@ -1698,10 +1832,11 @@ begin
       select set_config('request.jwt.claim.sub', %3$L, true);
       delete from public.project_revisions where project_id = %1$L::uuid;
       delete from public.project_tasks where project_id = %1$L::uuid;
-      delete from public.client_activities where project_id = %1$L::uuid;
+      delete from public.client_activities where client_id = %2$L::uuid;
       delete from public.projects where id = %1$L::uuid;
       delete from public.contracts where client_id = %2$L::uuid;
       delete from public.clients where id = %2$L::uuid;
+      delete from auth.users where id = %3$L::uuid;
       commit;
     $cleanup$, v_project_id::text, v_client_id::text, v_owner::text);
     perform dblink_exec(v_conn_a, 'commit');
