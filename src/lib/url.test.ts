@@ -27,6 +27,14 @@ describe('normalizeInstagramUrl', () => {
     expect(normalizeInstagramUrl('javascript:alert(1)')).toBeNull()
   })
 
+  it.each([
+    'https://example.com/perfil',
+    'https://instagram.com.evil.test/perfil',
+    'https://www.instagram.com@evil.test/perfil',
+  ])('rejeita URL que não pertence ao Instagram: %s', (value) => {
+    expect(normalizeInstagramUrl(value)).toBeNull()
+  })
+
   it('preserva vazio como string', () => {
     expect(normalizeInstagramUrl('')).toBe('')
     expect(normalizeInstagramUrl(null)).toBe('')
@@ -40,6 +48,9 @@ describe('normalizeMapsUrl', () => {
     'https://www.google.com/maps/place/Studio+Lis',
     'https://maps.google.com/?cid=123',
     'https://goo.gl/maps/exemplo',
+    'https://www.google.com/maps?query=placeid:ChIJ-exemplo',
+    'https://www.google.com/maps?query_place_id=ChIJ-exemplo',
+    'https://maps.google.com/maps?cid=123',
   ])('aceita o link exato do Maps %s', (value) => {
     expect(normalizeMapsUrl(value)).toBe(value.startsWith('http') ? value : `https://${value}`)
   })
@@ -49,6 +60,8 @@ describe('normalizeMapsUrl', () => {
     'http://localhost:5173/lead',
     'https://www.google.com/maps/search/?api=1&query=Studio+Lis',
     'https://www.google.com/maps?api=1&query=Studio+Lis',
+    'https://www.google.com/search?q=placeid:ChIJ-exemplo',
+    'https://www.google.com/?cid=123',
     'https://maps.app.goo.gl',
     'javascript:alert(1)',
   ])('rejeita URL que não identifica um estabelecimento no Maps: %s', (value) => {

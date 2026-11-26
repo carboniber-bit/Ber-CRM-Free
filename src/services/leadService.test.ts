@@ -261,10 +261,19 @@ describe('listLeads', () => {
     expect(result.total).toBe(1)
   })
 
+  it.each(NICHES)('mantém o filtro de %s compacto para o PostgREST', async (niche) => {
+    await listLeads({ niche }, 'created_desc', 0, 20)
+
+    expect(client.calls[0].or?.length ?? 0).toBeLessThan(7000)
+  })
+
   it.each([
     ['manicure', 'manicureiro'],
     ['barbearia', 'barbeariaia'],
     ['comercio', 'comercioexterior'],
+    ['nail_designer', 'nailprodesigner'],
+    ['nail_designer', 'nail sem designer'],
+    ['salao_beleza', 'salaoXYZdeXYZbeleza'],
   ])('não confunde o filtro de %s com %s', async (niche, storedNiche) => {
     const stored = makeStoredLead({ id: 'substring', niche: storedNiche })
     client = new FakeSupabase([stored])

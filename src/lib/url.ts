@@ -60,7 +60,14 @@ export function normalizeInstagramUrl(raw: string | null): string | null {
       ? `https://www.instagram.com/${username}/`
       : null
   }
-  return normalizeUrl(raw)
+  const normalized = normalizeUrl(raw)
+  if (!normalized) return null
+  try {
+    const hostname = new URL(normalized).hostname.toLowerCase().replace(/\.$/, '')
+    return hostname === 'instagram.com' || hostname.endsWith('.instagram.com') ? normalized : null
+  } catch {
+    return null
+  }
 }
 
 export function normalizeMapsUrl(raw: string | null): string | null {
@@ -73,10 +80,15 @@ export function normalizeMapsUrl(raw: string | null): string | null {
     const hostname = url.hostname.toLowerCase().replace(/\.$/, '')
     if (hostname === 'maps.app.goo.gl') return url.pathname.length > 1 ? normalized : null
     if (hostname === 'goo.gl') return /^\/maps\/[^/]+\/?$/.test(url.pathname) ? normalized : null
-    if (hostname !== 'maps.google.com' && !/^(?:www\.)?google\.com(?:\.[a-z]{2})?$/.test(hostname)) return null
+    const isMapsHost = hostname === 'maps.google.com'
+    const isGoogleHost = /^(?:www\.)?google\.com(?:\.[a-z]{2})?$/.test(hostname)
+    if (!isMapsHost && !isGoogleHost) return null
+    if (!isMapsHost && url.pathname !== '/maps' && !url.pathname.startsWith('/maps/')) return null
 
     const hasPlacePath = /^\/maps\/(?:preview\/)?place\/[^/]+/.test(url.pathname)
-    const hasPlaceId = url.searchParams.get('q')?.toLowerCase().startsWith('placeid:')
+    const hasPlaceId = ['q', 'query'].some((parameter) => (
+      url.searchParams.get(parameter)?.toLowerCase().startsWith('placeid:')
+    )) || Boolean(url.searchParams.get('query_place_id'))
     const hasCid = Boolean(url.searchParams.get('cid'))
     return hasPlacePath || hasPlaceId || hasCid ? normalized : null
   } catch {

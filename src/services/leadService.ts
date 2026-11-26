@@ -53,11 +53,28 @@ function accentVariants(value: string): string[] {
   return variants
 }
 
+const NICHE_SEPARATOR_NORMALIZERS = [
+  (value: string) => value,
+  (value: string) => value.replace(/[\s_/-]+/g, ' '),
+  (value: string) => value.replace(/[\s_/-]+/g, '/'),
+  (value: string) => value.replace(/[\s_/-]+/g, '-'),
+  (value: string) => value.replace(/[\s_/-]+/g, '_'),
+  (value: string) => value.replace(/\s*([/-])\s*/g, '$1'),
+]
+
 function nichePatterns(value: string): string[] {
-  return accentVariants(value).flatMap((variant) => {
-    const pattern = variant.replace(/[\s_/-]+/g, '%')
-    return [pattern, `${pattern} %`, `${pattern}/%`, `${pattern}-%`]
-  })
+  const patterns = new Set<string>()
+  for (const variant of accentVariants(value)) {
+    for (const normalizeSeparators of NICHE_SEPARATOR_NORMALIZERS) {
+      const base = normalizeSeparators(variant).trim()
+      if (!base) continue
+      patterns.add(base)
+      patterns.add(`${base} %`)
+      patterns.add(`${base}/%`)
+      patterns.add(`${base}-%`)
+    }
+  }
+  return [...patterns]
 }
 
 const NICHE_FILTER_ALIASES: Record<string, string[]> = {

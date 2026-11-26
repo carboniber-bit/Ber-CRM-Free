@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { emptyLeadDraft, type LeadWrite } from '../types/lead'
 import { normalizeLeadDraftForSave, validateLeadDraft } from './leadForm'
 
-const URL_FIELDS = ['website', 'menu_url', 'catalog_url', 'instagram', 'facebook'] as const
+const GENERIC_URL_FIELDS = ['website', 'menu_url', 'catalog_url', 'facebook'] as const
+const URL_FIELDS = [...GENERIC_URL_FIELDS, 'instagram'] as const
 const VALUE_FIELDS = ['estimated_value', 'negotiated_value', 'contracted_value', 'received_value'] as const
 const PHONE_FIELDS = ['phone', 'whatsapp'] as const
 
@@ -82,9 +83,25 @@ describe('validateLeadDraft', () => {
     'http://localhost:5173/lead',
     'http://127.0.0.1:5173/lead',
   ])('aceita uma URL HTTP/HTTPS ou domínio sem esquema: %s', (value) => {
-    for (const field of URL_FIELDS) {
+    for (const field of GENERIC_URL_FIELDS) {
       expect(validateLeadDraft(makeDraft({ [field]: value }))[field]).toBeUndefined()
     }
+  })
+
+  it.each([
+    'https://instagram.com/perfil',
+    'https://www.instagram.com/perfil/',
+    'instagram.com/perfil',
+  ])('aceita uma URL válida do Instagram: %s', (instagram) => {
+    expect(validateLeadDraft(makeDraft({ instagram })).instagram).toBeUndefined()
+  })
+
+  it.each([
+    'https://example.com/perfil',
+    'https://instagram.com.evil.test/perfil',
+    'https://www.instagram.com@evil.test/perfil',
+  ])('rejeita URL que não pertence ao Instagram: %s', (instagram) => {
+    expect(validateLeadDraft(makeDraft({ instagram })).instagram).toBeDefined()
   })
 
   it.each([
