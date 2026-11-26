@@ -2309,9 +2309,16 @@ git commit -m "feat: adicionar RPCs de cadastro de cliente"
 **Files:**
 - Create: `src/services/clientService.ts`
 - Create: `src/services/clientService.test.ts`
+- Modify: `src/types/activity.ts`
+- Modify: `src/types/activity.test.ts`
+- Modify: `src/components/leads/LeadTimeline.tsx`
+- Create: `src/components/leads/LeadTimeline.test.tsx`
+- Modify: `src/components/leads/ContactDialog.tsx`
+- Create: `src/components/leads/ContactDialog.test.tsx`
 
 **Interfaces:**
-- Consumes: types from Task 2; `requireSupabase`, `throwDbError` from `src/lib/db.ts`; money helpers from Task 2.
+- Consumes: types from Task 2; `requireSupabase`, `throwDbError` from `src/lib/db.ts`; money helpers from Task 2; atividade lead `conversao` já persistida pela migration 0006.
+- Produces: catálogo `ActivityType` com `conversao`, antecipado da Task 11 para que o histórico combinado compile sem casts; a Task 11 mantém os mesmos valores e acrescenta refresh/trava financeira.
 - Produces:
   - `listClients(filters: ClientFilters, sort: ClientSort, page: number, pageSize?: number): Promise<{ clients: Client[]; total: number }>`
   - `getClient(id: string): Promise<ClientDetail | null>`
@@ -2335,7 +2342,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Activity } from '../types/activity'
 import type {
   Client, ClientActivity, ClientWrite, CreateClientInput, InitialContractInput,
-  LeadClientLink, UpdateClientInput,
+  LeadClientLink,
 } from '../types/client'
 import type { Contract } from '../types/contract'
 import type { Project } from '../types/project'
@@ -2888,6 +2895,7 @@ describe('clientService', () => {
         type: 'conversion',
         description: 'Cliente convertido.',
         metadata: { lead_id: 'lead-1' },
+        created_at: '2026-11-23T12:00:00Z',
       })],
       error: null,
     })
@@ -2910,7 +2918,7 @@ describe('clientService', () => {
       },
       {
         id: 'client-activity-1', type: 'conversion', description: 'Cliente convertido.',
-        created_at: '2026-11-25T12:00:00Z', source: 'client',
+        created_at: '2026-11-23T12:00:00Z', source: 'client',
       },
     ])
   })
@@ -3121,12 +3129,152 @@ describe('clientService', () => {
 })
 ```
 
+Também escreva os testes de conversão antes de alterar o catálogo ou os componentes. O teste do diálogo é uma guarda: passa antes de `conversao` entrar no catálogo e deve falhar depois dessa inclusão, até que a exclusão manual seja aplicada.
+
+```ts
+// src/types/activity.test.ts
+import { describe, expect, it } from 'vitest'
+import { ACTIVITY_LABELS, ACTIVITY_TYPES } from './activity'
+
+describe('activity types', () => {
+  it('inclui conversão como atividade automática rotulada em pt-BR', () => {
+    expect(ACTIVITY_TYPES).toContain('conversao')
+    expect(ACTIVITY_LABELS.conversao).toBe('Conversão em cliente')
+  })
+
+  it('não afirma envio quando o WhatsApp foi apenas aberto', () => {
+    expect(ACTIVITY_LABELS.mensagem).toBe('Mensagem registrada')
+  })
+
+  it('fornece rótulo não vazio para todo tipo aceito', () => {
+    for (const type of ACTIVITY_TYPES) {
+      expect(ACTIVITY_LABELS[type].trim().length).toBeGreaterThan(0)
+    }
+  })
+})
+```
+
+```tsx
+// src/components/leads/LeadTimeline.test.tsx
+// @vitest-environment jsdom
+import { cleanup, render, screen, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { Activity } from '../../types/activity'
+
+const { listActivities } = vi.hoisted(() => ({ listActivities: vi.fn() }))
+vi.mock('../../services/activityService', () => ({ listActivities }))
+
+import { LeadTimeline } from './LeadTimeline'
+
+afterEach(cleanup)
+
+describe('LeadTimeline — conversão', () => {
+  it('renderiza conversão com rótulo e ícone próprios', async () => {
+    const activity: Activity = {
+      id: 'activity-1', lead_id: 'lead-1', owner_id: 'owner-1', type: 'conversao',
+      description: 'Lead convertido em cliente.', user_id: null,
+      created_at: '2026-11-25T12:00:00Z',
+    }
+    listActivities.mockResolvedValue([activity])
+    render(<LeadTimeline leadId="lead-1" refreshKey={0} />)
+
+    const list = await screen.findByRole('list', { name: 'Atividades do lead' })
+    const item = within(list).getByRole('listitem')
+    expect(item.textContent).toContain('Conversão em cliente')
+    expect(item.textContent).toContain('Lead convertido em cliente.')
+    expect(item.querySelector('svg.lucide-user-check')).not.toBeNull()
+  })
+})
+```
+
+```tsx
+// src/components/leads/ContactDialog.test.tsx
+// @vitest-environment jsdom
+import { cleanup, render, screen, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('../../services/activityService', () => ({ addActivity: vi.fn() }))
+vi.mock('../../services/leadService', () => ({ setLeadStatus: vi.fn() }))
+vi.mock('../../hooks/useToast', () => ({ useToast: () => ({ toast: vi.fn() }) }))
+
+import { ContactDialog } from './ContactDialog'
+
+afterEach(cleanup)
+
+describe('ContactDialog — atividades automáticas', () => {
+  it('não oferece conversão como atividade manual', () => {
+    render(
+      <ContactDialog
+        open
+        leadId="lead-1"
+        currentStatus="novo"
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+      />,
+    )
+    const select = screen.getByLabelText('Tipo de atividade')
+    const values = within(select).getAllByRole('option').map((option) => (option as HTMLOptionElement).value)
+    expect(values).toContain('primeiro_contato')
+    expect(values).not.toContain('conversao')
+  })
+})
+```
+
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `npm test -- src/services/clientService.test.ts`
-Expected: FAIL before implementation. On a clean Task 6 checkout this is module not found; if a service version already exists, failures must identify missing service behavior, not errors in the fake query chain.
+Run: `npm test -- src/services/clientService.test.ts src/types/activity.test.ts src/components/leads/LeadTimeline.test.tsx src/components/leads/ContactDialog.test.tsx`
+Expected: FAIL before implementation. On a clean Task 6 checkout the service module is missing and the conversion type/timeline assertions fail; the dialog guard may pass until `conversao` is added to the catalog. Failures must identify missing behavior, not errors in the fake query chain.
 
-- [ ] **Step 3: Implement the service**
+- [ ] **Step 3: Implement the service and conversion-type prerequisites**
+
+Substitua `src/types/activity.ts` pelo arquivo abaixo. O valor já é persistido pela migration 0006 e deve existir no catálogo antes de o serviço combinar o histórico.
+
+```ts
+// src/types/activity.ts
+export const ACTIVITY_TYPES = [
+  'primeiro_contato', 'mensagem', 'ligacao', 'resposta', 'reuniao',
+  'proposta', 'mudanca_status', 'observacao', 'follow_up', 'conversao', 'outro',
+] as const
+export type ActivityType = (typeof ACTIVITY_TYPES)[number]
+
+export const ACTIVITY_LABELS: Record<ActivityType, string> = {
+  primeiro_contato: 'Primeiro contato',
+  mensagem: 'Mensagem registrada',
+  ligacao: 'Ligação realizada',
+  resposta: 'Resposta recebida',
+  reuniao: 'Reunião',
+  proposta: 'Envio de proposta',
+  mudanca_status: 'Mudança de status',
+  observacao: 'Observação',
+  follow_up: 'Follow-up',
+  conversao: 'Conversão em cliente',
+  outro: 'Outro',
+}
+
+export interface Activity {
+  id: string
+  lead_id: string
+  owner_id: string
+  type: ActivityType
+  description: string
+  user_id: string | null
+  created_at: string
+}
+```
+
+Em `src/components/leads/LeadTimeline.tsx`, acrescente `conversao: UserCheck` ao mapa `icons`, imediatamente após `follow_up`. O import de `UserCheck` já existe.
+
+Depois de incluir `conversao` no catálogo, execute `npm test -- src/components/leads/ContactDialog.test.tsx` e confirme RED porque a opção automática aparece no seletor. Em seguida, altere o filtro de `src/components/leads/ContactDialog.tsx` para:
+
+```tsx
+.filter((activityType) => (
+  activityType !== 'mudanca_status'
+  && activityType !== 'follow_up'
+  && activityType !== 'conversao'
+))
+```
+
+Por fim, crie o serviço abaixo. Não altere o comparador decrescente do histórico: a fixture de conversão já foi corrigida para ocorrer antes da mensagem.
 
 ```ts
 // src/services/clientService.ts
@@ -3141,7 +3289,6 @@ import type {
   ConversionInput, ConversionResult, CreateClientInput, InitialContractInput,
   LeadClientLink, UpdateClientInput,
 } from '../types/client'
-import type { Lead } from '../types/lead'
 import type { Project } from '../types/project'
 
 export interface ClientFilters {
@@ -3444,15 +3591,15 @@ export async function convertLeadToClient(leadId: string, input: ConversionInput
 }
 ```
 
-- [ ] **Step 4: Run all service tests and build**
+- [ ] **Step 4: Run all focused tests and build**
 
-Run: `npm test -- src/services/clientService.test.ts && npm run build`
-Expected: all 20 service tests PASS and build exit 0. The suite includes the two conversion tests plus the 18 query, normalization, mutation and duplicate-detection contracts written in Step 1.
+Run: `npm test -- src/services/clientService.test.ts src/types/activity.test.ts src/components/leads/LeadTimeline.test.tsx src/components/leads/ContactDialog.test.tsx && npm run build`
+Expected: all 20 service tests plus the conversion type/timeline/dialog regressions PASS and build exit 0. The service suite includes the two conversion tests plus the 18 query, normalization, mutation and duplicate-detection contracts written in Step 1.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/services/clientService.ts src/services/clientService.test.ts
+git add src/services/clientService.ts src/services/clientService.test.ts src/types/activity.ts src/types/activity.test.ts src/components/leads/LeadTimeline.tsx src/components/leads/LeadTimeline.test.tsx src/components/leads/ContactDialog.tsx src/components/leads/ContactDialog.test.tsx
 git commit -m "feat: adicionar servico de clientes"
 ```
 
@@ -6748,21 +6895,21 @@ git commit -m "feat: adicionar detalhe e historico do cliente"
 - Modify: `src/types/activity.ts`
 - Modify: `src/types/activity.test.ts`
 - Modify: `src/components/leads/LeadTimeline.tsx`
-- Create: `src/components/leads/LeadTimeline.test.tsx`
+- Modify: `src/components/leads/LeadTimeline.test.tsx`
 - Modify: `src/components/leads/ContactDialog.tsx`
-- Create: `src/components/leads/ContactDialog.test.tsx`
+- Modify: `src/components/leads/ContactDialog.test.tsx`
 - Modify: `src/components/leads/LeadForm.tsx`
 - Modify: `src/components/leads/LeadForm.test.tsx`
 - Modify: `src/pages/LeadEditPage.tsx`
 - Create: `src/pages/LeadEditPage.test.tsx`
 
 **Interfaces:**
-- Consumes: `getLeadClientLink`.
-- Produces: `LeadForm` prop `financialFieldsLocked?: boolean`; activity type `conversao`.
+- Consumes: `getLeadClientLink`; activity type `conversao` already brought forward by Task 6.
+- Produces: `LeadForm` prop `financialFieldsLocked?: boolean`; refresh em background sem apagar o último histórico válido.
 
 - [ ] **Step 1: Add failing regression tests**
 
-Substitua os testes existentes de tipos e `LeadForm` pelos arquivos completos abaixo e crie os três arquivos de teste ausentes. As fixtures de lead e vínculo são completas; os únicos casts são os de elementos DOM necessários às asserções nativas.
+Substitua os testes existentes de tipos, `LeadTimeline`, `ContactDialog` e `LeadForm` pelos arquivos completos abaixo e crie somente `LeadEditPage.test.tsx`, que continua ausente. As fixtures de lead e vínculo são completas; os únicos casts são os de elementos DOM necessários às asserções nativas.
 
 ```ts
 // src/types/activity.test.ts
@@ -7462,7 +7609,7 @@ describe('LeadEditPage', () => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `npm test -- src/types/activity.test.ts src/components/leads/LeadTimeline.test.tsx src/components/leads/ContactDialog.test.tsx src/components/leads/LeadForm.test.tsx src/pages/LeadEditPage.test.tsx`
-Expected: FAIL because `conversao`, the lock prop and link lookup do not exist.
+Expected: FAIL because the lock prop, link lookup and background-refresh behavior do not exist yet; `conversao` and its basic rendering/filter regressions were brought forward by Task 6.
 
 - [ ] **Step 3: Implement the changes**
 
