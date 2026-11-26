@@ -25,7 +25,7 @@
 - Todas as RPCs de cliente adquirem a advisory `:clients` antes de qualquer `FOR UPDATE`; depois bloqueiam lead/vínculo/cliente/contrato na ordem usada pela RPC. Nunca segurar uma linha para esperar essa advisory.
 - TDD RED/GREEN em cada comportamento novo; commits pequenos e frequentes.
 - Não afirmar que migration, RLS entre dois usuários ou validação autenticada foi executada sem evidência real.
-- A Etapa 4 não começa sem autorização explícita.
+- Relatórios, Configurações, Backup e Segurança pertencem à mesma Etapa 3; nenhuma etapa nova começa sem autorização explícita.
 
 ## Test Conventions
 
@@ -10468,8 +10468,8 @@ const modules = [
   {
     moduleKey: 'relatorios',
     title: 'Relatórios',
-    stage: 'Etapa 4',
-    description: 'Relatórios de conversão, nichos e desempenho chegam na Etapa 4.',
+    stage: 'Etapa 3',
+    description: 'Relatórios de conversão, nichos e desempenho chegam na Etapa 3, no plano de finalização.',
   },
 ] as const
 
@@ -10530,7 +10530,7 @@ describe('ModulePlaceholderPage', () => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `npm test -- src/routes/AppRoutes.test.tsx src/routes/ProtectedRoute.test.tsx src/pages/ModulePlaceholderPage.test.tsx`
-Expected: FAIL because Clientes is still a placeholder and Financeiro still points to Etapa 4.
+Expected: FAIL because Clientes is still a placeholder and the remaining placeholders still have outdated copy.
 
 - [ ] **Step 3: Implement routes and documentation**
 
@@ -10614,8 +10614,8 @@ const MODULES = {
   },
   relatorios: {
     title: 'Relatórios',
-    description: 'Relatórios de conversão, nichos e desempenho chegam na Etapa 4.',
-    stage: 'Etapa 4',
+    description: 'Relatórios de conversão, nichos e desempenho chegam na Etapa 3, no plano de finalização.',
+    stage: 'Etapa 3',
     icon: BarChart3,
   },
 } as const satisfies Record<string, { title: string; description: string; stage: string; icon: LucideIcon }>
@@ -10795,7 +10795,7 @@ por:
   ainda não foram implementados.
 ```
 
-7. Substitua a tabela final do roadmap, da linha `| Etapa | Escopo | Status |` até a linha `| 4 | Financeiro | planejada |`, por:
+7. Substitua a tabela final do roadmap, da linha `| Etapa | Escopo | Status |` até sua última linha, por:
 
 ```md
 | Etapa | Escopo | Status |
@@ -10807,7 +10807,7 @@ por:
 | 3 · Plano 1 | Clientes, contratos, histórico e conversão de leads | implementado; migration e validação SQL pendentes de execução pelo usuário |
 | 3 · Plano 2 | Projetos | planejado |
 | 3 · Plano 3 | Financeiro | planejado |
-| 4 | Relatórios | planejada |
+| 3 · Finalização | Relatórios, configurações, backup, segurança e auditoria | planejada |
 ```
 
 - [ ] **Step 4: Run the complete verification gate**
