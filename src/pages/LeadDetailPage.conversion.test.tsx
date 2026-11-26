@@ -6,23 +6,31 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyLeadDraft, type Lead } from '../types/lead'
 import type { LeadClientLink } from '../types/client'
 
-const { getLead, setLeadStatus, getLeadClientLink, convertLeadToClient, listActivities, toast } = vi.hoisted(() => ({
+const {
+  getLead, setLeadStatus, getLeadClientLink, convertLeadToClient, listActivities,
+  listChecks, setCheck, listByLead, completeFollowup, cancelFollowup, toast,
+} = vi.hoisted(() => ({
   getLead: vi.fn(),
   setLeadStatus: vi.fn(),
   getLeadClientLink: vi.fn(),
   convertLeadToClient: vi.fn(),
   listActivities: vi.fn(),
+  listChecks: vi.fn(),
+  setCheck: vi.fn(),
+  listByLead: vi.fn(),
+  completeFollowup: vi.fn(),
+  cancelFollowup: vi.fn(),
   toast: vi.fn(),
 }))
 vi.mock('../services/leadService', () => ({ getLead, setLeadStatus }))
 vi.mock('../services/clientService', () => ({ getLeadClientLink, convertLeadToClient }))
 vi.mock('../services/activityService', () => ({ listActivities }))
+vi.mock('../services/digitalCheckService', () => ({ listChecks, setCheck }))
+vi.mock('../services/followupService', () => ({ listByLead, completeFollowup, cancelFollowup }))
 vi.mock('../hooks/useToast', () => ({ useToast: () => ({ toast }) }))
 vi.mock('../components/leads/ContactDialog', () => ({ ContactDialog: () => null }))
 vi.mock('../components/leads/FollowupDialog', () => ({ FollowupDialog: () => null }))
 vi.mock('../components/leads/WhatsAppDialog', () => ({ WhatsAppDialog: () => null }))
-vi.mock('../components/leads/LeadChecklist', () => ({ LeadChecklist: () => null }))
-vi.mock('../components/leads/LeadFollowups', () => ({ LeadFollowups: () => null }))
 vi.mock('../components/leads/OpportunityPanel', () => ({ OpportunityPanel: () => null }))
 
 import { LeadDetailPage } from './LeadDetailPage'
@@ -72,6 +80,11 @@ describe('LeadDetailPage — conversão', () => {
     getLeadClientLink.mockReset().mockResolvedValue(null)
     convertLeadToClient.mockReset()
     listActivities.mockReset().mockResolvedValue([])
+    listChecks.mockReset().mockResolvedValue([])
+    setCheck.mockReset().mockResolvedValue(undefined)
+    listByLead.mockReset().mockResolvedValue([])
+    completeFollowup.mockReset()
+    cancelFollowup.mockReset()
     toast.mockReset()
   })
 
@@ -161,6 +174,39 @@ describe('LeadDetailPage — conversão', () => {
     expect(screen.queryByRole('button', { name: 'Converter em cliente' })).toBeNull()
   })
 
+  it('bloqueia a conversão quando lead e vínculo falham juntos em background', async () => {
+    const updated = { ...lead, status: 'interessado' as const }
+    getLead.mockResolvedValueOnce(lead).mockRejectedValueOnce(new Error('Falha ao atualizar lead.'))
+    getLeadClientLink.mockResolvedValueOnce(null).mockRejectedValueOnce(new Error('Falha ao atualizar vínculo.'))
+    setLeadStatus.mockResolvedValue(updated)
+    renderLeadDetail()
+
+    const converter = await screen.findByRole('button', { name: 'Converter em cliente' })
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'interessado' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Mudar status' }))
+
+    expect(await screen.findByText('Falha ao atualizar vínculo.')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: lead.name })).toBeTruthy()
+    expect((screen.getByRole('button', { name: 'Converter em cliente' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(converter.isConnected).toBe(true)
+  })
+
+  it('exibe o vínculo novo mesmo quando o refresh do lead falha', async () => {
+    const updated = { ...lead, status: 'interessado' as const }
+    getLead.mockResolvedValueOnce(lead).mockRejectedValueOnce(new Error('Falha ao atualizar lead.'))
+    getLeadClientLink.mockResolvedValueOnce(null).mockResolvedValueOnce(clientLink)
+    setLeadStatus.mockResolvedValue(updated)
+    renderLeadDetail()
+
+    await screen.findByRole('button', { name: 'Converter em cliente' })
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'interessado' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Mudar status' }))
+
+    expect(await screen.findByRole('link', { name: 'Ver cliente' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: lead.name })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Converter em cliente' })).toBeNull()
+  })
+
   it('não trata falha do vínculo como não convertido e permite retry do ciclo completo', async () => {
     getLeadClientLink.mockRejectedValueOnce(new Error('Falha ao consultar vínculo.')).mockResolvedValueOnce(clientLink)
     renderLeadDetail()
@@ -178,10 +224,15 @@ describe('LeadDetailPage — conversão', () => {
     expect(getLeadClientLink).toHaveBeenCalledTimes(2)
   })
 
-  it('atualiza lead e vínculo juntos em background após mudança de status', async () => {
+  it('atualiza lead, vínculo e histórico juntos em background após mudança de status', async () => {
     const updated = { ...lead, status: 'interessado' as const }
     getLead.mockResolvedValueOnce(lead).mockResolvedValueOnce(updated)
     setLeadStatus.mockResolvedValue(updated)
+    listActivities.mockResolvedValueOnce([]).mockResolvedValueOnce([{
+      id: 'activity-status', lead_id: lead.id, owner_id: lead.owner_id,
+      type: 'mudanca_status', description: 'Status alterado para Interessado.', user_id: null,
+      created_at: '2026-11-25T12:01:00Z',
+    }])
     renderLeadDetail()
     await screen.findByRole('heading', { name: lead.name })
 
@@ -191,5 +242,24 @@ describe('LeadDetailPage — conversão', () => {
     await waitFor(() => expect(getLead).toHaveBeenCalledTimes(2))
     expect(getLeadClientLink).toHaveBeenCalledTimes(2)
     expect(setLeadStatus).toHaveBeenCalledWith(lead.id, 'interessado')
+    expect(await screen.findByText('Status alterado para Interessado.')).toBeTruthy()
+    await waitFor(() => expect(listActivities).toHaveBeenCalledTimes(2))
+  })
+
+  it('atualiza o histórico e os follow-ups após marcar uma verificação digital', async () => {
+    listActivities.mockResolvedValueOnce([]).mockResolvedValueOnce([{
+      id: 'activity-check', lead_id: lead.id, owner_id: lead.owner_id,
+      type: 'observacao', description: 'Instagram confirmado no checklist.', user_id: null,
+      created_at: '2026-11-25T12:02:00Z',
+    }])
+    renderLeadDetail()
+
+    const check = await screen.findByRole('button', { name: /Instagram verificado/ })
+    fireEvent.click(check)
+
+    expect(await screen.findByText('Instagram confirmado no checklist.')).toBeTruthy()
+    await waitFor(() => expect(listActivities).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(listByLead).toHaveBeenCalledTimes(2))
+    expect(setCheck).toHaveBeenCalledWith(lead.id, 'instagram', true)
   })
 })

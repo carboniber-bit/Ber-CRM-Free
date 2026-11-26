@@ -8521,6 +8521,8 @@ git commit -m "feat: registrar conversao e travar valores do lead"
 
 **Controller ruling:** o arquivo de testes de conversão será separado do arquivo existente de links externos. Sobrescrever `LeadDetailPage.test.tsx` apagaria cinco regressões de Maps/Instagram solicitadas pelo usuário. O novo arquivo mantém os seis testes de conversão literalmente abaixo. No arquivo existente, preservar todas as asserções e acrescentar apenas `vi.mock('../services/clientService', () => ({ getLeadClientLink: vi.fn().mockResolvedValue(null), convertLeadToClient: vi.fn() }))`, pois a página passará a consultar o vínculo em toda renderização. Custo se incorreto: um arquivo de teste adicional e um mock mínimo, sem mudança de comportamento ou arquitetura.
 
+**Fix round 1 ruling (2026-11-26):** a revisão independente confirmou que o retorno antecipado do loader ignorava `linkResult` quando o lead falhava, podendo tratar vínculo desconhecido como ausência confirmada; também faltava atualizar `timelineRefreshKey` nas ações existentes. O spec e a restrição “desconhecido não é ausência confirmada” prevalecem sobre o trecho defectivo deste plano. O loader deve processar lead e vínculo independentemente, e `handleLeadChanged`/`confirmStatusChange` devem incrementar os dois contadores sem acoplar follow-ups à timeline. A suíte de conversão passa a nove testes, com timeline, checklist e follow-ups reais e apenas seus serviços mockados. Custo se incorreto: nenhuma mudança de arquitetura; apenas a ordem de processamento e dois incrementos de estado.
+
 - [ ] **Step 1: Write the failing integration tests**
 
 Create the complete conversion test file below. O `ConversionDialog` real usa os labels “Converter lead em cliente”, “Serviço contratado *”, “Valor contratado *”, “Data da contratação *” e “Confirmar conversão”. O mock de `clientService` precisa exportar tanto `getLeadClientLink` usado pela página quanto `convertLeadToClient` usado pelo diálogo. Não use matchers jest-dom. No arquivo existente `LeadDetailPage.test.tsx`, acrescente somente o mock mínimo indicado no ruling, sem alterar suas cinco asserções.
@@ -8794,10 +8796,9 @@ const fetchLeadAndLink = useCallback(async (background = false) => {
       }
       return { status: 'error', message }
     })
-    setRefreshing(false)
-    return
+  } else {
+    setLoadState({ status: 'ready', lead: leadResult.value })
   }
-  setLoadState({ status: 'ready', lead: leadResult.value })
   if (linkResult.status === 'rejected') {
     const message = linkResult.reason instanceof Error ? linkResult.reason.message : 'Erro ao consultar vínculo.'
     setLinkLoadState((current) => ({
@@ -8826,7 +8827,7 @@ useEffect(() => {
 }, [fetchLeadAndLink])
 ```
 
-Mantenha `handleLeadChanged` e o caminho de sucesso de `confirmStatusChange` chamando `reload(true)`. Substitua o efeito de restauração de foco por:
+Mantenha `handleLeadChanged` e o caminho de sucesso de `confirmStatusChange` chamando `reload(true)`. Em ambos, além de `setRefreshKey((key) => key + 1)`, incremente `setTimelineRefreshKey((key) => key + 1)` para atualizar o histórico sem acoplar o refresh de follow-ups. A conversão continua incrementando somente `timelineRefreshKey`. Substitua o efeito de restauração de foco por:
 
 ```tsx
 useEffect(() => {
@@ -8918,7 +8919,7 @@ Renderize o diálogo depois de `WhatsAppDialog`:
 - [ ] **Step 4: Run tests and build**
 
 Run: `npm test -- src/pages/LeadDetailPage.conversion.test.tsx src/pages/LeadDetailPage.test.tsx && npm run build`
-Expected: PASS dos seis testes de conversão, das cinco regressões Maps/Instagram e build exit 0.
+Expected: PASS dos nove testes de conversão (incluindo os três regressões do fix round 1), das cinco regressões Maps/Instagram e build exit 0.
 
 - [ ] **Step 5: Commit**
 

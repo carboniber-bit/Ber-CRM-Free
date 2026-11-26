@@ -116,10 +116,9 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
         }
         return { status: 'error', message }
       })
-      setRefreshing(false)
-      return
+    } else {
+      setLoadState({ status: 'ready', lead: leadResult.value })
     }
-    setLoadState({ status: 'ready', lead: leadResult.value })
     if (linkResult.status === 'rejected') {
       const message = linkResult.reason instanceof Error ? linkResult.reason.message : 'Erro ao consultar vínculo.'
       setLinkLoadState((current) => ({
@@ -162,6 +161,7 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
 
   const handleLeadChanged = useCallback(() => {
     setRefreshKey((key) => key + 1)
+    setTimelineRefreshKey((key) => key + 1)
     void reload(true)
   }, [reload])
 
@@ -220,6 +220,7 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
       setLoadState({ status: 'ready', lead: updatedLead })
       setPendingStatus(null)
       setRefreshKey((key) => key + 1)
+      setTimelineRefreshKey((key) => key + 1)
       toast('Status atualizado.')
       void reload(true)
     } catch (error) {
