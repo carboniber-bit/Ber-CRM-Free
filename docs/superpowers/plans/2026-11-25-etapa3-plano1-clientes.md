@@ -960,15 +960,12 @@ declare
   v_other uuid := gen_random_uuid();
   v_lead uuid;
   v_second_lead uuid;
+  v_cnpj_lead uuid;
   v_invalid_value numeric;
-  v_invalid_total text;
-  v_archived_at timestamptz;
   v_first jsonb;
   v_repeat jsonb;
-  v_updated jsonb;
   v_manual jsonb;
   v_manual_repeat jsonb;
-  v_manual_archive jsonb;
   v_extra_contract_id uuid;
   v_client_count int;
   v_contract_count int;
@@ -998,7 +995,11 @@ begin
     'cartao', 'Outra condição', 'Não sobrescrever', 'Outro projeto', null, null
   );
 
+  if (v_first ->> 'already_existed') is distinct from 'false' then
+    raise exception 'A primeira conversão não foi marcada como already_existed=false.';
+  end if;
   if (v_first ->> 'client_id') is distinct from (v_repeat ->> 'client_id')
+    or (v_first ->> 'link_id') is distinct from (v_repeat ->> 'link_id')
     or (v_first ->> 'contract_id') is distinct from (v_repeat ->> 'contract_id')
     or (v_first ->> 'project_id') is distinct from (v_repeat ->> 'project_id') then
     raise exception 'A repetição da conversão alterou os identificadores.';
@@ -1021,6 +1022,49 @@ begin
     raise exception 'A repetição sobrescreveu o valor do contrato.';
   end if;
 
+  insert into public.leads (owner_id, name, cnpj, status)
+  values (v_owner, 'Lead adicional com mesmo CNPJ', '12345678000195', 'negociando')
+  returning id into v_cnpj_lead;
+
+  v_manual := public.convert_lead_to_client(
+    v_cnpj_lead, 'Serviço adicional', 250.00, current_date
+  );
+  v_manual_repeat := public.convert_lead_to_client(
+    v_cnpj_lead, 'Payload diferente', 999.99, current_date - 1,
+    'cartao', 'Outra condição', 'Não sobrescrever', 'Projeto indevido', null, null
+  );
+
+  if (v_manual ->> 'client_id') is distinct from (v_first ->> 'client_id')
+    or (v_manual ->> 'link_id') is not distinct from (v_first ->> 'link_id')
+    or (v_manual ->> 'contract_id') is not distinct from (v_first ->> 'contract_id') then
+    raise exception 'A conversão por CNPJ não reutilizou somente o cliente esperado.';
+  end if;
+  if (v_manual ->> 'project_id') is not null
+    or (v_manual_repeat ->> 'project_id') is not null then
+    raise exception 'A conversão sem projeto criou ou alterou um projeto.';
+  end if;
+  if (v_manual ->> 'already_existed') is distinct from 'false'
+    or (v_manual_repeat ->> 'already_existed') is distinct from 'true'
+    or (v_manual_repeat ->> 'link_id') is distinct from (v_manual ->> 'link_id')
+    or (v_manual_repeat ->> 'contract_id') is distinct from (v_manual ->> 'contract_id') then
+    raise exception 'A repetição da conversão por CNPJ não preservou o vínculo e o contrato.';
+  end if;
+
+  select id into v_extra_contract_id from public.contracts
+    where source_link_id = (v_manual ->> 'link_id')::uuid;
+  select count(*) into v_contract_count from public.contracts
+    where source_link_id = (v_manual ->> 'link_id')::uuid;
+  select count(*) into v_project_count from public.projects
+    where source_link_id = (v_manual ->> 'link_id')::uuid;
+  select count(*) into v_conversion_count from public.client_activities
+    where client_id = (v_first ->> 'client_id')::uuid and type = 'conversion';
+
+  if v_extra_contract_id is null or v_contract_count <> 1 or v_project_count <> 0
+    or v_conversion_count <> 2
+    or (select total_value from public.contracts where id = v_extra_contract_id) <> 250.00 then
+    raise exception 'A reutilização de CNPJ duplicou registros ou sobrescreveu o payload.';
+  end if;
+
   insert into public.leads (owner_id, name, status)
   values (v_owner, 'Lead para rollback', 'novo')
   returning id into v_second_lead;
@@ -1038,7 +1082,7 @@ begin
   end loop;
 
   create function public.test_force_project_failure() returns trigger
-  language plpgsql as $$ begin raise exception 'FORCE_ROLLBACK'; end; $$;
+  language plpgsql as $test_force_project_failure$ begin raise exception 'FORCE_ROLLBACK'; end; $test_force_project_failure$;
   create trigger test_force_project_failure before insert on public.projects
     for each row execute function public.test_force_project_failure();
   begin
@@ -1057,12 +1101,13 @@ begin
     or exists (select 1 from public.clients where name = 'Lead para rollback')
     or exists (select 1 from public.contracts where service = 'Site para rollback')
     or exists (select 1 from public.projects where name = 'Projeto para rollback')
+    or exists (select 1 from public.lead_activities where lead_id = v_second_lead and type = 'conversao')
     or exists (
       select 1 from public.leads
       where id = v_second_lead and owner_id = v_owner
         and (status <> 'novo' or contracted_value <> 100.00 or received_value <> 0)
     ) then
-    raise exception 'A exceção tardia não reverteu cliente, vínculo, contrato, projeto e snapshot.';
+    raise exception 'A exceção tardia não reverteu cliente, vínculo, contrato, projeto, atividade e snapshot.';
   end if;
 
   set local role authenticated;
@@ -1489,7 +1534,7 @@ grant execute on function public.convert_lead_to_client(uuid, text, numeric, dat
 - [ ] **Step 5: Review the transaction against the acceptance criteria**
 
 Run: `git diff --check`
-Expected: o lead é bloqueado antes da busca do vínculo; repetições retornam os mesmos IDs; correspondência de CNPJ reutiliza cliente; inserções e atualização do lead ficam em uma transação; a função é `security definer`, usa `search_path` vazio, tem execução revogada de `public` e concedida somente a `authenticated`. O harness `etapa3_convert_*` comprova duas sessões autenticadas independentes, conflito `pg_try_advisory_xact_lock=false`, probe local `55P03`, chamadas assíncronas quase simultâneas, mesmos `client_id/link_id/contract_id/project_id`, exatamente um `already_existed=true` e uma única linha de cliente/vínculo/contrato/projeto, sem `40P01` e com cleanup nos caminhos normal e de exceção.
+Expected: o lead é bloqueado antes da busca do vínculo; repetições retornam os mesmos IDs; correspondência de CNPJ reutiliza cliente; projeto opcional permanece nulo; inserções e atualização do lead ficam em uma transação; a função é `security definer`, usa `search_path` vazio, tem execução revogada de `public` e concedida somente a `authenticated`. O harness `etapa3_convert_*` comprova duas sessões autenticadas independentes, conflito `pg_try_advisory_xact_lock=false`, probe local `55P03`, chamadas assíncronas quase simultâneas, mesmos `client_id/link_id/contract_id/project_id`, exatamente um `already_existed=true` e uma única linha de cliente/vínculo/contrato/projeto, sem `40P01` e com cleanup nos caminhos normal e de exceção.
 
 - [ ] **Step 6: Commit**
 
