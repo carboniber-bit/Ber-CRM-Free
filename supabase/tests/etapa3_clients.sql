@@ -14,6 +14,9 @@ declare
   v_repeat jsonb;
   v_manual jsonb;
   v_manual_repeat jsonb;
+  v_updated jsonb;
+  v_invalid_total text;
+  v_archived_at timestamptz;
   v_extra_contract_id uuid;
   v_client_count int;
   v_contract_count int;
@@ -170,6 +173,215 @@ begin
         and (status <> 'novo' or contracted_value <> 0 or received_value <> 0)
     ) then
     raise exception 'A exceção tardia não reverteu cliente, vínculo, contrato, projeto, atividade e snapshot.';
+  end if;
+
+  v_manual := public.create_client(jsonb_build_object(
+    'creation_key', gen_random_uuid(),
+    'name', 'Cliente manual de teste',
+    'responsible_name', 'Responsável de teste',
+    'phone', '(11) 99999-9999',
+    'whatsapp', '',
+    'email', 'cliente@example.test',
+    'cnpj', '98.765.432/0001-10',
+    'website', '',
+    'instagram', '',
+    'address', '',
+    'city', 'São Paulo',
+    'district', '',
+    'zip_code', '',
+    'state', 'SP',
+    'niche', 'Teste',
+    'status', 'active',
+    'notes', '',
+    'service', 'Consultoria',
+    'total_value', '750.50',
+    'contracted_at', current_date,
+    'due_date', current_date + 30,
+    'payment_method', 'pix',
+    'payment_terms', 'À vista',
+    'contract_notes', ''
+  ));
+
+  v_manual_repeat := public.create_client(jsonb_build_object(
+    'creation_key', (v_manual ->> 'client')::jsonb ->> 'creation_key',
+    'name', 'Nome diferente',
+    'service', 'Serviço diferente',
+    'total_value', '9999.99',
+    'contracted_at', current_date - 1
+  ));
+
+  if ((v_manual ->> 'client')::jsonb ->> 'id') is distinct from ((v_manual_repeat ->> 'client')::jsonb ->> 'id') then
+    raise exception 'create_client repetido não retornou o cliente existente.';
+  end if;
+  if (select name from public.clients where id = ((v_manual ->> 'client')::jsonb ->> 'id')::uuid) <> 'Cliente manual de teste' then
+    raise exception 'create_client repetido sobrescreveu o cadastro.';
+  end if;
+  if (select count(*) from public.contracts where client_id = ((v_manual ->> 'client')::jsonb ->> 'id')::uuid) <> 1 then
+    raise exception 'create_client não criou exatamente um contrato inicial.';
+  end if;
+
+  foreach v_invalid_total in array array['750.501'::text, '1000000000000.00'::text] loop
+    begin
+      perform public.create_client(jsonb_build_object(
+        'creation_key', gen_random_uuid(), 'name', 'Cliente com valor inválido',
+        'service', 'Consultoria', 'total_value', v_invalid_total,
+        'contracted_at', current_date
+      ));
+      raise exception 'create_client aceitou valor com escala ou limite inválido.';
+    exception when others then
+      if sqlerrm = 'create_client aceitou valor com escala ou limite inválido.' then raise; end if;
+      if sqlstate <> '22023' then raise; end if;
+    end;
+  end loop;
+  if exists (select 1 from public.clients where owner_id = v_owner and name = 'Cliente com valor inválido') then
+    raise exception 'create_client persistiu cliente com valor inválido.';
+  end if;
+
+  begin
+    perform public.create_client(jsonb_build_object(
+      'creation_key', gen_random_uuid(), 'name', 'Outro cliente',
+      'cnpj', '98.765.432/0001-10', 'service', 'Outro serviço',
+      'total_value', '10.00', 'contracted_at', current_date
+    ));
+    raise exception 'create_client aceitou CNPJ duplicado.';
+  exception when others then
+    if sqlerrm = 'create_client aceitou CNPJ duplicado.' then raise; end if;
+    if sqlstate <> '23505' or sqlerrm not like 'CLIENT_CNPJ_DUPLICATE:%' then raise; end if;
+  end;
+
+  v_updated := public.update_client(
+    ((v_manual ->> 'client')::jsonb ->> 'id')::uuid,
+    (v_manual ->> 'client')::jsonb || (v_manual ->> 'contract')::jsonb || jsonb_build_object(
+      'contract_id', (v_manual ->> 'contract')::jsonb ->> 'id',
+      'name', 'Cliente manual editado', 'service', 'Consultoria editada',
+      'total_value', '750.50'
+    )
+  );
+  if (v_updated ->> 'client')::jsonb ->> 'name' <> 'Cliente manual editado'
+    or (v_updated ->> 'contract')::jsonb ->> 'service' <> 'Consultoria editada' then
+    raise exception 'update_client não atualizou cliente e contrato explicitamente selecionados.';
+  end if;
+
+  v_updated := public.update_client(
+    (v_first ->> 'client_id')::uuid,
+    to_jsonb((select row_to_json(c) from public.clients c where c.id = (v_first ->> 'client_id')::uuid))
+      || to_jsonb((select row_to_json(k) from public.contracts k where k.id = (v_first ->> 'contract_id')::uuid))
+      || jsonb_build_object(
+        'contract_id', v_first ->> 'contract_id', 'name', 'Cliente convertido editado',
+        'service', 'Site editado', 'total_value', '1500.00'
+      )
+  );
+  if (select contracted_value from public.leads where id = v_lead) <> 1500.00 then
+    raise exception 'Editar cliente convertido alterou o snapshot financeiro do lead.';
+  end if;
+
+  begin
+    perform public.update_client(
+      ((v_manual ->> 'client')::jsonb ->> 'id')::uuid,
+      (v_manual ->> 'client')::jsonb || (v_manual ->> 'contract')::jsonb || jsonb_build_object(
+        'contract_id', (v_manual ->> 'contract')::jsonb ->> 'id',
+        'name', 'Nome que deve ser revertido', 'total_value', '749.99'
+      )
+    );
+    raise exception 'update_client reduziu o total sem ajuste financeiro.';
+  exception when others then
+    if sqlerrm = 'update_client reduziu o total sem ajuste financeiro.' then raise; end if;
+    if sqlstate <> '23514' or sqlerrm not like 'CONTRACT_ADJUST_REQUIRED:%' then raise; end if;
+  end;
+  if (select name from public.clients where id = ((v_manual ->> 'client')::jsonb ->> 'id')::uuid) <> 'Cliente manual editado' then
+    raise exception 'A falha de ajuste não reverteu a edição do cliente.';
+  end if;
+
+  foreach v_invalid_total in array array['750.501'::text, '1000000000000.00'::text] loop
+    begin
+      perform public.update_client(
+        ((v_manual ->> 'client')::jsonb ->> 'id')::uuid,
+        (v_manual ->> 'client')::jsonb || (v_manual ->> 'contract')::jsonb || jsonb_build_object(
+          'contract_id', (v_manual ->> 'contract')::jsonb ->> 'id',
+          'name', 'Nome com valor inválido', 'total_value', v_invalid_total
+        )
+      );
+      raise exception 'update_client aceitou valor com escala ou limite inválido.';
+    exception when others then
+      if sqlerrm = 'update_client aceitou valor com escala ou limite inválido.' then raise; end if;
+      if sqlstate <> '22023' then raise; end if;
+    end;
+  end loop;
+  if (select name from public.clients where id = ((v_manual ->> 'client')::jsonb ->> 'id')::uuid) <> 'Cliente manual editado' then
+    raise exception 'A falha monetária não reverteu a edição do cliente.';
+  end if;
+
+  insert into public.contracts (owner_id, client_id, creation_key, service, total_value, contracted_at)
+  values (
+    v_owner, ((v_manual ->> 'client')::jsonb ->> 'id')::uuid, gen_random_uuid(),
+    'Segundo contrato', 400.00, current_date
+  ) returning id into v_extra_contract_id;
+
+  v_updated := public.update_client(
+    ((v_manual ->> 'client')::jsonb ->> 'id')::uuid,
+    (v_manual ->> 'client')::jsonb || (v_manual ->> 'contract')::jsonb || jsonb_build_object(
+      'contract_id', v_extra_contract_id, 'service', 'Segundo contrato editado',
+      'total_value', '400.00'
+    )
+  );
+  if (v_updated ->> 'contract')::jsonb ->> 'id' <> v_extra_contract_id::text
+    or (select total_value from public.contracts where id = ((v_manual ->> 'contract')::jsonb ->> 'id')::uuid) <> 750.50 then
+    raise exception 'update_client alterou o contrato errado em cliente com múltiplos contratos.';
+  end if;
+
+  begin
+    perform public.update_client(
+      ((v_manual ->> 'client')::jsonb ->> 'id')::uuid,
+      (v_manual ->> 'client')::jsonb || jsonb_build_object(
+        'contract_id', gen_random_uuid(), 'service', 'Site', 'total_value', '750.50',
+        'contracted_at', current_date
+      )
+    );
+    raise exception 'update_client aceitou contrato de outro cliente.';
+  exception when others then
+    if sqlerrm = 'update_client aceitou contrato de outro cliente.' then raise; end if;
+    if sqlstate <> '42501' then raise; end if;
+  end;
+
+  begin
+    perform public.update_client(
+      ((v_manual ->> 'client')::jsonb ->> 'id')::uuid,
+      (v_manual ->> 'client')::jsonb || (v_manual ->> 'contract')::jsonb || jsonb_build_object(
+        'contract_id', (v_manual ->> 'contract')::jsonb ->> 'id',
+        'cnpj', '12.345.678/0001-95', 'total_value', '750.50'
+      )
+    );
+    raise exception 'update_client aceitou CNPJ de outro cliente.';
+  exception when others then
+    if sqlerrm = 'update_client aceitou CNPJ de outro cliente.' then raise; end if;
+    if sqlstate <> '23505' or sqlerrm not like 'CLIENT_CNPJ_DUPLICATE:%' then raise; end if;
+  end;
+
+  v_updated := public.archive_client(((v_manual ->> 'client')::jsonb ->> 'id')::uuid);
+  v_manual_archive := public.archive_client(((v_manual ->> 'client')::jsonb ->> 'id')::uuid);
+  if (v_updated ->> 'status') <> 'inactive' or (v_manual_archive ->> 'status') <> 'inactive'
+    or (select count(*) from public.client_activities
+      where client_id = ((v_manual ->> 'client')::jsonb ->> 'id')::uuid
+        and description = 'Cliente arquivado. Contratos e projetos foram preservados.') <> 1
+    or (select count(*) from public.contracts where client_id = ((v_manual ->> 'client')::jsonb ->> 'id')::uuid) <> 2 then
+    raise exception 'Arquivar repetidamente duplicou evento ou apagou contratos.';
+  end if;
+
+  update public.clients set archived_at = '2026-11-20T12:00:00Z'::timestamptz
+    where id = ((v_manual ->> 'client')::jsonb ->> 'id')::uuid;
+  select archived_at into v_archived_at from public.clients
+    where id = ((v_manual ->> 'client')::jsonb ->> 'id')::uuid;
+  v_updated := public.update_client(
+    ((v_manual ->> 'client')::jsonb ->> 'id')::uuid,
+    to_jsonb((select row_to_json(c) from public.clients c where c.id = ((v_manual ->> 'client')::jsonb ->> 'id')::uuid))
+      || to_jsonb((select row_to_json(k) from public.contracts k where k.id = ((v_manual ->> 'contract')::jsonb ->> 'id')::uuid))
+      || jsonb_build_object(
+        'contract_id', (v_manual ->> 'contract')::jsonb ->> 'id',
+        'name', 'Cliente arquivado editado', 'status', 'inactive', 'total_value', '750.50'
+      )
+  );
+  if (v_updated ->> 'archived_at')::timestamptz is distinct from v_archived_at then
+    raise exception 'Editar cliente inativo alterou a data original de arquivamento.';
   end if;
 
   set local role authenticated;
@@ -427,6 +639,203 @@ exception
       end if;
     exception when others then
       raise notice 'Falha ao desconectar etapa3_convert_admin: % (%).', sqlerrm, sqlstate;
+    end;
+    raise;
+end
+$$;
+
+do $$
+declare
+  v_owner uuid;
+  v_key uuid := gen_random_uuid();
+  v_lock_key bigint;
+  v_probe_locked boolean := false;
+  v_context text;
+  v_payload jsonb;
+  v_call text;
+  v_cleanup text;
+  v_result_a jsonb;
+  v_result_b jsonb;
+  v_client_count int;
+  v_contract_count int;
+begin
+  select id into v_owner from auth.users order by created_at limit 1;
+  if v_owner is null then
+    raise exception 'Crie ao menos um usuário autenticado antes de executar o teste paralelo.';
+  end if;
+
+  if 'etapa3_create_admin' = any(dblink_get_connections()) then
+    perform dblink_disconnect('etapa3_create_admin');
+  end if;
+  if 'etapa3_create_holder' = any(dblink_get_connections()) then
+    perform dblink_disconnect('etapa3_create_holder');
+  end if;
+  if 'etapa3_create_a' = any(dblink_get_connections()) then
+    perform dblink_disconnect('etapa3_create_a');
+  end if;
+  if 'etapa3_create_b' = any(dblink_get_connections()) then
+    perform dblink_disconnect('etapa3_create_b');
+  end if;
+
+  perform dblink_connect('etapa3_create_admin', format('dbname=%L user=%L', current_database(), current_user));
+  perform dblink_connect('etapa3_create_holder', format('dbname=%L user=%L', current_database(), current_user));
+  perform dblink_connect('etapa3_create_a', format('dbname=%L user=%L', current_database(), current_user));
+  perform dblink_connect('etapa3_create_b', format('dbname=%L user=%L', current_database(), current_user));
+
+  v_context := format(
+    'set role authenticated; do $context$ begin perform set_config(''request.jwt.claim.sub'', %L, false); end $context$;',
+    v_owner::text
+  );
+  perform dblink_exec('etapa3_create_a', v_context);
+  perform dblink_exec('etapa3_create_b', v_context);
+  perform dblink_exec('etapa3_create_holder', v_context);
+
+  v_payload := jsonb_build_object(
+    'creation_key', v_key,
+    'name', 'Cliente de criação paralela',
+    'service', 'Consultoria',
+    'total_value', '750.50',
+    'contracted_at', current_date
+  );
+  v_cleanup := format(
+    'delete from public.client_activities where client_id in (select id from public.clients where creation_key = %L); '
+    'delete from public.contracts where creation_key = %L; '
+    'delete from public.clients where creation_key = %L;',
+    v_key, v_key, v_key
+  );
+
+  v_lock_key := pg_catalog.hashtextextended(v_owner::text || ':clients', 0);
+  perform dblink_exec('etapa3_create_holder', format(
+    'begin; do $hold_lock$ begin perform pg_catalog.pg_advisory_xact_lock(%s); end $hold_lock$;',
+    v_lock_key
+  ));
+
+  perform dblink_exec('etapa3_create_b', format(
+    'do $try_lock$ begin '
+    'if pg_catalog.pg_try_advisory_xact_lock(%s) then '
+    'raise exception ''A segunda sessão adquiriu a advisory :clients.''; '
+    'end if; end $try_lock$;',
+    v_lock_key
+  ));
+
+  set local role authenticated;
+  perform set_config('request.jwt.claim.sub', v_owner::text, true);
+  set local lock_timeout = '250ms';
+  begin
+    perform public.create_client(v_payload);
+  exception
+    when lock_not_available then v_probe_locked := true;
+    when deadlock_detected then raise exception 'O probe local retornou 40P01 em vez de 55P03.';
+  end;
+  set local lock_timeout = 0;
+  reset role;
+  if not v_probe_locked then
+    raise exception 'O probe local de create_client não foi bloqueado pela advisory :clients.';
+  end if;
+
+  perform dblink_exec('etapa3_create_holder', format(
+    'do $unlock$ begin '
+    'if not pg_catalog.pg_advisory_xact_unlock(%s) then '
+    'raise exception ''A advisory :clients não foi liberada.''; '
+    'end if; end $unlock$;',
+    v_lock_key
+  ));
+  perform dblink_exec('etapa3_create_holder', 'commit;');
+
+  v_call := format('select public.create_client(%L::jsonb);', v_payload::text);
+  if dblink_send_query('etapa3_create_a', v_call) <> 1 then
+    raise exception 'Não foi possível enviar a criação paralela para a sessão A.';
+  end if;
+  if dblink_send_query('etapa3_create_b', v_call) <> 1 then
+    raise exception 'Não foi possível enviar a criação paralela para a sessão B.';
+  end if;
+
+  begin
+    select result into strict v_result_a
+    from dblink_get_result('etapa3_create_a', 'result jsonb') as t(result jsonb);
+  exception when deadlock_detected then
+    raise exception 'A criação paralela retornou deadlock 40P01.';
+  end;
+  begin
+    select result into strict v_result_b
+    from dblink_get_result('etapa3_create_b', 'result jsonb') as t(result jsonb);
+  exception when deadlock_detected then
+    raise exception 'A criação paralela retornou deadlock 40P01.';
+  end;
+  if exists (select 1 from dblink_get_result('etapa3_create_a', 'result jsonb') as t(result jsonb))
+    or exists (select 1 from dblink_get_result('etapa3_create_b', 'result jsonb') as t(result jsonb)) then
+    raise exception 'As criações paralelas deixaram resultados adicionais não consumidos.';
+  end if;
+
+  if (v_result_a -> 'client' ->> 'id') is distinct from (v_result_b -> 'client' ->> 'id')
+    or (v_result_a -> 'contract' ->> 'id') is distinct from (v_result_b -> 'contract' ->> 'id') then
+    raise exception 'As criações paralelas retornaram identificadores diferentes.';
+  end if;
+  if not (
+    ((v_result_a ->> 'already_existed') is not distinct from 'true'
+      and (v_result_b ->> 'already_existed') is not distinct from 'false')
+    or ((v_result_a ->> 'already_existed') is not distinct from 'false'
+      and (v_result_b ->> 'already_existed') is not distinct from 'true')
+  ) then
+    raise exception 'As criações paralelas não marcaram exatamente um already_existed=true.';
+  end if;
+
+  select count(*) into v_client_count from public.clients where creation_key = v_key;
+  select count(*) into v_contract_count from public.contracts where creation_key = v_key;
+  if v_client_count <> 1 or v_contract_count <> 1 then
+    raise exception 'A criação paralela duplicou cliente ou contrato.';
+  end if;
+
+  perform dblink_exec('etapa3_create_admin', v_cleanup);
+  perform dblink_disconnect('etapa3_create_a');
+  perform dblink_disconnect('etapa3_create_b');
+  perform dblink_disconnect('etapa3_create_holder');
+  perform dblink_disconnect('etapa3_create_admin');
+  raise notice 'Harness de criação paralela aprovado sem 40P01.';
+exception
+  when others then
+    begin
+      reset role;
+      set local lock_timeout = 0;
+    exception when others then
+      raise notice 'Falha ao restaurar o contexto local: % (%).', sqlerrm, sqlstate;
+    end;
+    begin
+      if 'etapa3_create_holder' = any(dblink_get_connections()) then
+        perform dblink_disconnect('etapa3_create_holder');
+      end if;
+    exception when others then
+      raise notice 'Falha ao desconectar etapa3_create_holder: % (%).', sqlerrm, sqlstate;
+    end;
+    begin
+      if 'etapa3_create_a' = any(dblink_get_connections()) then
+        perform dblink_disconnect('etapa3_create_a');
+      end if;
+    exception when others then
+      raise notice 'Falha ao desconectar etapa3_create_a: % (%).', sqlerrm, sqlstate;
+    end;
+    begin
+      if 'etapa3_create_b' = any(dblink_get_connections()) then
+        perform dblink_disconnect('etapa3_create_b');
+      end if;
+    exception when others then
+      raise notice 'Falha ao desconectar etapa3_create_b: % (%).', sqlerrm, sqlstate;
+    end;
+    begin
+      if 'etapa3_create_admin' = any(dblink_get_connections()) then
+        perform dblink_disconnect('etapa3_create_admin');
+      end if;
+      perform dblink_connect('etapa3_create_admin', format('dbname=%L user=%L', current_database(), current_user));
+      perform dblink_exec('etapa3_create_admin', v_cleanup);
+    exception when others then
+      raise notice 'Falha ao limpar a fixture de criação paralela: % (%). O erro original será preservado.', sqlerrm, sqlstate;
+    end;
+    begin
+      if 'etapa3_create_admin' = any(dblink_get_connections()) then
+        perform dblink_disconnect('etapa3_create_admin');
+      end if;
+    exception when others then
+      raise notice 'Falha ao desconectar etapa3_create_admin: % (%).', sqlerrm, sqlstate;
     end;
     raise;
 end

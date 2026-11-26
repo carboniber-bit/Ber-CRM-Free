@@ -406,4 +406,273 @@ $$;
 revoke all on function public.convert_lead_to_client(uuid, text, numeric, date, text, text, text, text, date, date) from public, anon;
 grant execute on function public.convert_lead_to_client(uuid, text, numeric, date, text, text, text, text, date, date) to authenticated;
 
+create or replace function public.create_client(p_payload jsonb)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_owner uuid := auth.uid();
+  v_key uuid;
+  v_client public.clients;
+  v_contract public.contracts;
+  v_cnpj text;
+  v_service text;
+  v_total numeric(14,2);
+  v_total_text text;
+  v_contracted_at date;
+  v_due_date date;
+begin
+  if v_owner is null then
+    raise exception 'Sessão autenticada necessária.' using errcode = '42501';
+  end if;
+
+  v_key := (p_payload ->> 'creation_key')::uuid;
+  v_service := nullif(pg_catalog.btrim(p_payload ->> 'service'), '');
+  v_total_text := nullif(pg_catalog.btrim(p_payload ->> 'total_value'), '');
+  v_contracted_at := (p_payload ->> 'contracted_at')::date;
+  v_due_date := nullif(p_payload ->> 'due_date', '')::date;
+
+  if v_key is null or nullif(pg_catalog.btrim(p_payload ->> 'name'), '') is null then
+    raise exception 'Informe a chave de cadastro e o nome do cliente.' using errcode = '22023';
+  end if;
+  if v_service is null or v_total_text is null
+    or v_total_text !~ '^[0-9]{1,12}(\.[0-9]{1,2})?$' or v_contracted_at is null then
+    raise exception 'Informe serviço, valor e data da contratação.' using errcode = '22023';
+  end if;
+  v_total := v_total_text::numeric(14,2);
+  if v_due_date is not null and v_due_date < v_contracted_at then
+    raise exception 'O vencimento não pode anteceder a contratação.' using errcode = '22023';
+  end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(v_owner::text || ':clients', 0));
+  select * into v_client from public.clients
+    where owner_id = v_owner and creation_key = v_key for update;
+  if found then
+    select * into v_contract from public.contracts
+      where owner_id = v_owner and client_id = v_client.id and creation_key = v_key;
+    return jsonb_build_object(
+      'client', to_jsonb(v_client), 'contract', to_jsonb(v_contract), 'already_existed', true
+    );
+  end if;
+
+  v_cnpj := nullif(pg_catalog.regexp_replace(p_payload ->> 'cnpj', '[^0-9]', '', 'g'), '');
+  if v_cnpj is not null then
+    select * into v_client from public.clients
+      where owner_id = v_owner and cnpj_digits = v_cnpj for update;
+    if found then
+      raise exception 'CLIENT_CNPJ_DUPLICATE:%', v_client.name using errcode = '23505';
+    end if;
+  end if;
+
+  begin
+    insert into public.clients (
+      owner_id, creation_key, name, responsible_name, phone, whatsapp, email,
+      cnpj, website, instagram, address, city, district, zip_code, state, niche,
+      status, source, notes
+    ) values (
+    v_owner, v_key, pg_catalog.btrim(p_payload ->> 'name'),
+    nullif(pg_catalog.btrim(p_payload ->> 'responsible_name'), ''),
+    nullif(pg_catalog.btrim(p_payload ->> 'phone'), ''),
+    nullif(pg_catalog.btrim(p_payload ->> 'whatsapp'), ''),
+    nullif(pg_catalog.btrim(p_payload ->> 'email'), ''),
+    nullif(pg_catalog.btrim(p_payload ->> 'cnpj'), ''),
+    nullif(pg_catalog.btrim(p_payload ->> 'website'), ''),
+    nullif(pg_catalog.btrim(p_payload ->> 'instagram'), ''),
+    nullif(pg_catalog.btrim(p_payload ->> 'address'), ''),
+    nullif(pg_catalog.btrim(p_payload ->> 'city'), ''),
+    nullif(pg_catalog.btrim(p_payload ->> 'district'), ''),
+    nullif(pg_catalog.btrim(p_payload ->> 'zip_code'), ''),
+    nullif(pg_catalog.btrim(p_payload ->> 'state'), ''),
+    nullif(pg_catalog.btrim(p_payload ->> 'niche'), ''),
+    coalesce(nullif(p_payload ->> 'status', ''), 'active'),
+    'manual', nullif(p_payload ->> 'notes', '')
+    ) returning * into v_client;
+  exception when unique_violation then
+    if v_cnpj is not null then
+      select * into v_client from public.clients
+        where owner_id = v_owner and cnpj_digits = v_cnpj for update;
+      if found then
+        raise exception 'CLIENT_CNPJ_DUPLICATE:%', v_client.name using errcode = '23505';
+      end if;
+    end if;
+    raise;
+  end;
+
+  insert into public.contracts (
+    owner_id, client_id, creation_key, service, total_value, contracted_at,
+    due_date, payment_method, payment_terms, notes
+  ) values (
+    v_owner, v_client.id, v_key, v_service, v_total, v_contracted_at,
+    v_due_date, nullif(pg_catalog.btrim(p_payload ->> 'payment_method'), ''),
+    nullif(pg_catalog.btrim(p_payload ->> 'payment_terms'), ''),
+    nullif(p_payload ->> 'contract_notes', '')
+  ) returning * into v_contract;
+
+  insert into public.client_activities (owner_id, client_id, contract_id, type, description)
+  values (v_owner, v_client.id, v_contract.id, 'note', 'Cliente e contrato inicial cadastrados.');
+
+  return jsonb_build_object(
+    'client', to_jsonb(v_client), 'contract', to_jsonb(v_contract), 'already_existed', false
+  );
+end;
+$$;
+
+create or replace function public.update_client(p_client_id uuid, p_payload jsonb)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_owner uuid := auth.uid();
+  v_client public.clients;
+  v_contract public.contracts;
+  v_old_status text;
+  v_contract_id uuid;
+  v_cnpj text;
+  v_service text;
+  v_total numeric(14,2);
+  v_total_text text;
+  v_contracted_at date;
+  v_due_date date;
+begin
+  if v_owner is null then
+    raise exception 'Sessão autenticada necessária.' using errcode = '42501';
+  end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_owner::text || ':clients', 0)
+  );
+  select * into v_client from public.clients
+    where id = p_client_id and owner_id = v_owner for update;
+  if not found then
+    raise exception 'Cliente não encontrado ou acesso negado.' using errcode = '42501';
+  end if;
+
+  v_old_status := v_client.status;
+  v_contract_id := nullif(p_payload ->> 'contract_id', '')::uuid;
+  select * into v_contract from public.contracts
+    where owner_id = v_owner and client_id = p_client_id and id = v_contract_id
+    for update;
+  if not found then
+    raise exception 'Contrato do cliente não encontrado ou acesso negado.' using errcode = '42501';
+  end if;
+
+  v_service := nullif(pg_catalog.btrim(p_payload ->> 'service'), '');
+  v_total_text := nullif(pg_catalog.btrim(p_payload ->> 'total_value'), '');
+  v_contracted_at := (p_payload ->> 'contracted_at')::date;
+  v_due_date := nullif(p_payload ->> 'due_date', '')::date;
+  if nullif(pg_catalog.btrim(p_payload ->> 'name'), '') is null
+    or v_service is null or v_total_text is null
+    or v_total_text !~ '^[0-9]{1,12}(\.[0-9]{1,2})?$' or v_contracted_at is null then
+    raise exception 'Informe nome, serviço, valor e data da contratação.' using errcode = '22023';
+  end if;
+  v_total := v_total_text::numeric(14,2);
+  if v_due_date is not null and v_due_date < v_contracted_at then
+    raise exception 'O vencimento não pode anteceder a contratação.' using errcode = '22023';
+  end if;
+
+  v_cnpj := nullif(pg_catalog.regexp_replace(p_payload ->> 'cnpj', '[^0-9]', '', 'g'), '');
+  if v_cnpj is not null and exists (
+    select 1 from public.clients where owner_id = v_owner and cnpj_digits = v_cnpj and id <> p_client_id
+  ) then
+    select name into v_service from public.clients where owner_id = v_owner and cnpj_digits = v_cnpj limit 1;
+    raise exception 'CLIENT_CNPJ_DUPLICATE:%', v_service using errcode = '23505';
+  end if;
+
+  update public.clients set
+    name = pg_catalog.btrim(p_payload ->> 'name'),
+    responsible_name = nullif(pg_catalog.btrim(p_payload ->> 'responsible_name'), ''),
+    phone = nullif(pg_catalog.btrim(p_payload ->> 'phone'), ''),
+    whatsapp = nullif(pg_catalog.btrim(p_payload ->> 'whatsapp'), ''),
+    email = nullif(pg_catalog.btrim(p_payload ->> 'email'), ''),
+    cnpj = nullif(pg_catalog.btrim(p_payload ->> 'cnpj'), ''),
+    website = nullif(pg_catalog.btrim(p_payload ->> 'website'), ''),
+    instagram = nullif(pg_catalog.btrim(p_payload ->> 'instagram'), ''),
+    address = nullif(pg_catalog.btrim(p_payload ->> 'address'), ''),
+    city = nullif(pg_catalog.btrim(p_payload ->> 'city'), ''),
+    district = nullif(pg_catalog.btrim(p_payload ->> 'district'), ''),
+    zip_code = nullif(pg_catalog.btrim(p_payload ->> 'zip_code'), ''),
+    state = nullif(pg_catalog.btrim(p_payload ->> 'state'), ''),
+    niche = nullif(pg_catalog.btrim(p_payload ->> 'niche'), ''),
+    status = coalesce(nullif(p_payload ->> 'status', ''), v_client.status),
+    notes = nullif(p_payload ->> 'notes', ''),
+    archived_at = case
+      when coalesce(nullif(p_payload ->> 'status', ''), v_client.status) = 'inactive'
+        then coalesce(v_client.archived_at, now())
+      else null
+    end
+  where id = p_client_id and owner_id = v_owner
+  returning * into v_client;
+
+  if v_total is distinct from v_contract.total_value then
+    raise exception 'CONTRACT_ADJUST_REQUIRED: use o ajuste financeiro do contrato.' using errcode = '23514';
+  end if;
+
+  update public.contracts set
+    service = v_service,
+    total_value = v_total,
+    contracted_at = v_contracted_at,
+    due_date = v_due_date,
+    payment_method = nullif(pg_catalog.btrim(p_payload ->> 'payment_method'), ''),
+    payment_terms = nullif(pg_catalog.btrim(p_payload ->> 'payment_terms'), ''),
+    notes = nullif(p_payload ->> 'contract_notes', '')
+  where id = v_contract.id and owner_id = v_owner
+  returning * into v_contract;
+
+  if v_old_status is distinct from v_client.status then
+    insert into public.client_activities (owner_id, client_id, type, description, metadata)
+    values (
+      v_owner, v_client.id, 'status_change',
+      'Status alterado de ' || v_old_status || ' para ' || v_client.status || '.',
+      jsonb_build_object('previous_status', v_old_status, 'new_status', v_client.status)
+    );
+  end if;
+
+  return jsonb_build_object('client', to_jsonb(v_client), 'contract', to_jsonb(v_contract));
+end;
+$$;
+
+create or replace function public.archive_client(p_client_id uuid)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_owner uuid := auth.uid();
+  v_client public.clients;
+begin
+  if v_owner is null then
+    raise exception 'Sessão autenticada necessária.' using errcode = '42501';
+  end if;
+  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(v_owner::text || ':clients', 0));
+  select * into v_client from public.clients
+    where id = p_client_id and owner_id = v_owner for update;
+  if not found then
+    raise exception 'Cliente não encontrado ou acesso negado.' using errcode = '42501';
+  end if;
+  if v_client.status = 'inactive' and v_client.archived_at is not null then
+    return to_jsonb(v_client);
+  end if;
+  update public.clients set status = 'inactive', archived_at = now()
+    where id = p_client_id and owner_id = v_owner returning * into v_client;
+  insert into public.client_activities (owner_id, client_id, type, description)
+  values (v_owner, v_client.id, 'note', 'Cliente arquivado. Contratos e projetos foram preservados.');
+  return to_jsonb(v_client);
+end;
+$$;
+
+revoke all on function public.create_client(jsonb) from public, anon;
+revoke all on function public.update_client(uuid, jsonb) from public, anon;
+revoke all on function public.archive_client(uuid) from public, anon;
+grant execute on function public.create_client(jsonb) to authenticated;
+grant execute on function public.update_client(uuid, jsonb) to authenticated;
+grant execute on function public.archive_client(uuid) to authenticated;
+
 commit;
