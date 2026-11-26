@@ -7585,7 +7585,7 @@ describe('LeadEditPage', () => {
   })
 
   it('apresenta estado vazio quando a rota não informa o id do lead', async () => {
-    renderEditPage('/leads/edit', '/leads/:id?')
+    renderEditPage('/leads', '/leads')
     expect((await screen.findByRole('alert')).textContent).toContain('Lead não encontrado.')
     expect(screen.queryByLabelText('Nome do estabelecimento *')).toBeNull()
     expect(getLead).not.toHaveBeenCalled()
@@ -8512,19 +8512,22 @@ git commit -m "feat: registrar conversao e travar valores do lead"
 
 **Files:**
 - Modify: `src/pages/LeadDetailPage.tsx`
-- Create: `src/pages/LeadDetailPage.test.tsx`
+- Create: `src/pages/LeadDetailPage.conversion.test.tsx`
+- Modify minimally: `src/pages/LeadDetailPage.test.tsx` (preservar as cinco regressões Maps/Instagram e adicionar somente o mock de `clientService` exigido pela nova dependência).
 
 **Interfaces:**
 - Consumes: `getLeadClientLink(leadId: string): Promise<LeadClientLink | null>` from `src/services/clientService.ts`; `LeadClientLink` from `src/types/client.ts`; `ConversionDialog` from Task 7.
 - Produces: ação “Converter em cliente”, link “Ver cliente” para `/clientes/:id` e `ConversionDialog` controlado por `conversionOpen`.
 
+**Controller ruling:** o arquivo de testes de conversão será separado do arquivo existente de links externos. Sobrescrever `LeadDetailPage.test.tsx` apagaria cinco regressões de Maps/Instagram solicitadas pelo usuário. O novo arquivo mantém os seis testes de conversão literalmente abaixo. No arquivo existente, preservar todas as asserções e acrescentar apenas `vi.mock('../services/clientService', () => ({ getLeadClientLink: vi.fn().mockResolvedValue(null), convertLeadToClient: vi.fn() }))`, pois a página passará a consultar o vínculo em toda renderização. Custo se incorreto: um arquivo de teste adicional e um mock mínimo, sem mudança de comportamento ou arquitetura.
+
 - [ ] **Step 1: Write the failing integration tests**
 
-Create the complete file below. O `ConversionDialog` real usa os labels “Converter lead em cliente”, “Serviço contratado *”, “Valor contratado *”, “Data da contratação *” e “Confirmar conversão”. O mock de `clientService` precisa exportar tanto `getLeadClientLink` usado pela página quanto `convertLeadToClient` usado pelo diálogo. Não use matchers jest-dom.
+Create the complete conversion test file below. O `ConversionDialog` real usa os labels “Converter lead em cliente”, “Serviço contratado *”, “Valor contratado *”, “Data da contratação *” e “Confirmar conversão”. O mock de `clientService` precisa exportar tanto `getLeadClientLink` usado pela página quanto `convertLeadToClient` usado pelo diálogo. Não use matchers jest-dom. No arquivo existente `LeadDetailPage.test.tsx`, acrescente somente o mock mínimo indicado no ruling, sem alterar suas cinco asserções.
 
 ```tsx
 // @vitest-environment jsdom
-// src/pages/LeadDetailPage.test.tsx
+// src/pages/LeadDetailPage.conversion.test.tsx
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8722,7 +8725,7 @@ describe('LeadDetailPage — conversão', () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `npm test -- src/pages/LeadDetailPage.test.tsx`
+Run: `npm test -- src/pages/LeadDetailPage.conversion.test.tsx src/pages/LeadDetailPage.test.tsx`
 Expected: FAIL porque `LinkLoadState`, `fetchLeadAndLink`, a ação “Converter em cliente”, o link “Ver cliente” e o alerta de retry ainda não existem.
 
 - [ ] **Step 3: Implement the integration**
@@ -8735,7 +8738,7 @@ import type { LeadClientLink } from '../types/client'
 import { ConversionDialog } from '../components/leads/ConversionDialog'
 ```
 
-Mantenha `LeadLoadState` e declare `LinkLoadState` imediatamente depois dele:
+Remova a variante `empty` de `LeadLoadState` e o ramo `if (loadState.status === 'empty')`: `getLead` usa `.single()` e rejeita quando não há linha, portanto esse estado não é produzido. Declare `LinkLoadState` imediatamente depois de `LeadLoadState`:
 
 ```tsx
 type LinkLoadState =
@@ -8794,12 +8797,6 @@ const fetchLeadAndLink = useCallback(async (background = false) => {
     setRefreshing(false)
     return
   }
-  if (!leadResult.value) {
-    setLoadState({ status: 'empty' })
-    setRefreshing(false)
-    return
-  }
-
   setLoadState({ status: 'ready', lead: leadResult.value })
   if (linkResult.status === 'rejected') {
     const message = linkResult.reason instanceof Error ? linkResult.reason.message : 'Erro ao consultar vínculo.'
@@ -8920,13 +8917,13 @@ Renderize o diálogo depois de `WhatsAppDialog`:
 
 - [ ] **Step 4: Run tests and build**
 
-Run: `npm test -- src/pages/LeadDetailPage.test.tsx && npm run build`
-Expected: PASS dos seis testes e build exit 0.
+Run: `npm test -- src/pages/LeadDetailPage.conversion.test.tsx src/pages/LeadDetailPage.test.tsx && npm run build`
+Expected: PASS dos seis testes de conversão, das cinco regressões Maps/Instagram e build exit 0.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/pages/LeadDetailPage.tsx src/pages/LeadDetailPage.test.tsx
+git add src/pages/LeadDetailPage.tsx src/pages/LeadDetailPage.conversion.test.tsx src/pages/LeadDetailPage.test.tsx
 git commit -m "feat: integrar conversao na ficha do lead"
 ```
 
@@ -10670,7 +10667,7 @@ O CRM inclui Leads / Prospecção, Oportunidades, Pipeline Kanban, Follow-ups, D
 Configurações e Clientes. O módulo Clientes possui lista com filtros e paginação,
 cadastro com contrato inicial, ficha com projetos básicos, contratos e histórico combinado,
 arquivamento confirmado e conversão de leads por vínculo real.
-A aplicação da migration `0006` e do teste SQL da Etapa 3 deve ser executada pelo usuário.
+A aplicação das migrations `0006` (Clientes) e `0007` (link exato do Maps) e do teste SQL da Etapa 3 deve ser executada pelo usuário.
 O teste de isolamento RLS entre dois usuários permanece pendente até existir uma segunda
 conta temporária de teste. Projetos, Financeiro e Relatórios continuam como placeholders
 até seus respectivos planos.
@@ -10697,8 +10694,9 @@ por:
    [`0002_etapa2.sql`](supabase/migrations/0002_etapa2.sql),
    [`0003_duplicate_canonical.sql`](supabase/migrations/0003_duplicate_canonical.sql),
    [`0004_followup_atomic.sql`](supabase/migrations/0004_followup_atomic.sql),
-   [`0005_followup_rpc_json.sql`](supabase/migrations/0005_followup_rpc_json.sql) e
-   [`0006_etapa3_clients.sql`](supabase/migrations/0006_etapa3_clients.sql).
+   [`0005_followup_rpc_json.sql`](supabase/migrations/0005_followup_rpc_json.sql),
+   [`0006_etapa3_clients.sql`](supabase/migrations/0006_etapa3_clients.sql) e
+   [`0007_lead_maps_url.sql`](supabase/migrations/0007_lead_maps_url.sql).
    As migrations criam as tabelas privadas, os índices, as políticas RLS e as
    RPCs e triggers transacionais. Depois aplique
    [`supabase/tests/etapa3_clients.sql`](supabase/tests/etapa3_clients.sql) para a
@@ -10759,7 +10757,7 @@ por:
   utils/          helpers
   routes/         AppRoutes + ProtectedRoute
 supabase/
-  migrations/   0001–0006 (profiles, leads, CRM, duplicidades, follow-ups e clientes)
+  migrations/   0001–0007 (profiles, leads, CRM, duplicidades, follow-ups, clientes e Maps)
   tests/        etapa3_clients.sql (validação SQL executada pelo usuário)
 ```
 
@@ -10837,7 +10835,7 @@ Start `npm run dev`. With a real authenticated session, verify:
 8. Dashboard “Convertidos” ignores `aceitou` without link.
 9. Layouts work at 375, 768 and 1280 px without horizontal overflow.
 
-If the user has not applied migration 0006, report the database steps as pending and do not claim authenticated persistence.
+If the user has not applied migrations 0006 and 0007, report the database steps as pending and do not claim authenticated persistence.
 
 - [ ] **Step 6: Commit**
 
