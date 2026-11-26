@@ -6909,7 +6909,7 @@ git commit -m "feat: adicionar detalhe e historico do cliente"
 
 - [ ] **Step 1: Add failing regression tests**
 
-Substitua os testes existentes de tipos, `LeadTimeline`, `ContactDialog` e `LeadForm` pelos arquivos completos abaixo e crie somente `LeadEditPage.test.tsx`, que continua ausente. As fixtures de lead e vínculo são completas; os únicos casts são os de elementos DOM necessários às asserções nativas.
+Substitua os testes existentes de tipos, `LeadTimeline`, `ContactDialog` e `LeadForm` pelos arquivos completos abaixo e crie somente `LeadEditPage.test.tsx`, que continua ausente. As fixtures de lead e vínculo são completas; os únicos casts são os de elementos DOM necessários às asserções nativas. O bloco de `LeadForm` incorpora a regressão existente de Maps/Instagram para que a substituição não apague a cobertura funcional.
 
 ```ts
 // src/types/activity.test.ts
@@ -7303,6 +7303,23 @@ beforeEach(() => {
 })
 
 describe('LeadForm', () => {
+  it('salva o link exato do Maps e normaliza um usuário do Instagram', async () => {
+    createLead.mockResolvedValue(lead)
+    renderForm()
+    fireEvent.change(screen.getByLabelText('Google Maps (link exato)'), {
+      target: { value: 'maps.app.goo.gl/exemplo' },
+    })
+    fireEvent.change(screen.getByLabelText('Instagram (link ou @usuario)'), {
+      target: { value: '@perfil.exemplo' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar lead' }))
+
+    await waitFor(() => expect(createLead).toHaveBeenCalledWith(expect.objectContaining({
+      maps_url: 'https://maps.app.goo.gl/exemplo',
+      instagram: 'https://www.instagram.com/perfil.exemplo/',
+    })))
+  })
+
   it('não permite mudar status diretamente ao editar', () => {
     renderForm({ leadId: lead.id })
     expect((screen.getByLabelText('Status') as HTMLSelectElement).disabled).toBe(true)
@@ -7427,6 +7444,8 @@ function makeLead(overrides: Partial<Lead> = {}): Lead {
     name: 'Empresa Teste',
     responsible_name: 'Ana Responsável',
     phone: '11999999999',
+    instagram: 'https://www.instagram.com/empresa.teste/',
+    maps_url: 'https://maps.app.goo.gl/exemplo',
     status: 'aceitou',
     next_contact_at: null,
     last_verified_at: null,
@@ -7463,12 +7482,12 @@ function NavigationControl() {
   return <button type="button" onClick={() => navigate('/leads/lead-2/edit')}>Abrir lead 2</button>
 }
 
-function renderEditPage() {
+function renderEditPage(initialEntry = '/leads/lead-1/edit', routePath = '/leads/:id/edit') {
   return render(
-    <MemoryRouter initialEntries={['/leads/lead-1/edit']}>
+    <MemoryRouter initialEntries={[initialEntry]}>
       <NavigationControl />
       <Routes>
-        <Route path="/leads/:id/edit" element={<LeadEditPage />} />
+        <Route path={routePath} element={<LeadEditPage />} />
         <Route path="/leads/:id" element={<div>Ficha do lead</div>} />
         <Route path="/leads" element={<div>Lista de leads</div>} />
       </Routes>
@@ -7514,6 +7533,8 @@ describe('LeadEditPage', () => {
     expect((screen.getByLabelText('Valor contratado (R$)') as HTMLInputElement).disabled).toBe(true)
     expect((screen.getByLabelText('Valor recebido (R$)') as HTMLInputElement).disabled).toBe(true)
     expect((screen.getByLabelText('Telefone') as HTMLInputElement).disabled).toBe(false)
+    expect((screen.getByLabelText('Google Maps (link exato)') as HTMLInputElement).value).toBe('https://maps.app.goo.gl/exemplo')
+    expect((screen.getByLabelText('Instagram (link ou @usuario)') as HTMLInputElement).value).toBe('https://www.instagram.com/empresa.teste/')
   })
 
   it('mantém valores financeiros editáveis quando não existe vínculo', async () => {
@@ -7545,6 +7566,8 @@ describe('LeadEditPage', () => {
 
     await waitFor(() => expect(updateLead).toHaveBeenCalledWith('lead-1', expect.objectContaining({
       name: 'Empresa Editada',
+      instagram: 'https://www.instagram.com/empresa.teste/',
+      maps_url: 'https://maps.app.goo.gl/exemplo',
       contracted_value: 1500,
       received_value: 500,
     })))
@@ -7561,11 +7584,11 @@ describe('LeadEditPage', () => {
     expect(await screen.findByLabelText('Nome do estabelecimento *')).toBeTruthy()
   })
 
-  it('apresenta estado vazio quando o lead não existe', async () => {
-    getLead.mockResolvedValue(null)
-    renderEditPage()
+  it('apresenta estado vazio quando a rota não informa o id do lead', async () => {
+    renderEditPage('/leads/edit', '/leads/:id?')
     expect((await screen.findByRole('alert')).textContent).toContain('Lead não encontrado.')
     expect(screen.queryByLabelText('Nome do estabelecimento *')).toBeNull()
+    expect(getLead).not.toHaveBeenCalled()
   })
 
   it('não mostra toast nem navega com um salvamento concluído após trocar de lead', async () => {
@@ -8000,7 +8023,7 @@ function ContactDialogContent({ open, leadId, currentStatus, onClose, onSaved }:
 }
 ```
 
-Substitua `src/components/leads/LeadForm.tsx` pelo arquivo abaixo. `financialFieldsLocked` é opcional para preservar todos os chamadores atuais e se soma ao estado de salvamento/duplicidade, sem trancar nome, telefone ou status além das regras existentes.
+Substitua `src/components/leads/LeadForm.tsx` pelo arquivo abaixo. `financialFieldsLocked` é opcional para preservar todos os chamadores atuais e se soma ao estado de salvamento/duplicidade, sem trancar nome, telefone ou status além das regras existentes. A trava é apenas reflexo da UI: o trigger `guard_converted_lead_financials` da migration 0006 já garante a invariante no banco, inclusive contra clientes que ignorem este formulário; não altere `leadService` nem a migration nesta task. Preserve literalmente o rótulo, o placeholder e o input de Maps adicionados pelo pedido funcional.
 
 ```tsx
 // src/components/leads/LeadForm.tsx
@@ -8179,11 +8202,12 @@ export function LeadForm({ initial, leadId, financialFieldsLocked = false, onSav
           <Input disabled={busy} label="WhatsApp" type="tel" placeholder="(11) 99999-9999" value={draft.whatsapp ?? ''} error={errors.whatsapp} onChange={setText('whatsapp')} />
           <Input disabled={busy} label="E-mail" type="email" value={draft.email ?? ''} error={errors.email} onChange={setText('email')} />
           <Input disabled={busy} label="CNPJ (se público)" inputMode="numeric" placeholder="00.000.000/0000-00" value={draft.cnpj ?? ''} error={errors.cnpj} onChange={setText('cnpj')} />
-          <Input disabled={busy} label="Instagram (link)" type="url" placeholder="https://instagram.com/..." value={draft.instagram ?? ''} error={errors.instagram} onChange={setText('instagram')} />
+          <Input disabled={busy} label="Instagram (link ou @usuario)" type="url" placeholder="https://instagram.com/... ou @perfil" value={draft.instagram ?? ''} error={errors.instagram} onChange={setText('instagram')} />
           <Input disabled={busy} label="Facebook (link)" type="url" placeholder="https://facebook.com/..." value={draft.facebook ?? ''} error={errors.facebook} onChange={setText('facebook')} />
           <Input disabled={busy} label="Site (link)" type="url" placeholder="https://exemplo.com.br" value={draft.website ?? ''} error={errors.website} onChange={setText('website')} />
           <Input disabled={busy} label="Cardápio digital (link)" type="url" placeholder="https://exemplo.com.br/cardapio" value={draft.menu_url ?? ''} error={errors.menu_url} onChange={setText('menu_url')} />
           <Input disabled={busy} label="Catálogo digital (link)" type="url" placeholder="https://exemplo.com.br/catalogo" value={draft.catalog_url ?? ''} error={errors.catalog_url} onChange={setText('catalog_url')} />
+          <Input disabled={busy} label="Google Maps (link exato)" type="url" placeholder="https://maps.app.goo.gl/..." value={draft.maps_url ?? ''} error={errors.maps_url} onChange={setText('maps_url')} />
         </div>
       </section>
 
@@ -8290,7 +8314,7 @@ export function LeadForm({ initial, leadId, financialFieldsLocked = false, onSav
 }
 ```
 
-Substitua `src/pages/LeadEditPage.tsx` pelo arquivo abaixo. O formulário somente aparece depois que lead e vínculo foram resolvidos; uma falha no vínculo produz erro/retry, nunca campos financeiros liberados por suposição.
+Substitua `src/pages/LeadEditPage.tsx` pelo arquivo abaixo. O formulário somente aparece depois que lead e vínculo foram resolvidos; uma falha no vínculo produz erro/retry, nunca campos financeiros liberados por suposição. `getLead` usa `.single()` e rejeita quando não há linha, portanto não existe retorno `null` a tratar: a ausência de id continua no ramo explícito e uma linha inexistente segue para o estado de erro. Preserve `maps_url` no mapeamento de `LeadWrite`.
 
 ```tsx
 // src/pages/LeadEditPage.tsx
@@ -8310,7 +8334,6 @@ type EditLoadState =
   | { status: 'loading'; id: string }
   | { status: 'ready'; id: string; lead: Lead; link: LeadClientLink | null }
   | { status: 'error'; id: string; message: string }
-  | { status: 'empty'; id: string }
 
 export function LeadEditPage() {
   const { id } = useParams<{ id: string }>()
@@ -8338,10 +8361,6 @@ export function LeadEditPage() {
         id,
         message: leadResult.reason instanceof Error ? leadResult.reason.message : 'Erro ao carregar lead.',
       })
-      return
-    }
-    if (!leadResult.value) {
-      setLoadState({ status: 'empty', id })
       return
     }
     if (linkResult.status === 'rejected') {
@@ -8404,18 +8423,6 @@ export function LeadEditPage() {
     )
   }
 
-  if (loadState.status === 'empty') {
-    return (
-      <div className="mx-auto flex max-w-4xl flex-col gap-5">
-        <h1 className="font-display text-xl font-bold text-ink">Editar lead</h1>
-        <Card className="border-danger/40" role="alert">
-          <p className="text-sm text-danger">Lead não encontrado.</p>
-          <Button variant="outline" className="mt-3" onClick={() => navigate('/leads')}>Voltar para leads</Button>
-        </Card>
-      </div>
-    )
-  }
-
   const lead = loadState.lead
   const {
     id: _id,
@@ -8443,6 +8450,7 @@ export function LeadEditPage() {
     website: editable.website,
     menu_url: editable.menu_url,
     catalog_url: editable.catalog_url,
+    maps_url: editable.maps_url,
     country: editable.country,
     state: editable.state,
     city: editable.city,
