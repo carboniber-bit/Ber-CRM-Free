@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-25-etapa3-design.md`
 
-**Depende de:** Planos 1 e 2 concluídos, incluindo `src/lib/money.ts`, `src/types/contract.ts`, `src/types/client.ts`, `src/types/project.ts`, migrations `0006` e `0008` e as rotas já protegidas.
+**Depende de:** Planos 1 e 2 concluídos, incluindo `src/lib/money.ts`, `src/types/contract.ts`, `src/types/client.ts`, `src/types/project.ts`, migrations `0006`, `0007` e `0008`, as RPCs de cliente/projeto e as rotas já protegidas. A Task 2 não pode começar antes dessas entregas.
 
 ## Restrições globais
 
@@ -28,10 +28,13 @@
 - Datas de agrupamento usam `America/Sao_Paulo`; período tem início inclusivo e fim exclusivo. Nunca usar `current_date` nos testes ou agregações.
 - Registros financeiros com dependências são cancelados/estornados, nunca excluídos.
 - Dinheiro no frontend usa centavos inteiros; PostgreSQL usa `numeric(14,2)` nas colunas e `numeric` irrestrito nos acumuladores.
-- Toda RPC que altera um contrato existente adquire a advisory `:contract:<id>` antes de `FOR UPDATE`; pagamentos mantêm sua advisory `:payment:<key>` e depois bloqueiam contrato/parcelas. Nenhuma RPC segura uma linha para esperar uma advisory.
+- Ordem global de locks: `:payment:<key>` quando houver idempotência; depois `:clients`; depois `:contract:<id>`; somente então linhas de cliente/contrato/parcela. `record_payment` obtém `client_id` com leitura sem lock antes das advisories. Nenhuma RPC segura uma linha para esperar uma advisory.
+- Toda RPC que altera um contrato existente adquire a advisory `:contract:<id>` antes de `FOR UPDATE`; cancelamento, ajuste, parcelas, pagamento e RPCs de projeto compartilham essa ordem.
+- A migration `0009` é um rascunho incrementai durante as Tasks 2–7. Não reaplicar uma versão já aplicada: concluir o arquivo antes da primeira aplicação ou usar banco descartável/reset/replay controlado. Nunca reescrever histórico já aplicado.
+- Fixtures automatizadas usam somente usuários sintéticos dedicados e IDs reservados; nunca escolher o primeiro usuário real. Harnesses `dblink` só executam em banco descartável e limpam os usuários sintéticos nos caminhos normal e de exceção.
 - TDD RED/GREEN em cada comportamento novo; commits pequenos e frequentes somente durante a execução futura deste plano.
 - Não afirmar que migration, RLS entre dois usuários ou validação autenticada foi executada sem evidência real.
-- A Etapa 4 não começa sem autorização explícita.
+- Relatórios, configurações, backup e auditoria pertencem à mesma Etapa 3 e aos planos incrementais de finalização; não criar Etapa 4.
 
 ## Estrutura de arquivos
 
@@ -490,11 +493,15 @@ git commit -m "feat: adicionar dominio financeiro e periodos"
 - Criar: `supabase/migrations/0009_etapa3_finance.sql`
 
 **Interfaces:**
-- Consome: `public.contracts`, `public.projects`, `public.clients`, `public.client_activities` e `public.set_updated_at()`.
+- Consome: Planos 1 e 2 concluídos, `public.contracts`, `public.projects`, `public.clients`, `public.client_activities`, `public.set_updated_at()`, `contracts_enforce_project_allocation` e as RPCs de cliente/projeto.
 - Produz: `expense_categories`, `contract_installments`, `financial_payments`, `financial_payment_allocations` e `financial_expenses`.
 - Mantém: `public.contracts` somente com `SELECT` para `authenticated`; toda escrita estrutural passa pelas RPCs das Tarefas 3 e 4.
 
+Pré-condição explícita: conferir no HEAD os artefatos `0006`, `0008`, os tipos e as RPCs consumidas antes de escrever `0009`. Se algum estiver ausente, concluir o Plano 1/2 correspondente; não improvisar uma fundação paralela.
+
 - [ ] **Etapa 1: Escrever a migration completa**
+
+Criar `supabase/migrations/0009_etapa3_finance.sql`. Este arquivo será ampliado nas Tasks 3–7 e não deve ser aplicado ao Supabase antes de estar completo; testes locais que precisem das versões parciais usam banco descartável reconstruído do zero.
 
 ```sql
 -- supabase/migrations/0009_etapa3_finance.sql
@@ -716,6 +723,30 @@ git commit -m "feat: criar schema financeiro com escrita restrita"
 begin;
 
 do $$
+begin
+  insert into auth.users (
+    id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
+    raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+  ) values
+    (
+      '00000000-0000-4000-8000-000000000001',
+      '00000000-0000-0000-0000-000000000000',
+      'authenticated', 'authenticated', 'finance-owner@example.test', '', now(),
+      '{"provider":"email","providers":["email"]}'::jsonb,
+      '{"full_name":"Financeiro Owner"}'::jsonb, now(), now()
+    ),
+    (
+      '00000000-0000-4000-8000-000000000002',
+      '00000000-0000-0000-0000-000000000000',
+      'authenticated', 'authenticated', 'finance-other@example.test', '', now(),
+      '{"provider":"email","providers":["email"]}'::jsonb,
+      '{"full_name":"Financeiro Other"}'::jsonb, now(), now()
+    )
+  on conflict (id) do nothing;
+end
+$$;
+
+do $$
 declare
   v_owner uuid;
   v_today date := (now() at time zone 'America/Sao_Paulo')::date;
@@ -731,8 +762,8 @@ declare
   v_last_amount numeric;
   v_state text;
 begin
-  select id into v_owner from auth.users order by created_at limit 1;
-  if v_owner is null then raise exception 'Crie ao menos um usuário autenticado.'; end if;
+  select id into v_owner from auth.users where id = '00000000-0000-4000-8000-000000000001';
+  if v_owner is null then raise exception 'Fixture sintética do proprietário financeiro não foi criada.'; end if;
   perform set_config('request.jwt.claim.sub', v_owner::text, true);
   set local role authenticated;
 
@@ -889,7 +920,7 @@ rollback;
 
 - [ ] **Etapa 2: Confirmar o vermelho**
 
-Esperado: `public.create_contract(jsonb)` não existe. A execução real exige migrations 0001–0009 aplicadas pelo usuário.
+Esperado: `public.create_contract(jsonb)` não existe. A execução real exige migrations 0001–0009 completas e aplicadas pelo usuário; Versões parciais de `0009` somente em banco descartável com reset/replay controlado.
 
 - [ ] **Etapa 3: Inserir as RPCs de contrato antes de `commit;`**
 
@@ -1203,6 +1234,9 @@ declare
   v_contract public.contracts;
 begin
   if v_owner is null then raise exception 'Sessão autenticada necessária.' using errcode = '42501'; end if;
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_owner::text || ':contract:' || p_contract_id::text, 0)
+  );
   select * into v_contract
     from public.contracts
     where id = p_contract_id and owner_id = v_owner
@@ -1236,7 +1270,7 @@ grant execute on function public.cancel_contract(uuid) to authenticated;
 - [ ] **Etapa 4: Revisar o ajuste**
 
 Comando: `git diff --check`
-Esperado: `contracts` permanece somente com `SELECT` para `authenticated` e o `UPDATE` direto do total falha com `42501`; parcelas só são reescritas antes de pagamento; `[]` remove todas as parcelas e não exige soma; `abc`, exponencial, `NaN`, `Infinity`, mais de duas casas e estouro falham com `22023` antes de qualquer cast, sem persistir parcela; aumento vai para a última parcela; redução usa saldos não alocados e nunca exclui parcela com `financial_payment_allocations`, mesmo após estorno integral; se não for possível reduzir outras, levanta `23514` com `INSTALLMENT_HAS_ALLOCATIONS:`; total não fica abaixo do recebido líquido nem dos projetos não cancelados; a advisory `:contract:<id>` precede o bloqueio da linha e serializa a alocação com o Plano 2.
+Esperado: `contracts` permanece somente com `SELECT` para `authenticated` e o `UPDATE` direto do total falha com `42501`; parcelas só são reescritas antes de pagamento; `[]` remove todas as parcelas e não exige soma; `abc`, exponencial, `NaN`, `Infinity`, mais de duas casas e estouro falham com `22023` antes de qualquer cast, sem persistir parcela; aumento vai para a última parcela; redução usa saldos não alocados e nunca exclui parcela com `financial_payment_allocations`, mesmo após estorno integral; se não for possível reduzir outras, levanta `23514` com `INSTALLMENT_HAS_ALLOCATIONS:`; total não fica abaixo do recebido líquido nem dos projetos não cancelados; `cancel_contract`, `adjust_contract` e `replace_contract_installments` adquirem `:contract:<id>` antes do bloqueio da linha e o harness da Task 5 prova cancelamento↔ajuste nas duas direções com `55P03`.
 
 - [ ] **Etapa 5: Criar commit**
 
@@ -1285,8 +1319,8 @@ declare
   v_invalid_total text;
   v_state text;
 begin
-  select id into v_owner from auth.users order by created_at, id limit 1;
-  if v_owner is null then raise exception 'Crie ao menos um usuário autenticado.'; end if;
+  select id into v_owner from auth.users where id = '00000000-0000-4000-8000-000000000001';
+  if v_owner is null then raise exception 'Fixture sintética do proprietário financeiro não foi criada.'; end if;
   perform set_config('request.jwt.claim.sub', v_owner::text, true);
   set local role authenticated;
 
@@ -1445,7 +1479,7 @@ $$;
 
 - [ ] **Etapa 2: Confirmar o vermelho**
 
-Aplicar as migrations 0001–0009 e executar o teste SQL. Esperado: RED no primeiro aumento sem dependências, pois a função do Plano 1 sempre exige `CONTRACT_ADJUST_REQUIRED` quando o total muda.
+Aplicar as migrations 0001–0009 completas e executar o teste SQL. Esperado: RED no primeiro aumento sem dependências, pois a função do Plano 1 sempre exige `CONTRACT_ADJUST_REQUIRED` quando o total muda. Se `0009` ainda estiver parcial, usar somente banco descartável com reset/replay do zero; nunca reaplicar uma versão já aplicada nem reescrever histórico.
 
 - [ ] **Etapa 3: Substituir integralmente a RPC antes de `commit;`**
 
@@ -1803,24 +1837,6 @@ declare
   v_last_amount numeric;
   v_state text;
 begin
-  insert into auth.users (
-    id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
-    raw_app_meta_data, raw_user_meta_data, created_at, updated_at
-  ) values
-    (
-      '00000000-0000-4000-8000-000000000001',
-      '00000000-0000-0000-0000-000000000000',
-      'authenticated', 'authenticated', 'finance-owner@example.test', '', now(),
-      '{"provider":"email","providers":["email"]}'::jsonb,
-      '{"full_name":"Financeiro Owner"}'::jsonb, now(), now()
-    ),
-    (
-      '00000000-0000-4000-8000-000000000002',
-      '00000000-0000-0000-0000-000000000000',
-      'authenticated', 'authenticated', 'finance-other@example.test', '', now(),
-      '{"provider":"email","providers":["email"]}'::jsonb,
-      '{"full_name":"Financeiro Other"}'::jsonb, now(), now()
-    );
   select id into v_owner from auth.users where id = '00000000-0000-4000-8000-000000000001';
   select id into v_other from auth.users where id = '00000000-0000-4000-8000-000000000002';
   if v_owner is null or v_other is null then raise exception 'Fixtures de auth.users não foram criadas.'; end if;
@@ -2148,6 +2164,7 @@ set search_path = ''
 as $$
 declare
   v_owner uuid := auth.uid();
+  v_client_id uuid;
   v_contract_id uuid;
   v_key uuid;
   v_type text;
@@ -2225,6 +2242,18 @@ begin
     raise exception 'Alocação inválida.' using errcode = '22023';
   end if;
 
+  -- A leitura sem lock descobre o cliente; nenhuma linha fica retida enquanto se espera outra advisory.
+  select * into v_contract
+    from public.contracts
+    where id = v_contract_id and owner_id = v_owner;
+  if not found then raise exception 'Contrato não encontrado ou acesso negado.' using errcode = '42501'; end if;
+  v_client_id := v_contract.client_id;
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_owner::text || ':clients', 0)
+  );
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_owner::text || ':contract:' || v_contract_id::text, 0)
+  );
   select * into v_contract
     from public.contracts
     where id = v_contract_id and owner_id = v_owner
@@ -2378,11 +2407,11 @@ grant execute on function public.record_payment(jsonb) to authenticated;
 - [ ] **Etapa 4: Revisar invariantes de pagamento**
 
 Comando: `git diff --check`
-Esperado: lock consultivo por proprietário/chave antes da consulta de idempotência; contrato bloqueado; recebimento limitado ao saldo ativo; estorno limitado ao recebimento original e à alocação líquida; valores por pagamento/alocação limitados a `999999999999.99`; duplicidades de parcelas rejeitadas; nenhuma exclusão financeira é exposta; dois usuários reais de `auth.users` leem somente os próprios dados e chamadas cross-owner às RPCs financeiras falham com `42501`; o harness concorrente prova serialização de `creation_key`/`idempotency_key`, bloqueio de `create_client`, `update_client`, `archive_client` e `convert_lead_to_client` pela advisory `:clients`, um probe isolado de `update_client` contra somente `:contract:<id>`, os locks entre contrato, parcelas e pagamento e os seis probes bidirecionais entre `adjust_contract` e `create_project`/`update_project`/`set_project_status`, todos com `55P03` e nunca `40P01`.
+Esperado: lock consultivo por proprietário/chave antes da consulta de idempotência; contrato bloqueado; recebimento limitado ao saldo ativo; estorno limitado ao recebimento original e à alocação líquida; valores por pagamento/alocação limitados a `999999999999.99`; duplicidades de parcelas rejeitadas; nenhuma exclusão financeira é exposta; dois usuários sintéticos de `auth.users` leem somente os próprios dados e chamadas cross-owner às RPCs financeiras falham com `42501`; o harness concorrente prova serialização de `creation_key`/`idempotency_key`, bloqueio de `create_client`, `update_client`, `archive_client` e `convert_lead_to_client` pela advisory `:clients`, `record_payment` contra `:clients`, probes isolados de `update_client`, `cancel_contract` e `adjust_contract` contra somente `:contract:<id>`, os locks entre contrato, parcelas e pagamento e os seis probes bidirecionais entre `adjust_contract` e `create_project`/`update_project`/`set_project_status`, todos com `55P03` e nunca `40P01`.
 
 - [ ] **Etapa 5: Provar idempotência e serialização de contratos/pagamentos**
 
-Execute o bloco abaixo no SQL Editor com as migrations 0001–0009 aplicadas, a extensão `dblink` disponível e ao menos um usuário já commitado em `auth.users`. A conexão `dblink` usa o socket local com o banco e o usuário atuais; ela precisa ser aceita pela configuração de autenticação do banco de teste. Não há `psql`, loop de sincronização nem `pg_sleep`: a sessão remota primeiro confirma os locks e somente depois a sessão local faz probes com `lock_timeout`. O timeout é apenas uma proteção contra bloqueio infinito; como cada lock conflitante já está comprovadamente adquirido, o resultado esperado é sempre `55P03`, nunca `40P01`. Além dos locks de cliente/contrato/parcela/pagamento, o harness isola uma única advisory `:contract:<id>` para `update_client` e mantém advisories de contrato separadas para cada RPC de projeto. O cleanup dos fixtures, incluindo projetos, é tentado em transação remota mesmo quando uma asserção falha; rollback, cleanup e disconnect são tentados individualmente nos caminhos normal e de exceção.
+Execute o bloco abaixo **somente em um banco descartável de teste**, com as migrations 0001–0009 aplicadas e a extensão `dblink` disponível. Nunca execute este harness no projeto Supabase de produção. A conexão `dblink` usa o socket local com o banco e o usuário atuais; ela precisa ser aceita pela configuração de autenticação do banco descartável. O harness cria e remove somente o usuário sintético de ID reservado `00000000-0000-4000-8000-000000000101`; não consulta, altera nem remove usuários reais. Não há `psql`, loop de sincronização nem `pg_sleep`: a sessão remota primeiro confirma os locks e somente depois a sessão local faz probes com `lock_timeout`. O timeout é apenas uma proteção contra bloqueio infinito; como cada lock conflitante já está comprovadamente adquirido, o resultado esperado é sempre `55P03`, nunca `40P01`. Além dos locks de cliente/contrato/parcela/pagamento, o harness isola uma única advisory `:contract:<id>` para `update_client`, `cancel_contract` e `adjust_contract`, e mantém advisories de contrato separadas para cada RPC de projeto. O cleanup dos fixtures e do usuário sintético é tentado em transação remota mesmo quando uma asserção falha; rollback, cleanup e disconnect são tentados individualmente nos caminhos normal e de exceção.
 
 ```sql
 create extension if not exists dblink;
@@ -2399,6 +2428,8 @@ declare
   v_payment_contract_id uuid;
   v_adjust_contract_id uuid;
   v_adjust_payment_contract_id uuid;
+  v_cancel_contract_id uuid;
+  v_cancel_adjust_contract_id uuid;
   v_create_project_contract_id uuid;
   v_update_project_contract_id uuid;
   v_status_contract_id uuid;
@@ -2418,12 +2449,26 @@ declare
   v_payment_repeat jsonb;
   v_result text;
   v_cleanup_sql text;
+  v_user_cleanup_sql text := $cleanup$
+    delete from auth.users where id = '00000000-0000-4000-8000-000000000101'::uuid;
+  $cleanup$;
   v_setup_committed boolean := false;
   v_state text;
 begin
-  select id into v_owner from auth.users order by created_at, id limit 1;
-  if v_owner is null then raise exception 'Crie ao menos um usuário autenticado antes do teste.'; end if;
+  v_owner := '00000000-0000-4000-8000-000000000101'::uuid;
   perform dblink_connect(v_conn, format('dbname=%L user=%L', current_database(), current_user));
+  perform dblink_exec(v_conn, $user$
+    insert into auth.users (
+      id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
+      raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+    ) values (
+      '00000000-0000-4000-8000-000000000101',
+      '00000000-0000-0000-0000-000000000000',
+      'authenticated', 'authenticated', 'finance-concurrency@example.test', '', now(),
+      '{"provider":"email","providers":["email"]}'::jsonb,
+      '{"full_name":"Finance Concurrency Synthetic"}'::jsonb, now(), now()
+    ) on conflict (id) do nothing;
+  $user$);
 
   begin
     -- Fixtures visíveis às duas sessões; a transação de locks abaixo não os cria.
@@ -2456,6 +2501,12 @@ begin
     v_payload := v_base_payload || jsonb_build_object('creation_key', gen_random_uuid(), 'service', 'Contrato de pagamento e ajuste');
     select dblink_eval(v_conn, 'select public.create_contract(' || quote_literal(v_payload::text) || '::jsonb)') into v_result;
     v_adjust_payment_contract_id := (v_result::jsonb ->> 'id')::uuid;
+    v_payload := v_base_payload || jsonb_build_object('creation_key', gen_random_uuid(), 'service', 'Contrato do probe cancelamento');
+    select dblink_eval(v_conn, 'select public.create_contract(' || quote_literal(v_payload::text) || '::jsonb)') into v_result;
+    v_cancel_contract_id := (v_result::jsonb ->> 'id')::uuid;
+    v_payload := v_base_payload || jsonb_build_object('creation_key', gen_random_uuid(), 'service', 'Contrato do probe ajuste sob cancelamento');
+    select dblink_eval(v_conn, 'select public.create_contract(' || quote_literal(v_payload::text) || '::jsonb)') into v_result;
+    v_cancel_adjust_contract_id := (v_result::jsonb ->> 'id')::uuid;
 
     v_payload := v_base_payload || jsonb_build_object('creation_key', gen_random_uuid(), 'service', 'Contrato do probe create_project');
     select dblink_eval(v_conn, 'select public.create_contract(' || quote_literal(v_payload::text) || '::jsonb)') into v_result;
@@ -2609,6 +2660,19 @@ begin
         'service', 'Site', 'total_value', '1000.00', 'contracted_at', v_today
       ));
       raise exception 'update_client ignorou a advisory :clients.';
+    exception when others then
+      get stacked diagnostics v_state = returned_sqlstate;
+      if v_state <> '55P03' then raise; end if;
+    end;
+
+    begin
+      perform public.record_payment(jsonb_build_object(
+        'contract_id', v_payment_contract_id, 'idempotency_key', gen_random_uuid(),
+        'type', 'receipt', 'amount', '100.00', 'received_at', now(),
+        'payment_method', 'pix', 'notes', null, 'related_payment_id', null,
+        'allocations', '[]'::jsonb
+      ));
+      raise exception 'record_payment ignorou a advisory :clients.';
     exception when others then
       get stacked diagnostics v_state = returned_sqlstate;
       if v_state <> '55P03' then raise; end if;
@@ -2821,6 +2885,51 @@ begin
     end;
     reset role;
     set local lock_timeout = 0;
+
+    -- Cancelamento ↔ ajuste: cada sessão remota mantém somente a advisory do contrato.
+    perform dblink_exec(v_conn, 'rollback');
+    perform dblink_exec(v_conn, 'begin');
+    perform dblink_exec(v_conn, 'set local role authenticated');
+    perform dblink_exec(v_conn, format('select set_config(''request.jwt.claim.sub'', %L, true)', v_owner::text));
+    perform dblink_exec(v_conn, 'select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('
+      || quote_literal(v_owner::text || ':contract:' || v_cancel_contract_id::text) || ', 0))');
+    select dblink_eval(v_conn, 'select count(*) from pg_catalog.pg_locks'
+      || ' where pid = pg_catalog.pg_backend_pid() and locktype = ''advisory'' and granted') into v_result;
+    if v_result <> '1' then raise exception 'O probe de ajuste sob cancelamento mantém locks extras.'; end if;
+    perform set_config('request.jwt.claim.sub', v_owner::text, true);
+    set local role authenticated;
+    set local lock_timeout = '1s';
+    begin
+      perform public.adjust_contract(v_cancel_contract_id, 900.00);
+      raise exception 'adjust_contract ignorou a advisory isolada de cancel_contract.';
+    exception when others then
+      get stacked diagnostics v_state = returned_sqlstate;
+      if v_state <> '55P03' then raise; end if;
+    end;
+    reset role;
+    set local lock_timeout = 0;
+
+    perform dblink_exec(v_conn, 'rollback');
+    perform dblink_exec(v_conn, 'begin');
+    perform dblink_exec(v_conn, 'set local role authenticated');
+    perform dblink_exec(v_conn, format('select set_config(''request.jwt.claim.sub'', %L, true)', v_owner::text));
+    perform dblink_exec(v_conn, 'select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('
+      || quote_literal(v_owner::text || ':contract:' || v_cancel_adjust_contract_id::text) || ', 0))');
+    select dblink_eval(v_conn, 'select count(*) from pg_catalog.pg_locks'
+      || ' where pid = pg_catalog.pg_backend_pid() and locktype = ''advisory'' and granted') into v_result;
+    if v_result <> '1' then raise exception 'O probe de cancelamento sob ajuste mantém locks extras.'; end if;
+    perform set_config('request.jwt.claim.sub', v_owner::text, true);
+    set local role authenticated;
+    set local lock_timeout = '1s';
+    begin
+      perform public.cancel_contract(v_cancel_adjust_contract_id);
+      raise exception 'cancel_contract ignorou a advisory isolada de adjust_contract.';
+    exception when others then
+      get stacked diagnostics v_state = returned_sqlstate;
+      if v_state <> '55P03' then raise; end if;
+    end;
+    reset role;
+    set local lock_timeout = 0;
     perform dblink_exec(v_conn, 'rollback');
   exception when others then
     if v_conn = any(dblink_get_connections()) then
@@ -2836,6 +2945,11 @@ begin
           raise notice 'Falha no cleanup dblink: %', sqlerrm;
         end;
       end if;
+      begin
+        perform dblink_exec(v_conn, v_user_cleanup_sql);
+      exception when others then
+        raise notice 'Falha no cleanup do usuário sintético: %', sqlerrm;
+      end;
       begin
         perform dblink_disconnect(v_conn);
       exception when others then
@@ -2859,12 +2973,17 @@ begin
       end;
     end if;
     begin
+      perform dblink_exec(v_conn, v_user_cleanup_sql);
+    exception when others then
+      raise notice 'Falha no cleanup do usuário sintético: %', sqlerrm;
+    end;
+    begin
       perform dblink_disconnect(v_conn);
     exception when others then
       raise notice 'Falha no disconnect dblink: %', sqlerrm;
     end;
   end if;
-  raise notice 'Concorrência de clientes, update_client, creation_key, idempotency_key, locks cliente/contrato/parcela/pagamento e ajuste/projetos aprovada.';
+  raise notice 'Concorrência de clientes, update_client, creation_key, idempotency_key, locks cliente/contrato/parcela/pagamento, cancelamento/ajuste e ajuste/projetos aprovada.';
 end
 $$;
 ```
@@ -2913,7 +3032,8 @@ declare
   v_events int;
   v_state text;
 begin
-  select id into v_owner from auth.users order by created_at limit 1;
+  select id into v_owner from auth.users where id = '00000000-0000-4000-8000-000000000001';
+  if v_owner is null then raise exception 'Fixture sintética do proprietário financeiro não foi criada.'; end if;
   perform set_config('request.jwt.claim.sub', v_owner::text, true);
   v_client := public.create_client(jsonb_build_object(
     'creation_key', gen_random_uuid(),
@@ -3552,7 +3672,7 @@ Esperado: categoria única por proprietário/nome em minúsculas; criação/edi�
 
 - [ ] **Etapa 5: Provar serialização entre `set_project_status` e despesa vinculada**
 
-Execute o bloco abaixo no SQL Editor após as migrations 0001–0009, com `dblink` disponível e ao menos um usuário já commitado em `auth.users`. Assim como no harness anterior, a conexão remota usa o socket local e depende da autenticação configurada no banco. O fixture é commitado para que as duas sessões o vejam; em seguida, locks já confirmados são usados em probes determinísticos com `lock_timeout`. `set_project_status(project_id,status)` adquire `:contract:<id>` antes de travar projeto e contrato; a despesa criada carrega ambos os vínculos. O teste cobre a criação da despesa durante o status, a criação normal após a liberação e a direção inversa contra os locks FK; os dois probes de bloqueio esperam `55P03`, sem loops, `pg_sleep`, `psql` ou comandos meta. Rollback, cleanup e disconnect são tentados individualmente também no caminho normal.
+Execute o bloco abaixo **somente em um banco descartável de teste**, após as migrations 0001–0009 e com `dblink` disponível. Nunca execute no projeto Supabase de produção. Assim como no harness anterior, a conexão remota usa o socket local e depende da autenticação configurada no banco descartável. O harness cria e remove somente o usuário sintético de ID reservado `00000000-0000-4000-8000-000000000201`; não consulta, altera nem remove usuários reais. O fixture é commitado para que as duas sessões o vejam; em seguida, locks já confirmados são usados em probes determinísticos com `lock_timeout`. `set_project_status(project_id,status)` adquire `:contract:<id>` antes de travar projeto e contrato; a despesa criada carrega ambos os vínculos. O teste cobre a criação da despesa durante o status, a criação normal após a liberação e a direção inversa contra os locks FK; os dois probes de bloqueio esperam `55P03`, sem loops, `pg_sleep`, `psql` ou comandos meta. Rollback, cleanup dos fixtures, cleanup do usuário sintético e disconnect são tentados individualmente nos caminhos normal e de exceção.
 
 ```sql
 create extension if not exists dblink;
@@ -3571,12 +3691,26 @@ declare
   v_expense jsonb;
   v_result text;
   v_cleanup_sql text;
+  v_user_cleanup_sql text := $cleanup$
+    delete from auth.users where id = '00000000-0000-4000-8000-000000000201'::uuid;
+  $cleanup$;
   v_setup_committed boolean := false;
   v_state text;
 begin
-  select id into v_owner from auth.users order by created_at, id limit 1;
-  if v_owner is null then raise exception 'Crie ao menos um usuário autenticado antes do teste.'; end if;
+  v_owner := '00000000-0000-4000-8000-000000000201'::uuid;
   perform dblink_connect(v_conn, format('dbname=%L user=%L', current_database(), current_user));
+  perform dblink_exec(v_conn, $user$
+    insert into auth.users (
+      id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
+      raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+    ) values (
+      '00000000-0000-4000-8000-000000000201',
+      '00000000-0000-0000-0000-000000000000',
+      'authenticated', 'authenticated', 'finance-project-expense@example.test', '', now(),
+      '{"provider":"email","providers":["email"]}'::jsonb,
+      '{"full_name":"Finance Project Expense Synthetic"}'::jsonb, now(), now()
+    ) on conflict (id) do nothing;
+  $user$);
 
   begin
     perform dblink_exec(v_conn, 'begin');
@@ -3689,6 +3823,11 @@ begin
         end;
       end if;
       begin
+        perform dblink_exec(v_conn, v_user_cleanup_sql);
+      exception when others then
+        raise notice 'Falha no cleanup do usuário sintético: %', sqlerrm;
+      end;
+      begin
         perform dblink_disconnect(v_conn);
       exception when others then
         raise notice 'Falha no disconnect dblink: %', sqlerrm;
@@ -3710,6 +3849,11 @@ begin
         raise notice 'Falha no cleanup dblink: %', sqlerrm;
       end;
     end if;
+    begin
+      perform dblink_exec(v_conn, v_user_cleanup_sql);
+    exception when others then
+      raise notice 'Falha no cleanup do usuário sintético: %', sqlerrm;
+    end;
     begin
       perform dblink_disconnect(v_conn);
     exception when others then
@@ -4024,7 +4168,7 @@ begin
     raise exception 'Pagamento acima do limite por registro foi aceito.';
   exception when others then
     get stacked diagnostics v_state = returned_sqlstate;
-    if v_state <> '22023' or sqlerrm <> 'Dados do pagamento inválido.' then raise; end if;
+    if v_state <> '22023' or sqlerrm <> 'Dados do pagamento inválidos.' then raise; end if;
   end;
   begin
     perform public.record_payment(jsonb_build_object(
@@ -4466,7 +4610,7 @@ Esperado: contrato cancelado sai apenas dos totais ativos; recebido histórico p
 
 - [ ] **Etapa 5: Executar o teste SQL completo**
 
-Comando: aplicar `supabase/tests/etapa3_finance.sql` no SQL Editor com as migrations 0001–0009 já aplicadas.
+Comando: aplicar `supabase/tests/etapa3_finance.sql` no SQL Editor somente com as migrations 0001–0009 completas e já aplicadas. Harnesses `dblink` exigem banco descartável; versões parciais de `0009` exigem reset/replay controlado e nunca reaplicação sobre histórico aplicado.
 Esperado: notices de `update_client`, contratos/parcelas e validação textual, pagamentos/estornos, despesas/categorias e resumo/fluxo/RLS; término em `ROLLBACK`, sem dados persistidos. Os notices dos dois harnesses de concorrência pertencem às execuções separadas das Tarefas 5 e 6.
 
 - [ ] **Etapa 6: Criar commit**
@@ -4636,6 +4780,26 @@ describe('contractService', () => {
     expect(result?.pendingCents).toBe(75000)
     expect(result?.installments[0]).toMatchObject({ allocated_cents: 15000, remaining_cents: 45000, status: 'overdue' })
     expect(result?.installments[1]).toMatchObject({ allocated_cents: 10000, remaining_cents: 30000, status: 'pending' })
+  })
+
+  it('zera o pendente de contrato cancelado sem apagar o recebido líquido histórico', async () => {
+    const embedded = query({
+      ...contractRow,
+      status: 'cancelled',
+      cancelled_at: '2026-11-26T12:00:00Z',
+      clients: [{ name: 'Empresa A' }],
+      contract_installments: [],
+      financial_payments: [{
+        id: 'p1', owner_id: 'owner', contract_id: 'contract-1', idempotency_key: 'key-1',
+        related_payment_id: null, type: 'receipt', amount: '300.00', received_at: '',
+        payment_method: null, notes: null, created_by: null, created_at: '',
+        financial_payment_allocations: [],
+      }],
+    })
+    db.from.mockReturnValue(embedded)
+    const result = await getContractFinancials('contract-1')
+    expect(result?.receivedCents).toBe(30000)
+    expect(result?.pendingCents).toBe(0)
   })
 
   it('rejeita soma de alocações acima do limite seguro', async () => {
@@ -5078,10 +5242,11 @@ export async function getContractFinancials(id: string): Promise<ContractFinanci
       installment.amount_cents, allocatedCents, installment.due_date, today,
     ) }
   })
-  const pendingCents = calculateContractBalance(contract.total_value_cents, payments)
+  const historicalPendingCents = calculateContractBalance(contract.total_value_cents, payments)
+  const pendingCents = contract.status === 'cancelled' ? 0 : historicalPendingCents
   return {
     contract, installments: financialInstallments, payments, allocations,
-    receivedCents: contract.total_value_cents - pendingCents, pendingCents,
+    receivedCents: contract.total_value_cents - historicalPendingCents, pendingCents,
   }
 }
 
@@ -6063,6 +6228,23 @@ describe('ContractPanel', () => {
     await screen.findByText('Cancelado')
     expect(screen.queryByRole('button', { name: 'Receber' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Cancelar contrato' })).toBeNull()
+    expect(screen.queryByText('R$ 700,00')).toBeNull()
+  })
+
+  it('bloqueia a reescrita de parcelas após o primeiro pagamento e explica o motivo', async () => {
+    mocks.getContractFinancials.mockResolvedValue({
+      ...financials,
+      payments: [{
+        id: 'p1', owner_id: 'owner', contract_id: 'contract-1', idempotency_key: 'key-1',
+        related_payment_id: null, type: 'receipt', amount_cents: 30000,
+        received_at: '2026-11-26T12:00:00Z', payment_method: 'pix', notes: null,
+        created_by: 'owner', created_at: '2026-11-26T12:00:00Z',
+      }],
+    })
+    render(<ContractPanel contracts={[contract]} />)
+    await screen.findByText('R$ 300,00')
+    expect(screen.queryByRole('button', { name: 'Parcelas' })).toBeNull()
+    expect(screen.getByText('As parcelas não podem ser reescritas após o primeiro pagamento.')).not.toBeNull()
   })
 
   it('preserva o último snapshot e exibe erro inline quando o refresh falha', async () => {
@@ -6212,7 +6394,7 @@ export function ContractPanel({ clientId, clientName, contracts, onChanged }: Co
           <dl className="mt-4 grid gap-3 sm:grid-cols-3">
             <div><dt className="text-xs text-muted">Contratado</dt><dd className="text-ink">{formatMoney(contract.total_value_cents)}</dd></div>
             <div><dt className="text-xs text-muted">Recebido líquido</dt><dd className="text-ink">{formatMoney(detail?.receivedCents ?? 0)}</dd></div>
-            <div><dt className="text-xs text-muted">Pendente</dt><dd className="text-ink">{formatMoney(detail?.pendingCents ?? 0)}</dd></div>
+            <div><dt className="text-xs text-muted">Pendente</dt><dd className="text-ink">{formatMoney(contract.status === 'cancelled' ? 0 : detail?.pendingCents ?? 0)}</dd></div>
           </dl>
           {detail && detail.installments.length > 0 && <div className="mt-4 space-y-2">
             {detail.installments.map((installment) => <div key={installment.id} className="flex flex-wrap justify-between gap-2 rounded-lg bg-elevated/60 px-3 py-2 text-sm">
@@ -6227,12 +6409,15 @@ export function ContractPanel({ clientId, clientName, contracts, onChanged }: Co
               <span>{item.type === 'receipt' ? '+' : '−'}{formatMoney(item.amount_cents)}</span>
             </div>)}
           </div>}
-          {contract.status === 'active' && detail && <div className="mt-4 flex flex-wrap gap-2">
-            <button type="button" className="rounded-lg border border-line px-3 py-2 text-sm" onClick={() => setEditorId(contract.id)}>Parcelas</button>
-            <button type="button" className="rounded-lg border border-line px-3 py-2 text-sm" onClick={() => setAdjusting(detail)}>Ajustar total</button>
-            <button type="button" className="rounded-lg border border-line px-3 py-2 text-sm" onClick={() => setPayment({ financials: detail, type: 'receipt' })}>Receber</button>
-            <button type="button" className="rounded-lg border border-line px-3 py-2 text-sm" onClick={() => setPayment({ financials: detail, type: 'refund' })}>Estornar</button>
-            <button type="button" className="rounded-lg border border-danger/40 px-3 py-2 text-sm text-danger" onClick={() => setCancelling(detail)}>Cancelar contrato</button>
+          {contract.status === 'active' && detail && <div className="mt-4 space-y-2">
+            <div className="flex flex-wrap gap-2">
+              {detail.payments.length === 0 && <button type="button" className="rounded-lg border border-line px-3 py-2 text-sm" onClick={() => setEditorId(contract.id)}>Parcelas</button>}
+              <button type="button" className="rounded-lg border border-line px-3 py-2 text-sm" onClick={() => setAdjusting(detail)}>Ajustar total</button>
+              <button type="button" className="rounded-lg border border-line px-3 py-2 text-sm" onClick={() => setPayment({ financials: detail, type: 'receipt' })}>Receber</button>
+              <button type="button" className="rounded-lg border border-line px-3 py-2 text-sm" onClick={() => setPayment({ financials: detail, type: 'refund' })}>Estornar</button>
+              <button type="button" className="rounded-lg border border-danger/40 px-3 py-2 text-sm text-danger" onClick={() => setCancelling(detail)}>Cancelar contrato</button>
+            </div>
+            {detail.payments.length > 0 && <p className="text-sm text-muted">As parcelas não podem ser reescritas após o primeiro pagamento.</p>}
           </div>}
         </article>
       })}
@@ -7472,7 +7657,7 @@ git commit -m "feat: adicionar dashboard financeiro com snapshot valido"
 **Interfaces:**
 - Consome: `ClientDetail.client`, `ContractPanel`, `ExpensePanel`, `listContracts`, `getContractFinancials`, `listExpensesForClient`, `formatMoney` e `getSaoPauloToday`.
 - Produz: `ClientFinancePanelProps` e a rota protegida `/financeiro` renderizando `FinancePage`.
-- Remove o texto provisório da aba Financeiro do Plano 1 e a entrada `financeiro` de `MODULES`; Relatórios continua na Etapa 4.
+- Remove o texto provisório da aba Financeiro do Plano 1 e a entrada `financeiro` de `MODULES`; Relatórios continua como placeholder temporário desta mesma Etapa 3 até os planos incrementais de finalização.
 
 - [ ] **Etapa 1: Escrever o teste do painel financeiro do cliente**
 
@@ -7591,7 +7776,7 @@ it('/financeiro renderiza FinancePage dentro do layout protegido', () => {
 })
 ```
 
-Substituir integralmente `src/pages/ModulePlaceholderPage.test.tsx`. Financeiro deixa de ser placeholder; Relatórios permanece na Etapa 4.
+Substituir integralmente `src/pages/ModulePlaceholderPage.test.tsx`. Financeiro deixa de ser placeholder; Relatórios permanece como placeholder temporário da Etapa 3 até o plano incremental de Relatórios.
 
 ```tsx
 // @vitest-environment jsdom
@@ -7604,8 +7789,8 @@ const modules = [
   {
     moduleKey: 'relatorios',
     title: 'Relatórios',
-    stage: 'Etapa 4',
-    description: 'Relatórios de conversão, nichos e desempenho chegam na Etapa 4.',
+    stage: 'Etapa 3',
+    description: 'Relatórios de conversão, nichos e desempenho serão entregues no plano incremental de finalização desta Etapa 3.',
     actionLabel: 'Ir para Financeiro',
     actionTo: '/financeiro',
   },
@@ -7842,8 +8027,8 @@ import { EmptyState } from '../components/ui/EmptyState'
 const MODULES = {
   relatorios: {
     title: 'Relatórios',
-    description: 'Relatórios de conversão, nichos e desempenho chegam na Etapa 4.',
-    stage: 'Etapa 4',
+    description: 'Relatórios de conversão, nichos e desempenho serão entregues no plano incremental de finalização desta Etapa 3.',
+    stage: 'Etapa 3',
     icon: BarChart3,
     actionLabel: 'Ir para Financeiro',
     actionTo: '/financeiro',
@@ -7884,7 +8069,7 @@ Expected: PASS dos quatro arquivos; `/financeiro` usa `FinancePage`, a aba do cl
 No `README.md`, atualizar o estado atual para:
 - Clientes, Projetos e Financeiro implementados após a execução deste plano;
 - rotas `/clientes`, `/clientes/novo`, `/clientes/:id`, `/projetos`, `/projetos/novo`, `/projetos/:id` e `/financeiro`;
-- migrations `0006_etapa3_clients.sql`, `0008_etapa3_projects.sql` e `0009_etapa3_finance.sql` e seus testes SQL;
+- migrations `0006_etapa3_clients.sql`, `0007_lead_maps_url.sql`, `0008_etapa3_projects.sql` e `0009_etapa3_finance.sql` e seus testes SQL;
 - contratos ativos, recebido líquido histórico, pendente, despesas pagas, fluxo e lucro possuem semânticas distintas;
 - conclusão/entrega de projeto não cria receita;
 - validação autenticada da migration e RLS entre dois usuários continuam pendentes até execução real, com evidência registrada.
@@ -7919,7 +8104,7 @@ Esperado: testes, build e lint com código 0. Corrigir qualquer falha antes do c
 
 - [ ] **Etapa 10: Validação SQL e autenticada real**
 
-Aplicar as migrations 0001–0009 em um projeto Supabase de teste e executar `supabase/tests/etapa3_finance.sql` no SQL Editor. Esperado: todas as asserções passam e o script termina em `ROLLBACK`.
+Aplicar as migrations 0001–0009 completas em um projeto Supabase de teste descartável e executar `supabase/tests/etapa3_finance.sql` no SQL Editor. Os harnesses `dblink` criam/removem usuários sintéticos e só podem rodar nesse banco descartável. Esperado: todas as asserções passam e o script termina em `ROLLBACK`. Não reaplicar versões parciais de `0009` nem reescrever migrations já aplicadas.
 
 Depois, com duas contas reais e distintas:
 1. autenticar a conta A e criar cliente, contrato, parcela, recebimento, estorno, despesa paga e categoria;
@@ -7942,7 +8127,7 @@ git commit -m "feat: integrar financeiro ao cliente e concluir etapa 3"
 
 - Contrato, parcelas, recebimentos e estornos usam centavos no frontend e `numeric` validado no SQL; cada `amount` de parcela passa pela regex textual e pelo limite antes de qualquer cast.
 - Idempotência resiste a corrida; `update_client` e `adjust_contract` não ficam abaixo de projetos não cancelados, e ajustes financeiros também não ficam abaixo do recebido líquido; mudança de total pelo cliente exige ausência de parcelas/pagamentos.
-- Probes de concorrência exigem `55P03`, nunca `40P01`, incluindo `update_client` isolado em `:contract:<id>` e as direções entre `adjust_contract` e RPCs de projeto.
+- Probes de concorrência exigem `55P03`, nunca `40P01`, incluindo `record_payment` contra `:clients`, `update_client`, `cancel_contract` e `adjust_contract` isolados em `:contract:<id>`, cancelamento↔ajuste nas duas direções e as direções entre `adjust_contract` e RPCs de projeto; fixtures `dblink` usam somente usuários sintéticos em banco descartável.
 - Despesas pagas/canceladas só recebem notas; vínculos resolvem um único cliente e eventos são registrados.
 - Agregações são `security invoker`, isoladas por RLS, limitadas e sem `generate_series`.
 - Datas de período e caixa usam `America/Sao_Paulo`; cálculo do período é determinístico.
