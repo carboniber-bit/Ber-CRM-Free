@@ -980,8 +980,14 @@ begin
   insert into auth.users (id, email)
   values (v_other, 'etapa3-' || v_other::text || '@example.test');
 
-  insert into public.leads (owner_id, name, cnpj, status, source)
-  values (v_owner, 'Lead de teste transacional', '12.345.678/0001-95', 'negociando', 'teste')
+  insert into public.leads (
+    owner_id, name, cnpj, status, source,
+    estimated_value, negotiated_value, received_value
+  )
+  values (
+    v_owner, 'Lead de teste transacional', '12.345.678/0001-95', 'negociando', 'teste',
+    100.00, 200.00, 50.00
+  )
   returning id into v_lead;
 
   perform set_config('request.jwt.claim.sub', v_owner::text, true);
@@ -1020,6 +1026,14 @@ begin
 
   if (select total_value from public.contracts where id = (v_first ->> 'contract_id')::uuid) <> 1500.00 then
     raise exception 'A repetição sobrescreveu o valor do contrato.';
+  end if;
+  if not exists (
+    select 1 from public.leads
+    where id = v_lead and owner_id = v_owner
+      and status = 'aceitou' and contracted_value = 1500.00
+      and estimated_value = 100.00 and negotiated_value = 200.00 and received_value = 50.00
+  ) then
+    raise exception 'A conversão não preservou o snapshot financeiro esperado do lead.';
   end if;
 
   insert into public.leads (owner_id, name, cnpj, status)
@@ -1133,6 +1147,13 @@ begin
   if exists (select 1 from public.clients where id = (v_first ->> 'client_id')::uuid) then
     raise exception 'RLS permitiu leitura de cliente de outro proprietário.';
   end if;
+  if exists (select 1 from public.lead_client_links where id = (v_first ->> 'link_id')::uuid)
+    or exists (select 1 from public.contracts where id = (v_first ->> 'contract_id')::uuid)
+    or exists (select 1 from public.projects where id = (v_first ->> 'project_id')::uuid)
+    or exists (select 1 from public.lead_activities where lead_id = v_lead)
+    or exists (select 1 from public.client_activities where client_id = (v_first ->> 'client_id')::uuid) then
+    raise exception 'RLS permitiu leitura de vínculo, contrato, projeto ou atividade de outro proprietário.';
+  end if;
   begin
     perform public.convert_lead_to_client(
       v_lead, 'Acesso negado', 1.00, current_date
@@ -1153,7 +1174,7 @@ rollback;
 
 - [ ] **Step 2: Escrever o teste RED de conversão paralela com `dblink`**
 
-Acrescente o bloco abaixo ao final de `supabase/tests/etapa3_clients.sql`, depois do `rollback;` do teste sequencial. Execute-o em autocommit, em uma instância PostgreSQL com a extensão `dblink` habilitada e conexões independentes permitidas ao mesmo banco (`current_database()`). Em ambiente hospedado, configure essa conexão sem gravar senha no repositório; caso não seja possível, execute o harness em PostgreSQL local com as migrations aplicadas. A fixture é criada pela sessão autenticada A e fica visível às duas sessões independentes. Os nomes de conexão são fixos e o disconnect preventivo remove conexões residuais. A conexão `etapa3_convert_admin` serve exclusivamente ao cleanup; as consultas autenticadas incluem `set local role authenticated` e o claim do owner real na mesma string.
+Acrescente o bloco abaixo ao final de `supabase/tests/etapa3_clients.sql`, depois do `rollback;` do teste sequencial. Execute-o em autocommit, em uma instância PostgreSQL com a extensão `dblink` habilitada e conexões independentes permitidas ao mesmo banco (`current_database()`). Em ambiente hospedado, configure essa conexão sem gravar senha no repositório; caso não seja possível, execute o harness em PostgreSQL local com as migrations aplicadas. A fixture é criada pela sessão autenticada A e fica visível às duas sessões independentes. Os nomes de conexão são fixos e o disconnect preventivo remove conexões residuais. A conexão `etapa3_convert_admin` serve exclusivamente ao cleanup. O role e o claim do owner são configurados uma vez por sessão; cada consulta assíncrona contém apenas o SELECT, e `dblink_get_result` usa a definição explícita de coluna `result jsonb`, com uma segunda leitura para confirmar o conjunto vazio.
 
 ```sql
 do $$
@@ -1161,8 +1182,8 @@ declare
   v_owner uuid;
   v_lead uuid := gen_random_uuid();
   v_lock_key bigint;
-  v_try_lock boolean;
   v_probe_locked boolean := false;
+  v_context text;
   v_call text;
   v_cleanup text;
   v_result_a jsonb;
@@ -1195,6 +1216,14 @@ begin
   perform dblink_connect('etapa3_convert_a', format('dbname=%L user=%L', current_database(), current_user));
   perform dblink_connect('etapa3_convert_b', format('dbname=%L user=%L', current_database(), current_user));
 
+  v_context := format(
+    'set role authenticated; do $context$ begin perform set_config(''request.jwt.claim.sub'', %L, false); end $context$;',
+    v_owner::text
+  );
+  perform dblink_exec('etapa3_convert_a', v_context);
+  perform dblink_exec('etapa3_convert_b', v_context);
+  perform dblink_exec('etapa3_convert_holder', v_context);
+
   v_cleanup := format(
     'delete from public.client_activities where client_id in (select id from public.clients where creation_key = %L); '
     'delete from public.projects where source_link_id in (select id from public.lead_client_links where lead_id = %L); '
@@ -1207,28 +1236,24 @@ begin
   );
 
   perform dblink_exec('etapa3_convert_a', format(
-    'set local role authenticated; set_config(''request.jwt.claim.sub'', %L, true); '
     'insert into public.leads (id, owner_id, name, cnpj, status, source) '
     'values (%L, %L, %L, null, %L, %L);',
-    v_owner::text, v_lead, v_owner, 'Lead de conversão paralela', 'negociando', 'teste'
+    v_lead, v_owner, 'Lead de conversão paralela', 'negociando', 'teste'
   ));
 
   v_lock_key := pg_catalog.hashtextextended(v_owner::text || ':clients', 0);
   perform dblink_exec('etapa3_convert_holder', format(
-    'begin; set local role authenticated; set_config(''request.jwt.claim.sub'', %L, true); '
-    'select pg_catalog.pg_advisory_xact_lock(%s);',
-    v_owner::text, v_lock_key
+    'begin; do $hold_lock$ begin perform pg_catalog.pg_advisory_xact_lock(%s); end $hold_lock$;',
+    v_lock_key
   ));
 
-  perform dblink_send_query('etapa3_convert_b', format(
-    'set local role authenticated; set_config(''request.jwt.claim.sub'', %L, true); '
-    'select pg_catalog.pg_try_advisory_xact_lock(%s);',
-    v_owner::text, v_lock_key
+  perform dblink_exec('etapa3_convert_b', format(
+    'do $try_lock$ begin '
+    'if pg_catalog.pg_try_advisory_xact_lock(%s) then '
+    'raise exception ''A segunda sessão adquiriu a advisory :clients.''; '
+    'end if; end $try_lock$;',
+    v_lock_key
   ));
-  v_try_lock := dblink_get_result('etapa3_convert_b')::boolean;
-  if v_try_lock is distinct from false then
-    raise exception 'A segunda sessão não confirmou o conflito da advisory :clients.';
-  end if;
 
   set local role authenticated;
   perform set_config('request.jwt.claim.sub', v_owner::text, true);
@@ -1248,35 +1273,43 @@ begin
     raise exception 'O probe local da conversão não foi bloqueado pela advisory :clients.';
   end if;
 
-  perform dblink_send_query('etapa3_convert_holder', format(
-    'set local role authenticated; set_config(''request.jwt.claim.sub'', %L, true); '
-    'select pg_catalog.pg_advisory_xact_unlock(%s);',
-    v_owner::text, v_lock_key
+  perform dblink_exec('etapa3_convert_holder', format(
+    'do $unlock$ begin '
+    'if not pg_catalog.pg_advisory_xact_unlock(%s) then '
+    'raise exception ''A advisory :clients não foi liberada.''; '
+    'end if; end $unlock$;',
+    v_lock_key
   ));
-  if dblink_get_result('etapa3_convert_holder')::boolean is not true then
-    raise exception 'A advisory :clients não foi liberada antes das chamadas paralelas.';
-  end if;
   perform dblink_exec('etapa3_convert_holder', 'commit;');
 
   v_call := format(
-    'set local role authenticated; set_config(''request.jwt.claim.sub'', %L, true); '
     'select public.convert_lead_to_client(%L::uuid, %L, %s, current_date, %L, %L, null, %L, current_date, current_date + 14);',
-    v_owner::text, v_lead, 'Site institucional', 1500.00,
+    v_lead, 'Site institucional', 1500.00,
     'pix', '50% na assinatura', 'Projeto paralelo'
   );
-  perform dblink_send_query('etapa3_convert_a', v_call);
-  perform dblink_send_query('etapa3_convert_b', v_call);
+  if dblink_send_query('etapa3_convert_a', v_call) <> 1 then
+    raise exception 'Não foi possível enviar a conversão paralela para a sessão A.';
+  end if;
+  if dblink_send_query('etapa3_convert_b', v_call) <> 1 then
+    raise exception 'Não foi possível enviar a conversão paralela para a sessão B.';
+  end if;
 
   begin
-    v_result_a := dblink_get_result('etapa3_convert_a')::jsonb;
+    select result into strict v_result_a
+    from dblink_get_result('etapa3_convert_a', 'result jsonb') as t(result jsonb);
   exception when deadlock_detected then
     raise exception 'A conversão paralela retornou deadlock 40P01.';
   end;
   begin
-    v_result_b := dblink_get_result('etapa3_convert_b')::jsonb;
+    select result into strict v_result_b
+    from dblink_get_result('etapa3_convert_b', 'result jsonb') as t(result jsonb);
   exception when deadlock_detected then
     raise exception 'A conversão paralela retornou deadlock 40P01.';
   end;
+  if exists (select 1 from dblink_get_result('etapa3_convert_a', 'result jsonb') as t(result jsonb))
+    or exists (select 1 from dblink_get_result('etapa3_convert_b', 'result jsonb') as t(result jsonb)) then
+    raise exception 'As conversões paralelas deixaram resultados adicionais não consumidos.';
+  end if;
 
   if (v_result_a ->> 'client_id') is distinct from (v_result_b ->> 'client_id')
     or (v_result_a ->> 'link_id') is distinct from (v_result_b ->> 'link_id')
@@ -1284,13 +1317,17 @@ begin
     or (v_result_a ->> 'project_id') is distinct from (v_result_b ->> 'project_id') then
     raise exception 'As conversões paralelas retornaram identificadores diferentes.';
   end if;
-  if (v_result_a ->> 'already_existed') not in ('true', 'false')
-    or (v_result_b ->> 'already_existed') not in ('true', 'false')
-    or ((v_result_a ->> 'already_existed')::boolean) = ((v_result_b ->> 'already_existed')::boolean) then
+  if not (
+    ((v_result_a ->> 'already_existed') is not distinct from 'true'
+      and (v_result_b ->> 'already_existed') is not distinct from 'false')
+    or ((v_result_a ->> 'already_existed') is not distinct from 'false'
+      and (v_result_b ->> 'already_existed') is not distinct from 'true')
+  ) then
     raise exception 'As conversões paralelas não marcaram exatamente um already_existed=true.';
   end if;
 
-  select count(*) into v_client_count from public.clients where id = (v_result_a ->> 'client_id')::uuid;
+  select count(*) into v_client_count from public.clients
+    where owner_id = v_owner and creation_key = v_lead;
   select count(*) into v_link_count from public.lead_client_links where id = (v_result_a ->> 'link_id')::uuid;
   select count(*) into v_contract_count from public.contracts where source_link_id = (v_result_a ->> 'link_id')::uuid;
   select count(*) into v_project_count from public.projects where source_link_id = (v_result_a ->> 'link_id')::uuid;
@@ -1775,7 +1812,7 @@ Move this block to immediately before `set local role authenticated;`, while `au
 
 - [ ] **Step 2: Escrever o teste RED de criação paralela com `dblink`**
 
-Acrescente o bloco abaixo ao final de `supabase/tests/etapa3_clients.sql`, depois do harness de conversão da Task 4 e fora das transações dos testes sequenciais. Ele usa duas sessões autenticadas independentes e o mesmo `creation_key`, com o mesmo pré-requisito de `dblink` e conexões independentes da Task 4. Os nomes de conexão são fixos, com disconnect preventivo; a conexão `etapa3_create_admin` é usada somente no cleanup. Toda consulta autenticada via `dblink` declara `set local role authenticated` e `set_config('request.jwt.claim.sub', v_owner::text, true)` na mesma string.
+Acrescente o bloco abaixo ao final de `supabase/tests/etapa3_clients.sql`, depois do harness de conversão da Task 4 e fora das transações dos testes sequenciais. Ele usa duas sessões autenticadas independentes e o mesmo `creation_key`, com o mesmo pré-requisito de `dblink` e conexões independentes da Task 4. Os nomes de conexão são fixos, com disconnect preventivo; a conexão `etapa3_create_admin` é usada somente no cleanup. O role e o claim do owner são configurados uma vez por sessão; cada consulta assíncrona contém apenas o SELECT, e `dblink_get_result` usa a definição explícita de coluna `result jsonb`, com uma segunda leitura para confirmar o conjunto vazio.
 
 ```sql
 do $$
@@ -1783,8 +1820,8 @@ declare
   v_owner uuid;
   v_key uuid := gen_random_uuid();
   v_lock_key bigint;
-  v_try_lock boolean;
   v_probe_locked boolean := false;
+  v_context text;
   v_payload jsonb;
   v_call text;
   v_cleanup text;
@@ -1816,6 +1853,14 @@ begin
   perform dblink_connect('etapa3_create_a', format('dbname=%L user=%L', current_database(), current_user));
   perform dblink_connect('etapa3_create_b', format('dbname=%L user=%L', current_database(), current_user));
 
+  v_context := format(
+    'set role authenticated; do $context$ begin perform set_config(''request.jwt.claim.sub'', %L, false); end $context$;',
+    v_owner::text
+  );
+  perform dblink_exec('etapa3_create_a', v_context);
+  perform dblink_exec('etapa3_create_b', v_context);
+  perform dblink_exec('etapa3_create_holder', v_context);
+
   v_payload := jsonb_build_object(
     'creation_key', v_key,
     'name', 'Cliente de criação paralela',
@@ -1832,20 +1877,17 @@ begin
 
   v_lock_key := pg_catalog.hashtextextended(v_owner::text || ':clients', 0);
   perform dblink_exec('etapa3_create_holder', format(
-    'begin; set local role authenticated; set_config(''request.jwt.claim.sub'', %L, true); '
-    'select pg_catalog.pg_advisory_xact_lock(%s);',
-    v_owner::text, v_lock_key
+    'begin; do $hold_lock$ begin perform pg_catalog.pg_advisory_xact_lock(%s); end $hold_lock$;',
+    v_lock_key
   ));
 
-  perform dblink_send_query('etapa3_create_b', format(
-    'set local role authenticated; set_config(''request.jwt.claim.sub'', %L, true); '
-    'select pg_catalog.pg_try_advisory_xact_lock(%s);',
-    v_owner::text, v_lock_key
+  perform dblink_exec('etapa3_create_b', format(
+    'do $try_lock$ begin '
+    'if pg_catalog.pg_try_advisory_xact_lock(%s) then '
+    'raise exception ''A segunda sessão adquiriu a advisory :clients.''; '
+    'end if; end $try_lock$;',
+    v_lock_key
   ));
-  v_try_lock := dblink_get_result('etapa3_create_b')::boolean;
-  if v_try_lock is distinct from false then
-    raise exception 'A segunda sessão não confirmou o conflito da advisory :clients.';
-  end if;
 
   set local role authenticated;
   perform set_config('request.jwt.claim.sub', v_owner::text, true);
@@ -1862,42 +1904,50 @@ begin
     raise exception 'O probe local de create_client não foi bloqueado pela advisory :clients.';
   end if;
 
-  perform dblink_send_query('etapa3_create_holder', format(
-    'set local role authenticated; set_config(''request.jwt.claim.sub'', %L, true); '
-    'select pg_catalog.pg_advisory_xact_unlock(%s);',
-    v_owner::text, v_lock_key
+  perform dblink_exec('etapa3_create_holder', format(
+    'do $unlock$ begin '
+    'if not pg_catalog.pg_advisory_xact_unlock(%s) then '
+    'raise exception ''A advisory :clients não foi liberada.''; '
+    'end if; end $unlock$;',
+    v_lock_key
   ));
-  if dblink_get_result('etapa3_create_holder')::boolean is not true then
-    raise exception 'A advisory :clients não foi liberada antes das chamadas paralelas.';
-  end if;
   perform dblink_exec('etapa3_create_holder', 'commit;');
 
-  v_call := format(
-    'set local role authenticated; set_config(''request.jwt.claim.sub'', %L, true); '
-    'select public.create_client(%L::jsonb);',
-    v_owner::text, v_payload::text
-  );
-  perform dblink_send_query('etapa3_create_a', v_call);
-  perform dblink_send_query('etapa3_create_b', v_call);
+  v_call := format('select public.create_client(%L::jsonb);', v_payload::text);
+  if dblink_send_query('etapa3_create_a', v_call) <> 1 then
+    raise exception 'Não foi possível enviar a criação paralela para a sessão A.';
+  end if;
+  if dblink_send_query('etapa3_create_b', v_call) <> 1 then
+    raise exception 'Não foi possível enviar a criação paralela para a sessão B.';
+  end if;
 
   begin
-    v_result_a := dblink_get_result('etapa3_create_a')::jsonb;
+    select result into strict v_result_a
+    from dblink_get_result('etapa3_create_a', 'result jsonb') as t(result jsonb);
   exception when deadlock_detected then
     raise exception 'A criação paralela retornou deadlock 40P01.';
   end;
   begin
-    v_result_b := dblink_get_result('etapa3_create_b')::jsonb;
+    select result into strict v_result_b
+    from dblink_get_result('etapa3_create_b', 'result jsonb') as t(result jsonb);
   exception when deadlock_detected then
     raise exception 'A criação paralela retornou deadlock 40P01.';
   end;
+  if exists (select 1 from dblink_get_result('etapa3_create_a', 'result jsonb') as t(result jsonb))
+    or exists (select 1 from dblink_get_result('etapa3_create_b', 'result jsonb') as t(result jsonb)) then
+    raise exception 'As criações paralelas deixaram resultados adicionais não consumidos.';
+  end if;
 
   if (v_result_a -> 'client' ->> 'id') is distinct from (v_result_b -> 'client' ->> 'id')
     or (v_result_a -> 'contract' ->> 'id') is distinct from (v_result_b -> 'contract' ->> 'id') then
     raise exception 'As criações paralelas retornaram identificadores diferentes.';
   end if;
-  if (v_result_a ->> 'already_existed') not in ('true', 'false')
-    or (v_result_b ->> 'already_existed') not in ('true', 'false')
-    or ((v_result_a ->> 'already_existed')::boolean) = ((v_result_b ->> 'already_existed')::boolean) then
+  if not (
+    ((v_result_a ->> 'already_existed') is not distinct from 'true'
+      and (v_result_b ->> 'already_existed') is not distinct from 'false')
+    or ((v_result_a ->> 'already_existed') is not distinct from 'false'
+      and (v_result_b ->> 'already_existed') is not distinct from 'true')
+  ) then
     raise exception 'As criações paralelas não marcaram exatamente um already_existed=true.';
   end if;
 
