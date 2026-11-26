@@ -10816,7 +10816,7 @@ Run in this order:
 ```bash
 npm run build
 npm run lint
-npm test -- --maxWorkers=4
+npm test -- --maxWorkers=2
 git diff --check
 ```
 
