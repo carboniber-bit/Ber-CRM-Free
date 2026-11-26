@@ -16,10 +16,20 @@ type StoredLead = Lead & {
 }
 
 function matchesIlike(value: string, pattern: string): boolean {
-  const regex = pattern
-    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    .replace(/%/g, '.*')
-    .replace(/_/g, '.')
+  let regex = ''
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index]
+    if (character === '\\' && index + 1 < pattern.length) {
+      index += 1
+      regex += pattern[index].replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    } else if (character === '%') {
+      regex += '.*'
+    } else if (character === '_') {
+      regex += '.'
+    } else {
+      regex += character.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    }
+  }
   return new RegExp(`^${regex}$`, 'i').test(value)
 }
 
@@ -231,7 +241,9 @@ describe('listLeads', () => {
     ['manicure', 'manicure/nail designer'],
     ['manicure', 'manicure - nail designer'],
     ['nail_designer', 'manicure / nail designer'],
+    ['nail_designer', 'nail_designer'],
     ['salao_beleza', 'salao de beleza'],
+    ['salao_beleza', 'salao_beleza'],
     ['salao_beleza', 'Salão de Beleza'],
     ['salao_beleza', 'estúdio de beleza'],
     ['salao_beleza', 'Estúdio de Beleza'],
@@ -273,7 +285,10 @@ describe('listLeads', () => {
     ['comercio', 'comercioexterior'],
     ['nail_designer', 'nailprodesigner'],
     ['nail_designer', 'nail sem designer'],
+    ['nail_designer', 'nailXdesigner'],
     ['salao_beleza', 'salaoXYZdeXYZbeleza'],
+    ['salao_beleza', 'salaoXbeleza'],
+    ['clinica_estetica', 'clinicaXestetica'],
   ])('não confunde o filtro de %s com %s', async (niche, storedNiche) => {
     const stored = makeStoredLead({ id: 'substring', niche: storedNiche })
     client = new FakeSupabase([stored])

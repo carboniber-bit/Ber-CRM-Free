@@ -86,10 +86,11 @@ export function normalizeMapsUrl(raw: string | null): string | null {
     if (!isMapsHost && url.pathname !== '/maps' && !url.pathname.startsWith('/maps/')) return null
 
     const hasPlacePath = /^\/maps\/(?:preview\/)?place\/[^/]+/.test(url.pathname)
-    const hasPlaceId = ['q', 'query'].some((parameter) => (
-      url.searchParams.get(parameter)?.toLowerCase().startsWith('placeid:')
-    )) || Boolean(url.searchParams.get('query_place_id'))
-    const hasCid = Boolean(url.searchParams.get('cid'))
+    const hasPlaceId = ['q', 'query'].some((parameter) => {
+      const value = url.searchParams.get(parameter)?.toLowerCase() ?? ''
+      return value.startsWith('placeid:') && /^\S+$/.test(value.slice('placeid:'.length))
+    }) || /^\S+$/.test(url.searchParams.get('query_place_id') ?? '')
+    const hasCid = /^\d+$/.test(url.searchParams.get('cid') ?? '')
     return hasPlacePath || hasPlaceId || hasCid ? normalized : null
   } catch {
     return null

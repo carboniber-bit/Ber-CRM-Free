@@ -68,10 +68,11 @@ function nichePatterns(value: string): string[] {
     for (const normalizeSeparators of NICHE_SEPARATOR_NORMALIZERS) {
       const base = normalizeSeparators(variant).trim()
       if (!base) continue
-      patterns.add(base)
-      patterns.add(`${base} %`)
-      patterns.add(`${base}/%`)
-      patterns.add(`${base}-%`)
+      const escapedBase = base.replace(/_/g, '\\_')
+      patterns.add(escapedBase)
+      patterns.add(`${escapedBase} %`)
+      patterns.add(`${escapedBase}/%`)
+      patterns.add(`${escapedBase}-%`)
     }
   }
   return [...patterns]

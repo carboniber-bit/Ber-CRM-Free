@@ -62,6 +62,13 @@ describe('normalizeMapsUrl', () => {
     'https://www.google.com/maps?api=1&query=Studio+Lis',
     'https://www.google.com/search?q=placeid:ChIJ-exemplo',
     'https://www.google.com/?cid=123',
+    'https://www.google.com/maps?q=placeid:',
+    'https://www.google.com/maps?query=placeid:%20',
+    'https://www.google.com/maps?query_place_id=',
+    'https://www.google.com/maps?query_place_id=%20',
+    'https://www.google.com/maps?cid=',
+    'https://maps.google.com/?cid=abc',
+    'https://maps.google.com/?cid=-1',
     'https://maps.app.goo.gl',
     'javascript:alert(1)',
   ])('rejeita URL que não identifica um estabelecimento no Maps: %s', (value) => {
