@@ -8,6 +8,7 @@ import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
 import { DASHBOARD_LEAD_WINDOW, getDashboardData, type DashboardData } from '../services/dashboardService'
+import { useAuth } from '../hooks/useAuth'
 import { computeIndicators, conversionFunnel, countBy, leadsByMonth } from '../lib/dashboard'
 import { ACTIVITY_LABELS } from '../types/activity'
 import { PRIORITY_LABELS } from '../types/lead'
@@ -52,11 +53,14 @@ const actionClass = (variant: keyof typeof ACTION_VARIANTS) => cn(ACTION_BASE, A
 const ROW_BASE = 'flex items-center justify-between gap-3 rounded-xl border px-3 py-2.5 text-sm transition-colors hover:bg-line'
 
 export function DashboardPage() {
-  const [data, setData] = useState<DashboardData | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const { user } = useAuth()
+  // ProtectedRoute garante o usuário autenticado; o id é a chave estável do escopo.
+  const scopeKey = user!.id
+  const [snapshot, setSnapshot] = useState<{ scopeKey: string; value: DashboardData } | null>(null)
+  const [loadingState, setLoadingState] = useState({ scopeKey, value: true })
+  const [loadError, setLoadError] = useState<{ scopeKey: string; message: string } | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
-  const hasLoadedRef = useRef(false)
+  const lastLoadedScopeRef = useRef<string | null>(null)
   // Relógio do render, com o mesmo tick da página de Follow-ups: um contato que vence com o
   // dashboard aberto tem que aparecer como atrasado sem depender de recarga de dados.
   const [now, setNow] = useState(() => Date.now())
@@ -73,28 +77,35 @@ export function DashboardPage() {
     void getDashboardData().then(
       (result) => {
         if (!active) return
-        setData(result)
-        hasLoadedRef.current = true
+        setSnapshot({ scopeKey, value: result })
+        lastLoadedScopeRef.current = scopeKey
         // Uma carga lenta não pode nascer com o relógio do início da requisição.
         setNow(Date.now())
-        setError(null)
-        setLoading(false)
+        setLoadError(null)
+        setLoadingState({ scopeKey, value: false })
       },
       (cause: unknown) => {
         if (!active) return
-        if (!hasLoadedRef.current) setData(null)
-        setError(cause instanceof Error ? cause.message : 'Erro ao carregar dashboard.')
-        setLoading(false)
+        if (lastLoadedScopeRef.current !== scopeKey) setSnapshot(null)
+        setLoadError({
+          scopeKey,
+          message: cause instanceof Error ? cause.message : 'Erro ao carregar dashboard.',
+        })
+        setLoadingState({ scopeKey, value: false })
       },
     )
     return () => { active = false }
-  }, [reloadKey])
+  }, [reloadKey, scopeKey])
 
   const reload = () => {
-    setLoading(true)
-    setError(null)
+    setLoadingState({ scopeKey, value: true })
+    setLoadError(null)
     setReloadKey((key) => key + 1)
   }
+
+  const loading = loadingState.scopeKey === scopeKey ? loadingState.value : true
+  const data = snapshot?.scopeKey === scopeKey ? snapshot.value : null
+  const error = loadError?.scopeKey === scopeKey ? loadError.message : null
 
   const indicators = useMemo(
     () => (data ? computeIndicators(data.leads, data.followups, data.convertedCount, now) : null),

@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
+import type { User } from '@supabase/supabase-js'
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { AuthContext } from '../components/auth/authContext'
 import { getDashboardData, type DashboardData } from '../services/dashboardService'
 import { emptyLeadDraft, type Lead } from '../types/lead'
 import type { Activity } from '../types/activity'
@@ -119,6 +121,9 @@ const HOUR = 3_600_000
 const DAY = 24 * HOUR
 const LEAD_WINDOW = 1000
 const UNKNOWN_LEAD_NAME = 'Nome do lead não carregado'
+const USER_A = { id: 'usuario-a-sintetico', email: 'a@exemplo.invalid' } as User
+const USER_B = { id: 'usuario-b-sintetico', email: 'b@exemplo.invalid' } as User
+const signOut = vi.fn()
 
 const at = (month: number, day: number, hour = 9) => new Date(2026, month, day, hour, 0, 0).toISOString()
 const offset = (ms: number) => new Date(NOW.getTime() + ms).toISOString()
@@ -281,15 +286,27 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-function renderPage() {
-  return render(
+function pageFor(user: User) {
+  return (
     <MemoryRouter initialEntries={['/']}>
-      <Routes>
-        <Route path="/" element={<DashboardPage />} />
-        <Route path="/leads/:id" element={<div>Ficha do lead</div>} />
-      </Routes>
-    </MemoryRouter>,
+      <AuthContext.Provider value={{ session: null, user, loading: false, signOut }}>
+        <Routes>
+          <Route path="/" element={<DashboardPage />} />
+          <Route path="/leads/:id" element={<div>Ficha do lead</div>} />
+        </Routes>
+      </AuthContext.Provider>
+    </MemoryRouter>
   )
+}
+
+function renderPage(user = USER_A) {
+  const utils = render(pageFor(user))
+  return {
+    ...utils,
+    switchUser(nextUser: User) {
+      utils.rerender(pageFor(nextUser))
+    },
+  }
 }
 
 async function renderLoaded(overrides: Partial<DashboardData> = {}) {
@@ -583,6 +600,95 @@ describe('DashboardPage estados da carga', () => {
     expect(container.querySelectorAll('[data-testid="chart"]')).toHaveLength(5)
     expect(screen.getByText(visibleText)).toBeTruthy()
     expect(container.textContent).not.toMatch(/Nenhum dado fictício é exibido aqui/)
+  })
+})
+
+describe('DashboardPage troca de usuário', () => {
+  it('oculta o snapshot de A imediatamente e não o preserva quando B falha', async () => {
+    vi.mocked(getDashboardData)
+      .mockResolvedValueOnce(dashboardData())
+      .mockRejectedValueOnce(new Error('Falha de carga do usuário B.'))
+    const { switchUser } = renderPage(USER_A)
+    await settle()
+    expect(indicatorValue('Total de leads')).toBe('6')
+
+    switchUser(USER_B)
+
+    expect(getDashboardData).toHaveBeenCalledTimes(2)
+    expect(screen.queryAllByRole('group')).toHaveLength(0)
+    expect(screen.queryAllByTestId('chart')).toHaveLength(0)
+    for (const lead of LEADS) expect(screen.queryByText(lead.name)).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('status').textContent).toContain('Carregando dashboard')
+
+    await settle()
+
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain('Falha de carga do usuário B.')
+    expect(alert.textContent).not.toContain('último snapshot')
+    expect(within(alert).getByRole('button', { name: 'Tentar novamente' })).toBeTruthy()
+    expect(screen.queryAllByRole('group')).toHaveLength(0)
+    expect(screen.queryAllByTestId('chart')).toHaveLength(0)
+    for (const lead of LEADS) expect(screen.queryByText(lead.name)).toBeNull()
+  })
+
+  it('mantém somente os dados de B quando a resposta tardia de A termina depois', async () => {
+    const loadA = deferred<DashboardData>()
+    const loadB = deferred<DashboardData>()
+    vi.mocked(getDashboardData)
+      .mockReturnValueOnce(loadA.promise)
+      .mockReturnValueOnce(loadB.promise)
+    const { switchUser } = renderPage(USER_A)
+
+    switchUser(USER_B)
+    expect(getDashboardData).toHaveBeenCalledTimes(2)
+
+    const dataB = dashboardData({
+      leads: [pizzaria], totalLeads: 1, followups: [], recentActivities: [],
+      recentStatusChanges: [], recentLeads: [pizzaria],
+    })
+    await act(async () => { loadB.resolve(dataB) })
+    await settle()
+    expect(indicatorValue('Total de leads')).toBe('1')
+    expect(screen.getByText(pizzaria.name)).toBeTruthy()
+
+    await act(async () => { loadA.resolve(dashboardData()) })
+    await settle()
+
+    expect(indicatorValue('Total de leads')).toBe('1')
+    expect(screen.getByText(pizzaria.name)).toBeTruthy()
+    expect(screen.queryByText(barbearia.name)).toBeNull()
+    expect(screen.queryByText(salao.name)).toBeNull()
+    expect(chartRows('Leads por nicho')).toEqual([{ label: 'Pizzaria', total: 1 }])
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('não mantém o erro de A visível enquanto a carga de B está pendente', async () => {
+    const loadB = deferred<DashboardData>()
+    vi.mocked(getDashboardData)
+      .mockRejectedValueOnce(new Error('Falha de carga do usuário A.'))
+      .mockReturnValueOnce(loadB.promise)
+    const { switchUser } = renderPage(USER_A)
+    await settle()
+    expect(screen.getByRole('alert').textContent).toContain('Falha de carga do usuário A.')
+
+    switchUser(USER_B)
+
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByText('Falha de carga do usuário A.')).toBeNull()
+    expect(screen.getByRole('status').textContent).toContain('Carregando dashboard')
+
+    await act(async () => {
+      loadB.resolve(dashboardData({
+        leads: [pizzaria], totalLeads: 1, followups: [], recentActivities: [],
+        recentStatusChanges: [], recentLeads: [pizzaria],
+      }))
+    })
+    await settle()
+
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(indicatorValue('Total de leads')).toBe('1')
+    expect(screen.getByText(pizzaria.name)).toBeTruthy()
   })
 })
 
