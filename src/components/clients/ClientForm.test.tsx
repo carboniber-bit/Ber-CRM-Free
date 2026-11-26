@@ -7,16 +7,18 @@ import type { Contract } from '../../types/contract'
 import { ClientForm } from './ClientForm'
 import { ClientNewPage } from '../../pages/ClientNewPage'
 
-const { createClient, updateClient, findClientDuplicateCandidates, toast } = vi.hoisted(() => ({
+const { createClient, updateClient, findClientDuplicateCandidates, toast, useAuth } = vi.hoisted(() => ({
   createClient: vi.fn(),
   updateClient: vi.fn(),
   findClientDuplicateCandidates: vi.fn(),
   toast: vi.fn(),
+  useAuth: vi.fn(),
 }))
 vi.mock('../../services/clientService', () => ({
   createClient, updateClient, findClientDuplicateCandidates,
 }))
 vi.mock('../../hooks/useToast', () => ({ useToast: () => ({ toast }) }))
+vi.mock('../../hooks/useAuth', () => ({ useAuth }))
 
 function makeClient(overrides: Partial<Client> = {}): Client {
   return {
@@ -90,6 +92,117 @@ function fillValidForm() {
   fireEvent.change(screen.getByLabelText('Data da contratação *'), { target: { value: '2026-11-25' } })
 }
 
+function fillCompleteForm() {
+  const fields = [
+    ['Nome do cliente *', 'Empresa Nova'],
+    ['Nome do responsável', 'Ana Responsável'],
+    ['Telefone', '(11) 99999-9999'],
+    ['WhatsApp', '(11) 98888-7777'],
+    ['E-mail', 'ana@example.com'],
+    ['CNPJ', '12.345.678/0001-95'],
+    ['Site (link)', 'exemplo.com'],
+    ['Instagram (link)', 'instagram.com/exemplo'],
+    ['Endereço', 'Rua das Flores, 10'],
+    ['Cidade', 'São Paulo'],
+    ['Bairro', 'Centro'],
+    ['CEP', '01001-000'],
+    ['Estado', 'SP'],
+    ['Nicho', 'Tecnologia'],
+    ['Observações', 'Observação do cliente'],
+    ['Serviço contratado *', 'Site institucional'],
+    ['Valor contratado *', '1.234,56'],
+    ['Data da contratação *', '2026-11-25'],
+    ['Vencimento do contrato', '2026-12-01'],
+    ['Forma de pagamento', 'Pix'],
+    ['Condições de pagamento', '50% na assinatura'],
+    ['Observações do contrato', 'Observação do contrato'],
+  ] as const
+  for (const [label, value] of fields) {
+    fireEvent.change(screen.getByLabelText(label), { target: { value } })
+  }
+  fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'in_project' } })
+}
+
+function expectCompleteForm() {
+  const fields = [
+    ['Nome do cliente *', 'Empresa Nova'],
+    ['Nome do responsável', 'Ana Responsável'],
+    ['Telefone', '(11) 99999-9999'],
+    ['WhatsApp', '(11) 98888-7777'],
+    ['E-mail', 'ana@example.com'],
+    ['CNPJ', '12.345.678/0001-95'],
+    ['Site (link)', 'exemplo.com'],
+    ['Instagram (link)', 'instagram.com/exemplo'],
+    ['Endereço', 'Rua das Flores, 10'],
+    ['Cidade', 'São Paulo'],
+    ['Bairro', 'Centro'],
+    ['CEP', '01001-000'],
+    ['Estado', 'SP'],
+    ['Nicho', 'Tecnologia'],
+    ['Observações', 'Observação do cliente'],
+    ['Serviço contratado *', 'Site institucional'],
+    ['Valor contratado *', '1.234,56'],
+    ['Data da contratação *', '2026-11-25'],
+    ['Vencimento do contrato', '2026-12-01'],
+    ['Forma de pagamento', 'Pix'],
+    ['Condições de pagamento', '50% na assinatura'],
+    ['Observações do contrato', 'Observação do contrato'],
+  ] as const
+  for (const [label, value] of fields) {
+    expect((screen.getByLabelText(label) as HTMLInputElement).value).toBe(value)
+  }
+  expect((screen.getByLabelText('Status') as HTMLSelectElement).value).toBe('in_project')
+}
+
+function draftKey(scope = 'owner-1') {
+  return `ber-crm:client-draft:v1:${encodeURIComponent(scope)}`
+}
+
+function readDraft(scope = 'owner-1') {
+  const raw = sessionStorage.getItem(draftKey(scope))
+  expect(raw).not.toBeNull()
+  return JSON.parse(raw as string) as {
+    version: number
+    creationKey: string
+    clientDraft: Record<string, unknown>
+    contractDraft: Record<string, unknown>
+  }
+}
+
+function makePersistedDraft() {
+  return {
+    version: 1,
+    creationKey: '00000000-0000-4000-8000-000000000001',
+    clientDraft: {
+      name: 'Rascunho salvo',
+      responsible_name: 'Responsável',
+      phone: '(11) 99999-9999',
+      whatsapp: '(11) 98888-7777',
+      email: 'salvo@example.com',
+      cnpj: '12.345.678/0001-95',
+      website: 'exemplo.com',
+      instagram: 'instagram.com/exemplo',
+      address: 'Rua salva, 10',
+      city: 'São Paulo',
+      district: 'Centro',
+      zip_code: '01001-000',
+      state: 'SP',
+      niche: 'Tecnologia',
+      notes: 'Observação salva',
+      status: 'awaiting_payment',
+    },
+    contractDraft: {
+      service: 'Site salvo',
+      totalValue: '2.000,00',
+      contractedAt: '2026-11-20',
+      dueDate: '2026-12-20',
+      paymentMethod: 'Pix',
+      paymentTerms: 'À vista',
+      notes: 'Contrato salvo',
+    },
+  }
+}
+
 function ClientDestination() {
   const { id } = useParams<{ id: string }>()
   return <h1>Cliente {id}</h1>
@@ -107,6 +220,16 @@ function renderNewPage() {
   )
 }
 
+beforeEach(() => {
+  sessionStorage.clear()
+  useAuth.mockReset().mockReturnValue({
+    user: { id: 'owner-1' },
+    session: null,
+    loading: false,
+    signOut: vi.fn(),
+  })
+})
+
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
@@ -121,7 +244,7 @@ describe('ClientForm', () => {
   })
 
   it('exige nome, serviço, valor e data da contratação', async () => {
-    render(<ClientForm mode="create" onCancel={vi.fn()} onSaved={vi.fn()} />)
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={vi.fn()} />)
     fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
     expect((await screen.findByText('Nome do cliente é obrigatório.')).textContent).toBe('Nome do cliente é obrigatório.')
     expect(screen.getByText('Informe o serviço contratado.').textContent).toBe('Informe o serviço contratado.')
@@ -132,7 +255,7 @@ describe('ClientForm', () => {
   })
 
   it('rejeita valor negativo e vencimento anterior à contratação', async () => {
-    render(<ClientForm mode="create" onCancel={vi.fn()} onSaved={vi.fn()} />)
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={vi.fn()} />)
     fillValidForm()
     fireEvent.change(screen.getByLabelText('Valor contratado *'), { target: { value: '-1,00' } })
     fireEvent.change(screen.getByLabelText('Vencimento do contrato'), { target: { value: '2026-11-24' } })
@@ -150,7 +273,7 @@ describe('ClientForm', () => {
       makeClient({ id: 'existing', name: 'Empresa Existente', cnpj: '12.345.678/0001-95' }),
     ])
     const onSaved = vi.fn()
-    render(<ClientForm mode="create" onCancel={vi.fn()} onSaved={onSaved} />)
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={onSaved} />)
     fillValidForm()
     fireEvent.change(screen.getByLabelText('CNPJ'), { target: { value: '12.345.678/0001-95' } })
     fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
@@ -168,7 +291,7 @@ describe('ClientForm', () => {
     const saved = makeClient()
     createClient.mockRejectedValueOnce(new Error('Falha temporária.')).mockResolvedValueOnce(saved)
     const onSaved = vi.fn()
-    render(<ClientForm mode="create" onCancel={vi.fn()} onSaved={onSaved} />)
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={onSaved} />)
     fillValidForm()
     fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
 
@@ -183,6 +306,298 @@ describe('ClientForm', () => {
     expect(createClient.mock.calls[0][0].creationKey).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     )
+  })
+
+  it('preserva a creation_key e restaura todos os campos após remount com resposta perdida', async () => {
+    const firstMutation = deferred<Client>()
+    const saved = makeClient({ id: 'client-saved', name: 'Empresa Nova' })
+    createClient.mockReturnValueOnce(firstMutation.promise).mockResolvedValueOnce(saved)
+    const firstOnSaved = vi.fn()
+    const first = render(
+      <ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={firstOnSaved} />,
+    )
+    fillCompleteForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
+    await waitFor(() => expect(createClient).toHaveBeenCalledTimes(1))
+    const firstCreationKey = createClient.mock.calls[0][0].creationKey as string
+    const firstContract = createClient.mock.calls[0][0].initialContract
+
+    first.unmount()
+    await act(async () => {
+      firstMutation.resolve(saved)
+      await firstMutation.promise
+    })
+    expect(firstOnSaved).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem(draftKey())).not.toBeNull()
+
+    const secondOnSaved = vi.fn()
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={secondOnSaved} />)
+    expectCompleteForm()
+    expect(readDraft().creationKey).toBe(firstCreationKey)
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
+    await waitFor(() => expect(secondOnSaved).toHaveBeenCalledWith(saved))
+
+    expect(createClient).toHaveBeenCalledTimes(2)
+    expect(createClient.mock.calls[1][0].creationKey).toBe(firstCreationKey)
+    expect(createClient.mock.calls[1][0].initialContract).toEqual(firstContract)
+    expect(sessionStorage.getItem(draftKey())).toBeNull()
+  })
+
+  it('isola rascunhos por draftScope e remonta o formulário quando o usuário muda', () => {
+    const view = render(
+      <ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={vi.fn()} />,
+    )
+    fireEvent.change(screen.getByLabelText('Nome do cliente *'), { target: { value: 'Cliente do owner 1' } })
+    view.rerender(
+      <ClientForm mode="create" draftScope="owner-2" onCancel={vi.fn()} onSaved={vi.fn()} />,
+    )
+
+    expect((screen.getByLabelText('Nome do cliente *') as HTMLInputElement).value).toBe('')
+    const owner1Key = readDraft('owner-1').creationKey
+    const owner2Key = readDraft('owner-2').creationKey
+    expect(owner2Key).not.toBe(owner1Key)
+    expect(readDraft('owner-1').clientDraft.name).toBe('Cliente do owner 1')
+
+    view.rerender(
+      <ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={vi.fn()} />,
+    )
+    expect((screen.getByLabelText('Nome do cliente *') as HTMLInputElement).value).toBe('Cliente do owner 1')
+  })
+
+  it('remove o rascunho no cancelamento e cria uma chave nova ao remontar', () => {
+    const onCancel = vi.fn()
+    const first = render(
+      <ClientForm mode="create" draftScope="owner-1" onCancel={onCancel} onSaved={vi.fn()} />,
+    )
+    fillCompleteForm()
+    const firstCreationKey = readDraft().creationKey
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }))
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(sessionStorage.getItem(draftKey())).toBeNull()
+
+    first.unmount()
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={vi.fn()} />)
+    expect((screen.getByLabelText('Nome do cliente *') as HTMLInputElement).value).toBe('')
+    expect((screen.getByLabelText('Serviço contratado *') as HTMLInputElement).value).toBe('')
+    expect(readDraft().creationKey).not.toBe(firstCreationKey)
+  })
+
+  it.each([
+    ['JSON malformado', '{'],
+    ['versão inválida', JSON.stringify({ ...makePersistedDraft(), version: 2 })],
+    ['creationKey não UUID v4', JSON.stringify({ ...makePersistedDraft(), creationKey: 'chave-antiga' })],
+    ['campo textual do cliente ausente', JSON.stringify({
+      ...makePersistedDraft(),
+      clientDraft: { ...makePersistedDraft().clientDraft, notes: undefined },
+    })],
+    ['campo textual do cliente não string', JSON.stringify({
+      ...makePersistedDraft(),
+      clientDraft: { ...makePersistedDraft().clientDraft, email: 42 },
+    })],
+    ['status inválido', JSON.stringify({
+      ...makePersistedDraft(),
+      clientDraft: { ...makePersistedDraft().clientDraft, status: 'desconhecido' },
+    })],
+    ['campo textual do contrato não string', JSON.stringify({
+      ...makePersistedDraft(),
+      contractDraft: { ...makePersistedDraft().contractDraft, totalValue: 123456 },
+    })],
+  ])('bloqueia cadastro com registro persistido inválido (%s) e permite limpar no cancelamento', async (_case, raw) => {
+    sessionStorage.setItem(draftKey(), raw)
+    const onCancel = vi.fn()
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={onCancel} onSaved={vi.fn()} />)
+    fillValidForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
+
+    expect((await screen.findByRole('alert')).textContent).toContain('O rascunho salvo neste navegador é inválido.')
+    expect(findClientDuplicateCandidates).not.toHaveBeenCalled()
+    expect(createClient).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }))
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(sessionStorage.getItem(draftKey())).toBeNull()
+  })
+
+  it('bloqueia consulta e gravação quando sessionStorage.setItem falha', async () => {
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={vi.fn()} />)
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('Quota excedida', 'QuotaExceededError')
+    })
+    fillValidForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
+
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('Não foi possível preservar o rascunho neste navegador.')
+    expect(findClientDuplicateCandidates).not.toHaveBeenCalled()
+    expect(createClient).not.toHaveBeenCalled()
+  })
+
+  it('bloqueia o cadastro quando a persistência inicial do rascunho falha', async () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('Quota excedida', 'QuotaExceededError')
+    })
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={vi.fn()} />)
+    fillValidForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
+
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('Não foi possível preservar o rascunho neste navegador.')
+    expect(findClientDuplicateCandidates).not.toHaveBeenCalled()
+    expect(createClient).not.toHaveBeenCalled()
+  })
+
+  it('bloqueia a gravação se a segunda persistência síncrona antes do create falhar', async () => {
+    createClient.mockResolvedValue(makeClient())
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={vi.fn()} />)
+    fillValidForm()
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => {
+        throw new DOMException('Quota excedida', 'QuotaExceededError')
+      })
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
+
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('Não foi possível preservar o rascunho neste navegador.')
+    await waitFor(() => expect(findClientDuplicateCandidates).toHaveBeenCalledTimes(1))
+    expect(setItem).toHaveBeenCalledTimes(2)
+    expect(createClient).not.toHaveBeenCalled()
+    expect((screen.getByRole('button', { name: 'Cadastrar cliente' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('restaura um registro válido previamente semeado sem regenerar a chave', async () => {
+    const persisted = makePersistedDraft()
+    sessionStorage.setItem(draftKey(), JSON.stringify(persisted))
+    createClient.mockResolvedValue(makeClient())
+    const onSaved = vi.fn()
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={onSaved} />)
+
+    expect((screen.getByLabelText('Nome do cliente *') as HTMLInputElement).value).toBe('Rascunho salvo')
+    expect((screen.getByLabelText('E-mail') as HTMLInputElement).value).toBe('salvo@example.com')
+    expect((screen.getByLabelText('Status') as HTMLSelectElement).value).toBe('awaiting_payment')
+    expect((screen.getByLabelText('Serviço contratado *') as HTMLInputElement).value).toBe('Site salvo')
+    expect((screen.getByLabelText('Valor contratado *') as HTMLInputElement).value).toBe('2.000,00')
+    expect((screen.getByLabelText('Vencimento do contrato') as HTMLInputElement).value).toBe('2026-12-20')
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1))
+    expect(createClient).toHaveBeenCalledWith(expect.objectContaining({ creationKey: persisted.creationKey }))
+  })
+
+  it('bloqueia cadastro sem substituir registro quando sessionStorage.getItem falha', async () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new DOMException('Acesso negado', 'SecurityError')
+    })
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={vi.fn()} />)
+    fillValidForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
+
+    expect((await screen.findByRole('alert')).textContent)
+      .toContain('Não foi possível preservar o rascunho neste navegador.')
+    expect(findClientDuplicateCandidates).not.toHaveBeenCalled()
+    expect(createClient).not.toHaveBeenCalled()
+  })
+
+  it('mantém o erro de armazenamento mesmo ao limpar feedback de duplicidade', async () => {
+    findClientDuplicateCandidates.mockResolvedValue([
+      makeClient({ id: 'existing', name: 'Empresa Parecida', phone: '(11) 99999-9999' }),
+    ])
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={vi.fn()} />)
+    fillValidForm()
+    fireEvent.change(screen.getByLabelText('Telefone'), { target: { value: '(11) 99999-9999' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
+    expect(await screen.findByText('Possível duplicidade: Empresa Parecida. Revise antes de continuar.'))
+
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('Quota excedida', 'QuotaExceededError')
+    })
+    fireEvent.change(screen.getByLabelText('Nome do cliente *'), { target: { value: 'Empresa Alterada' } })
+    expect(screen.queryByText('Possível duplicidade: Empresa Parecida. Revise antes de continuar.')).toBeNull()
+    expect(screen.getByRole('alert').textContent)
+      .toContain('Não foi possível preservar o rascunho neste navegador.')
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
+    expect(findClientDuplicateCandidates).toHaveBeenCalledTimes(1)
+    expect(createClient).not.toHaveBeenCalled()
+  })
+
+  it('persiste o schema v1 completo com o estado mais recente antes da consulta', async () => {
+    createClient.mockResolvedValue(makeClient())
+    const onSaved = vi.fn()
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={onSaved} />)
+    const initial = readDraft()
+    expect(initial.creationKey).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    )
+    fillCompleteForm()
+    const latest = readDraft()
+    expect(latest).toEqual({
+      version: 1,
+      creationKey: initial.creationKey,
+      clientDraft: {
+        name: 'Empresa Nova',
+        responsible_name: 'Ana Responsável',
+        phone: '(11) 99999-9999',
+        whatsapp: '(11) 98888-7777',
+        email: 'ana@example.com',
+        cnpj: '12.345.678/0001-95',
+        website: 'exemplo.com',
+        instagram: 'instagram.com/exemplo',
+        address: 'Rua das Flores, 10',
+        city: 'São Paulo',
+        district: 'Centro',
+        zip_code: '01001-000',
+        state: 'SP',
+        niche: 'Tecnologia',
+        notes: 'Observação do cliente',
+        status: 'in_project',
+      },
+      contractDraft: {
+        service: 'Site institucional',
+        totalValue: '1.234,56',
+        contractedAt: '2026-11-25',
+        dueDate: '2026-12-01',
+        paymentMethod: 'Pix',
+        paymentTerms: '50% na assinatura',
+        notes: 'Observação do contrato',
+      },
+    })
+    findClientDuplicateCandidates.mockImplementation(async () => {
+      expect(readDraft()).toEqual(latest)
+      return []
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1))
+  })
+
+  it('não acessa sessionStorage ao editar e salvar um cliente', async () => {
+    const getItem = vi.spyOn(Storage.prototype, 'getItem')
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    const removeItem = vi.spyOn(Storage.prototype, 'removeItem')
+    updateClient.mockResolvedValue(makeClient({ name: 'Empresa Editada' }))
+    const onSaved = vi.fn()
+    render(
+      <ClientForm mode="edit" client={makeClient()} contract={makeContract()} onCancel={vi.fn()} onSaved={onSaved} />,
+    )
+    fireEvent.change(screen.getByLabelText('Nome do cliente *'), { target: { value: 'Empresa Editada' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar cliente' }))
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1))
+    expect(getItem).not.toHaveBeenCalled()
+    expect(setItem).not.toHaveBeenCalled()
+    expect(removeItem).not.toHaveBeenCalled()
+  })
+
+  it('navega com o cliente salvo e mantém a chave quando a remoção do rascunho falha', async () => {
+    const saved = makeClient({ id: 'client-saved' })
+    createClient.mockResolvedValue(saved)
+    const onSaved = vi.fn()
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={onSaved} />)
+    fillValidForm()
+    const creationKey = readDraft().creationKey
+    vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
+      throw new DOMException('Falha ao remover', 'UnknownError')
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(saved))
+    expect(createClient).toHaveBeenCalledTimes(1)
+    expect(readDraft().creationKey).toBe(creationKey)
   })
 
   it('edita com contractId explícito, initialContract completo e total readOnly', async () => {
@@ -220,7 +635,7 @@ describe('ClientForm', () => {
     findClientDuplicateCandidates.mockResolvedValue([candidate])
     createClient.mockResolvedValue(makeClient())
     const onSaved = vi.fn()
-    render(<ClientForm mode="create" onCancel={vi.fn()} onSaved={onSaved} />)
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={onSaved} />)
     fillValidForm()
     fireEvent.change(screen.getByLabelText('Telefone'), { target: { value: '(11) 99999-9999' } })
     fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
@@ -244,7 +659,7 @@ describe('ClientForm', () => {
     findClientDuplicateCandidates.mockRejectedValue(new Error('Falha de rede.'))
     createClient.mockResolvedValue(makeClient())
     const onSaved = vi.fn()
-    render(<ClientForm mode="create" onCancel={vi.fn()} onSaved={onSaved} />)
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={onSaved} />)
     fillValidForm()
     fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
 
@@ -257,7 +672,7 @@ describe('ClientForm', () => {
   })
 
   it('valida e-mail, CNPJ e URLs com os helpers existentes', async () => {
-    render(<ClientForm mode="create" onCancel={vi.fn()} onSaved={vi.fn()} />)
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={vi.fn()} />)
     fillValidForm()
     fireEvent.change(screen.getByLabelText('E-mail'), { target: { value: 'email-invalido' } })
     fireEvent.change(screen.getByLabelText('CNPJ'), { target: { value: '123' } })
@@ -272,10 +687,62 @@ describe('ClientForm', () => {
     expect(createClient).not.toHaveBeenCalled()
   })
 
+  it.each([
+    'a@b..com',
+    '.a@example.com',
+    'a.@example.com',
+    'a@-example.com',
+    'a@example-.com',
+    'a@b.c',
+    'a@@example.com',
+    'a b@example.com',
+    'a@exa_mple.com',
+    'a@example.123',
+    `${'a'.repeat(65)}@example.com`,
+    `a@${'b'.repeat(64)}.com`,
+    `${'a'.repeat(243)}@example.com`,
+  ])('rejeita e-mail estruturalmente inválido (%s) sem consultar ou gravar', async (email) => {
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={vi.fn()} />)
+    fillValidForm()
+    fireEvent.change(screen.getByLabelText('E-mail'), { target: { value: email } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
+
+    expect((await screen.findByText('E-mail inválido.')).textContent).toBe('E-mail inválido.')
+    expect(findClientDuplicateCandidates).not.toHaveBeenCalled()
+    expect(createClient).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    '00000000000000',
+    '11111111111111',
+    '12.345.678/0001-96',
+    '12.345.678/0001-95X',
+  ])('rejeita CNPJ inválido (%s) sem consultar ou gravar', async (cnpj) => {
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={vi.fn()} />)
+    fillValidForm()
+    fireEvent.change(screen.getByLabelText('CNPJ'), { target: { value: cnpj } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
+
+    expect((await screen.findByText('CNPJ inválido.')).textContent).toBe('CNPJ inválido.')
+    expect(findClientDuplicateCandidates).not.toHaveBeenCalled()
+    expect(createClient).not.toHaveBeenCalled()
+  })
+
+  it('envia CNPJ válido intacto quando não há duplicata', async () => {
+    createClient.mockResolvedValue(makeClient())
+    const onSaved = vi.fn()
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={onSaved} />)
+    fillValidForm()
+    fireEvent.change(screen.getByLabelText('CNPJ'), { target: { value: '12.345.678/0001-95' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
+    await waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1))
+    expect(createClient).toHaveBeenCalledWith(expect.objectContaining({ cnpj: '12.345.678/0001-95' }))
+  })
+
   it('normaliza URLs e monta CreateClientInput com totalValueCents somente no submit', async () => {
     createClient.mockResolvedValue(makeClient())
     const onSaved = vi.fn()
-    render(<ClientForm mode="create" onCancel={vi.fn()} onSaved={onSaved} />)
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={onSaved} />)
     fillValidForm()
     fireEvent.change(screen.getByLabelText('Site (link)'), { target: { value: 'exemplo.com' } })
     fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
@@ -305,7 +772,7 @@ describe('ClientForm', () => {
     findClientDuplicateCandidates.mockReturnValue(duplicateQuery.promise)
     createClient.mockReturnValue(mutation.promise)
     const onSaved = vi.fn()
-    render(<ClientForm mode="create" onCancel={vi.fn()} onSaved={onSaved} />)
+    render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={onSaved} />)
     fillValidForm()
     const submit = screen.getByRole('button', { name: 'Cadastrar cliente' })
     fireEvent.click(submit)
@@ -355,10 +822,37 @@ describe('ClientForm', () => {
     expect((screen.getByLabelText('Nome do cliente *') as HTMLInputElement).value).toBe('Empresa B')
   })
 
+  it('descarta update obsoleto ao trocar o cliente editado antes de resolver', async () => {
+    const mutation = deferred<Client>()
+    updateClient.mockReturnValue(mutation.promise)
+    const firstClient = makeClient({ id: 'client-1', name: 'Empresa A' })
+    const secondClient = makeClient({ id: 'client-2', name: 'Empresa B' })
+    const firstContract = makeContract({ id: 'contract-1', client_id: 'client-1' })
+    const secondContract = makeContract({ id: 'contract-2', client_id: 'client-2' })
+    const onSaved = vi.fn()
+    const view = render(
+      <ClientForm mode="edit" client={firstClient} contract={firstContract} onCancel={vi.fn()} onSaved={onSaved} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar cliente' }))
+    await waitFor(() => expect(updateClient).toHaveBeenCalledTimes(1))
+
+    view.rerender(
+      <ClientForm mode="edit" client={secondClient} contract={secondContract} onCancel={vi.fn()} onSaved={onSaved} />,
+    )
+    await act(async () => {
+      mutation.resolve(makeClient({ id: 'client-1', name: 'Empresa A atualizada' }))
+      await mutation.promise
+    })
+
+    expect(onSaved).not.toHaveBeenCalled()
+    expect(updateClient).toHaveBeenCalledTimes(1)
+    expect((screen.getByLabelText('Nome do cliente *') as HTMLInputElement).value).toBe('Empresa B')
+  })
+
   it('descarta consulta de duplicados e gravação depois do unmount', async () => {
     const duplicateQuery = deferred<Client[]>()
     findClientDuplicateCandidates.mockReturnValue(duplicateQuery.promise)
-    const first = render(<ClientForm mode="create" onCancel={vi.fn()} onSaved={vi.fn()} />)
+    const first = render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={vi.fn()} />)
     fillValidForm()
     fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
     await waitFor(() => expect(findClientDuplicateCandidates).toHaveBeenCalledTimes(1))
@@ -372,7 +866,7 @@ describe('ClientForm', () => {
     const mutation = deferred<Client>()
     createClient.mockReturnValue(mutation.promise)
     const onSaved = vi.fn()
-    const second = render(<ClientForm mode="create" onCancel={vi.fn()} onSaved={onSaved} />)
+    const second = render(<ClientForm mode="create" draftScope="owner-1" onCancel={vi.fn()} onSaved={onSaved} />)
     fillValidForm()
     fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
     await waitFor(() => expect(createClient).toHaveBeenCalledTimes(1))
@@ -391,6 +885,16 @@ describe('ClientNewPage', () => {
     updateClient.mockReset()
     findClientDuplicateCandidates.mockReset().mockResolvedValue([])
     toast.mockReset()
+  })
+
+  it('mostra alerta e não renderiza o formulário quando o usuário está ausente', () => {
+    useAuth.mockReturnValue({ user: null })
+    renderNewPage()
+    expect(screen.getByRole('alert').textContent).toContain('Não foi possível identificar o usuário.')
+    expect(screen.queryByRole('button', { name: 'Cadastrar cliente' })).toBeNull()
+    expect(screen.queryByLabelText('Nome do cliente *')).toBeNull()
+    expect(createClient).not.toHaveBeenCalled()
+    expect(findClientDuplicateCandidates).not.toHaveBeenCalled()
   })
 
   it('volta para a lista ao cancelar', async () => {

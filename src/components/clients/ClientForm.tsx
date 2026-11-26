@@ -23,11 +23,16 @@ interface ClientFormBaseProps {
 }
 
 export type ClientFormProps = ClientFormBaseProps & (
-  | { mode: 'create'; client?: never; contract?: never }
+  | { mode: 'create'; draftScope: string; client?: never; contract?: never }
   | { mode: 'edit'; client: Client; contract: Contract }
 )
 
-type ClientTextField = Exclude<keyof ClientWrite, 'status'>
+const CLIENT_TEXT_FIELDS = [
+  'name', 'responsible_name', 'phone', 'whatsapp', 'email', 'cnpj', 'website',
+  'instagram', 'address', 'city', 'district', 'zip_code', 'state', 'niche', 'notes',
+] as const
+
+type ClientTextField = typeof CLIENT_TEXT_FIELDS[number]
 type ClientDraft = Record<ClientTextField, string> & { status: ClientStatus }
 type ClientDraftErrors = Partial<Record<keyof ClientDraft, string>>
 
@@ -41,7 +46,29 @@ interface ContractDraft {
   notes: string
 }
 
+const CONTRACT_TEXT_FIELDS = [
+  'service', 'totalValue', 'contractedAt', 'dueDate', 'paymentMethod', 'paymentTerms', 'notes',
+] as const
+
 type ContractDraftErrors = Partial<Record<keyof ContractDraft, string>>
+
+interface PersistedClientDraft {
+  version: 1
+  creationKey: string
+  clientDraft: ClientDraft
+  contractDraft: ContractDraft
+}
+
+interface DraftInitialization {
+  clientDraft: ClientDraft
+  contractDraft: ContractDraft
+  creationKey: string | null
+  storageError: string | null
+}
+
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const STORAGE_ERROR_MESSAGE = 'Não foi possível preservar o rascunho neste navegador. O cadastro foi bloqueado para evitar duplicidade. Libere o armazenamento da sessão e tente novamente.'
+const INVALID_DRAFT_MESSAGE = 'O rascunho salvo neste navegador é inválido. O cadastro foi bloqueado para evitar duplicidade. Cancele para limpar o rascunho e começar novamente.'
 
 function emptyClientDraft(): ClientDraft {
   return {
@@ -109,6 +136,122 @@ function contractDraftFrom(contract: Contract): ContractDraft {
   }
 }
 
+function draftStorageKey(draftScope: string) {
+  return `ber-crm:client-draft:v1:${encodeURIComponent(draftScope)}`
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function hasStringFields<T extends string>(
+  value: Record<string, unknown>,
+  fields: readonly T[],
+): value is Record<string, unknown> & Record<T, string> {
+  return fields.every((field) => typeof value[field] === 'string')
+}
+
+function isClientStatus(value: unknown): value is ClientStatus {
+  return typeof value === 'string' && CLIENT_STATUSES.some((status) => status === value)
+}
+
+function parsePersistedClientDraft(raw: string): PersistedClientDraft | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (
+    !isRecord(parsed)
+    || parsed.version !== 1
+    || typeof parsed.creationKey !== 'string'
+    || !UUID_V4_PATTERN.test(parsed.creationKey)
+    || !isRecord(parsed.clientDraft)
+    || !hasStringFields(parsed.clientDraft, CLIENT_TEXT_FIELDS)
+    || !isRecord(parsed.contractDraft)
+    || !hasStringFields(parsed.contractDraft, CONTRACT_TEXT_FIELDS)
+  ) return null
+
+  const clientDraft = parsed.clientDraft
+  const contractDraft = parsed.contractDraft
+  const status = clientDraft.status
+  if (!isClientStatus(status)) return null
+  return {
+    version: 1,
+    creationKey: parsed.creationKey,
+    clientDraft: {
+      name: clientDraft.name,
+      responsible_name: clientDraft.responsible_name,
+      phone: clientDraft.phone,
+      whatsapp: clientDraft.whatsapp,
+      email: clientDraft.email,
+      cnpj: clientDraft.cnpj,
+      website: clientDraft.website,
+      instagram: clientDraft.instagram,
+      address: clientDraft.address,
+      city: clientDraft.city,
+      district: clientDraft.district,
+      zip_code: clientDraft.zip_code,
+      state: clientDraft.state,
+      niche: clientDraft.niche,
+      notes: clientDraft.notes,
+      status,
+    },
+    contractDraft: {
+      service: contractDraft.service,
+      totalValue: contractDraft.totalValue,
+      contractedAt: contractDraft.contractedAt,
+      dueDate: contractDraft.dueDate,
+      paymentMethod: contractDraft.paymentMethod,
+      paymentTerms: contractDraft.paymentTerms,
+      notes: contractDraft.notes,
+    },
+  }
+}
+
+function writePersistedClientDraft(storageKey: string, draft: PersistedClientDraft) {
+  try {
+    sessionStorage.setItem(storageKey, JSON.stringify(draft))
+    return true
+  } catch {
+    return false
+  }
+}
+
+function initializeCreateDraft(draftScope: string): DraftInitialization {
+  const storageKey = draftStorageKey(draftScope)
+  const clientDraft = emptyClientDraft()
+  const contractDraft = emptyContractDraft()
+  let raw: string | null
+  try {
+    raw = sessionStorage.getItem(storageKey)
+  } catch {
+    return { clientDraft, contractDraft, creationKey: null, storageError: STORAGE_ERROR_MESSAGE }
+  }
+  if (raw !== null) {
+    const persisted = parsePersistedClientDraft(raw)
+    if (!persisted) {
+      return { clientDraft, contractDraft, creationKey: null, storageError: INVALID_DRAFT_MESSAGE }
+    }
+    return {
+      clientDraft: persisted.clientDraft,
+      contractDraft: persisted.contractDraft,
+      creationKey: persisted.creationKey,
+      storageError: null,
+    }
+  }
+
+  const creationKey = crypto.randomUUID()
+  const persisted: PersistedClientDraft = { version: 1, creationKey, clientDraft, contractDraft }
+  return {
+    clientDraft,
+    contractDraft,
+    creationKey,
+    storageError: writePersistedClientDraft(storageKey, persisted) ? null : STORAGE_ERROR_MESSAGE,
+  }
+}
+
 function isValidDate(value: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
   const date = new Date(`${value}T00:00:00`)
@@ -118,13 +261,54 @@ function isValidDate(value: string) {
     && date.getDate() === Number(value.slice(8, 10))
 }
 
+function isValidEmail(value: string) {
+  const email = value.trim()
+  if (!email) return true
+  if (email.length > 254) return false
+  const at = email.indexOf('@')
+  if (at <= 0 || at !== email.lastIndexOf('@')) return false
+
+  const local = email.slice(0, at)
+  const domain = email.slice(at + 1)
+  if (local.length > 64) return false
+  const localSegmentPattern = /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+$/
+  if (!local.split('.').every((segment) => localSegmentPattern.test(segment))) return false
+
+  const labels = domain.split('.')
+  if (labels.length < 2) return false
+  const labelPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/
+  if (!labels.every((label) => label.length <= 63 && labelPattern.test(label))) return false
+  const finalLabel = labels[labels.length - 1]
+  return finalLabel.length >= 2 && /[A-Za-z]/.test(finalLabel)
+}
+
+function cnpjCheckDigit(base: string, weights: readonly number[]) {
+  const sum = weights.reduce((total, weight, index) => total + Number(base[index]) * weight, 0)
+  const remainder = sum % 11
+  return remainder < 2 ? 0 : 11 - remainder
+}
+
+function isValidCnpj(value: string) {
+  if (!/^[0-9./-]+$/.test(value)) return false
+  const digits = onlyDigits(value)
+  if (digits.length !== 14 || /^(\d)\1{13}$/.test(digits)) return false
+  const firstCheckDigit = cnpjCheckDigit(digits.slice(0, 12), [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
+  const secondCheckDigit = cnpjCheckDigit(digits.slice(0, 13), [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
+  return digits[12] === String(firstCheckDigit) && digits[13] === String(secondCheckDigit)
+}
+
 function validateClientDraft(draft: ClientDraft): ClientDraftErrors {
   const errors: ClientDraftErrors = {}
   if (!draft.name.trim()) errors.name = 'Nome do cliente é obrigatório.'
   const email = draft.email.trim()
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.email = 'E-mail inválido.'
-  if (draft.cnpj.trim() && onlyDigits(draft.cnpj).length !== 14) {
-    errors.cnpj = 'CNPJ deve ter 14 dígitos.'
+  if (!isValidEmail(email)) errors.email = 'E-mail inválido.'
+  const cnpj = draft.cnpj.trim()
+  if (cnpj) {
+    if (onlyDigits(cnpj).length !== 14) {
+      errors.cnpj = 'CNPJ deve ter 14 dígitos.'
+    } else if (!isValidCnpj(cnpj)) {
+      errors.cnpj = 'CNPJ inválido.'
+    }
   }
   for (const field of ['website', 'instagram'] as const) {
     if (draft[field].trim() && normalizeClientUrl(draft[field]) === null) {
@@ -193,7 +377,9 @@ function buildInitialContract(draft: ContractDraft, totalValueCents: number): In
 export function ClientForm(props: ClientFormProps) {
   return (
     <ClientFormContent
-      key={`${props.mode}:${props.client?.id ?? 'new'}:${props.contract?.id ?? 'initial'}`}
+      key={props.mode === 'create'
+        ? `create:${props.draftScope}`
+        : `edit:${props.client.id}:${props.contract.id}`}
       {...props}
     />
   )
@@ -201,22 +387,30 @@ export function ClientForm(props: ClientFormProps) {
 
 function ClientFormContent(props: ClientFormProps) {
   const { mode, onCancel, onSaved } = props
-  const [clientDraft, setClientDraft] = useState<ClientDraft>(() =>
-    props.mode === 'edit' ? clientDraftFrom(props.client) : emptyClientDraft(),
-  )
-  const [contractDraft, setContractDraft] = useState<ContractDraft>(() =>
-    props.mode === 'edit' ? contractDraftFrom(props.contract) : emptyContractDraft(),
-  )
+  const [initialDraft] = useState<DraftInitialization>(() => props.mode === 'edit'
+    ? {
+        clientDraft: clientDraftFrom(props.client),
+        contractDraft: contractDraftFrom(props.contract),
+        creationKey: null,
+        storageError: null,
+      }
+    : initializeCreateDraft(props.draftScope))
+  const [clientDraft, setClientDraft] = useState<ClientDraft>(initialDraft.clientDraft)
+  const [contractDraft, setContractDraft] = useState<ContractDraft>(initialDraft.contractDraft)
   const [clientErrors, setClientErrors] = useState<ClientDraftErrors>({})
   const [contractErrors, setContractErrors] = useState<ContractDraftErrors>({})
   const [saving, setSaving] = useState(false)
   const [checkingDuplicates, setCheckingDuplicates] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [storageError, setStorageError] = useState<string | null>(initialDraft.storageError)
   const [mutationFailed, setMutationFailed] = useState(false)
   const [duplicates, setDuplicates] = useState<Client[]>([])
   const [duplicateLookupFailed, setDuplicateLookupFailed] = useState(false)
   const [duplicateReviewed, setDuplicateReviewed] = useState(false)
-  const creationKeyRef = useRef(crypto.randomUUID())
+  const clientDraftRef = useRef(clientDraft)
+  const contractDraftRef = useRef(contractDraft)
+  const creationKeyRef = useRef(initialDraft.creationKey)
+  const storageKeyRef = useRef(mode === 'create' ? draftStorageKey(props.draftScope) : null)
   const busyRef = useRef(false)
   const mountedRef = useRef(true)
   const requestRef = useRef(0)
@@ -229,6 +423,25 @@ function ClientFormContent(props: ClientFormProps) {
     }
   }, [])
 
+  const persistCurrentDraft = () => {
+    if (mode !== 'create') return null
+    const storageKey = storageKeyRef.current
+    const creationKey = creationKeyRef.current
+    if (!storageKey || !creationKey) return null
+    const persisted: PersistedClientDraft = {
+      version: 1,
+      creationKey,
+      clientDraft: clientDraftRef.current,
+      contractDraft: contractDraftRef.current,
+    }
+    if (!writePersistedClientDraft(storageKey, persisted)) {
+      setStorageError(STORAGE_ERROR_MESSAGE)
+      return null
+    }
+    setStorageError(null)
+    return creationKey
+  }
+
   const clearFeedback = () => {
     setSaveError(null)
     setMutationFailed(false)
@@ -239,37 +452,79 @@ function ClientFormContent(props: ClientFormProps) {
 
   const setClientField = <K extends keyof ClientDraft>(field: K, value: ClientDraft[K]) => {
     if (busyRef.current) return
-    setClientDraft((current) => ({ ...current, [field]: value }))
+    const nextClientDraft: ClientDraft = { ...clientDraftRef.current, [field]: value }
+    clientDraftRef.current = nextClientDraft
+    setClientDraft(nextClientDraft)
     setClientErrors((current) => ({ ...current, [field]: undefined }))
     clearFeedback()
+    if (mode === 'create') persistCurrentDraft()
   }
 
   const setContractField = <K extends keyof ContractDraft>(field: K, value: ContractDraft[K]) => {
     if (busyRef.current) return
-    setContractDraft((current) => ({ ...current, [field]: value }))
+    const nextContractDraft: ContractDraft = { ...contractDraftRef.current, [field]: value }
+    contractDraftRef.current = nextContractDraft
+    setContractDraft(nextContractDraft)
     setContractErrors((current) => ({ ...current, [field]: undefined }))
     clearFeedback()
+    if (mode === 'create') persistCurrentDraft()
+  }
+
+  const cancel = () => {
+    if (busyRef.current) return
+    const storageKey = storageKeyRef.current
+    if (mode === 'create' && storageKey) {
+      try {
+        sessionStorage.removeItem(storageKey)
+      } catch {
+        setStorageError(STORAGE_ERROR_MESSAGE)
+        return
+      }
+    }
+    onCancel()
   }
 
   const persist = async (payload: ClientWrite, initialContract: InitialContractInput, request: number) => {
+    const creationKey = mode === 'create' ? persistCurrentDraft() : null
+    if (mode === 'create' && creationKey === null) {
+      if (mountedRef.current && request === requestRef.current) {
+        busyRef.current = false
+        setSaving(false)
+        setCheckingDuplicates(false)
+      }
+      return
+    }
+
     setSaving(true)
     setSaveError(null)
     setMutationFailed(false)
     try {
-      const saved = props.mode === 'edit'
-        ? await updateClient(props.client.id, {
-            ...payload,
-            contractId: props.contract.id,
-            initialContract,
-          })
-        : await createClient({
-            ...payload,
-            creationKey: creationKeyRef.current,
-            initialContract,
-          })
+      let saved: Client
+      if (mode === 'edit') {
+        saved = await updateClient(props.client.id, {
+          ...payload,
+          contractId: props.contract.id,
+          initialContract,
+        })
+      } else if (creationKey !== null) {
+        saved = await createClient({
+          ...payload,
+          creationKey,
+          initialContract,
+        })
+      } else {
+        return
+      }
       if (!mountedRef.current || request !== requestRef.current) return
       if (!saved || typeof saved.id !== 'string' || !saved.id) {
         throw new Error('Não foi possível salvar o cliente.')
+      }
+      if (mode === 'create' && storageKeyRef.current) {
+        try {
+          sessionStorage.removeItem(storageKeyRef.current)
+        } catch {
+          // A chave restante continua protegendo a idempotência; o save confirmado não é desfeito.
+        }
       }
       onSaved(saved)
     } catch (cause) {
@@ -301,6 +556,7 @@ function ClientFormContent(props: ClientFormProps) {
     if (totalValueCents === null) return
     const payload = buildClientWrite(clientDraft)
     const initialContract = buildInitialContract(contractDraft, totalValueCents)
+    if (!skipDuplicateCheck && mode === 'create' && persistCurrentDraft() === null) return
     const request = ++requestRef.current
     setDuplicates([])
     setDuplicateLookupFailed(false)
@@ -435,6 +691,12 @@ function ClientFormContent(props: ClientFormProps) {
         <Textarea disabled={busy} label="Observações do contrato" value={contractDraft.notes} onChange={(event) => setContractField('notes', event.target.value)} />
       </section>
 
+      {storageError && (
+        <div className="rounded-xl border border-danger/40 bg-danger/5 p-4" role="alert">
+          <p className="text-sm text-danger">{storageError}</p>
+        </div>
+      )}
+
       {duplicateLookupFailed && (
         <div className="rounded-xl border border-danger/40 bg-danger/5 p-4" role="alert">
           <p className="text-sm font-medium text-danger">Não foi possível verificar duplicidades.</p>
@@ -485,7 +747,7 @@ function ClientFormContent(props: ClientFormProps) {
       )}
 
       <div className="flex justify-end gap-2">
-        <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>Cancelar</Button>
+        <Button type="button" variant="outline" onClick={cancel} disabled={busy}>Cancelar</Button>
         <Button type="submit" variant="mint" loading={busy}>
           {checkingDuplicates ? 'Verificando duplicidade…' : saving ? 'Salvando…' : mode === 'edit' ? 'Salvar cliente' : 'Cadastrar cliente'}
         </Button>
