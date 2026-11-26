@@ -158,7 +158,11 @@ function ContactDialogContent({ open, leadId, currentStatus, onClose, onSaved }:
           value={type}
           onChange={(event) => setType(event.target.value as ActivityType)}
           options={ACTIVITY_TYPES
-            .filter((activityType) => activityType !== 'mudanca_status' && activityType !== 'follow_up')
+            .filter((activityType) => (
+              activityType !== 'mudanca_status'
+              && activityType !== 'follow_up'
+              && activityType !== 'conversao'
+            ))
             .map((activityType) => ({ value: activityType, label: ACTIVITY_LABELS[activityType] }))}
           disabled={fieldsDisabled}
         />

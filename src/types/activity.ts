@@ -1,6 +1,6 @@
 export const ACTIVITY_TYPES = [
   'primeiro_contato', 'mensagem', 'ligacao', 'resposta', 'reuniao',
-  'proposta', 'mudanca_status', 'observacao', 'follow_up', 'outro',
+  'proposta', 'mudanca_status', 'observacao', 'follow_up', 'conversao', 'outro',
 ] as const
 export type ActivityType = (typeof ACTIVITY_TYPES)[number]
 
@@ -14,6 +14,7 @@ export const ACTIVITY_LABELS: Record<ActivityType, string> = {
   mudanca_status: 'Mudança de status',
   observacao: 'Observação',
   follow_up: 'Follow-up',
+  conversao: 'Conversão em cliente',
   outro: 'Outro',
 }
 

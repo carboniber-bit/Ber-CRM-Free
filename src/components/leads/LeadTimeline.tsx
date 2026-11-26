@@ -21,6 +21,7 @@ const icons: Record<ActivityType, LucideIcon> = {
   mudanca_status: ArrowRightLeft,
   observacao: StickyNote,
   follow_up: CalendarClock,
+  conversao: UserCheck,
   outro: StickyNote,
 }
 
