@@ -4,13 +4,13 @@
 
 **Objetivo:** Entregar contratos adicionais, edição segura do cliente e do contrato inicial, parcelas, recebimentos parciais, estornos, despesas, categorias, resumo, fluxo de caixa e lucro realizado com dados reais, idempotência e RLS.
 
-**Arquitetura:** A migration `0008` mantém as tabelas financeiras somente leitura para o cliente e concentra escrita em RPCs `security definer` com locks, idempotência e validação de saldo. As leituras agregadas usam `security invoker` e RLS. O frontend usa centavos inteiros, deriva status de parcelas e consome agregações no fuso `America/Sao_Paulo`.
+**Arquitetura:** A migration `0009` mantém as tabelas financeiras somente leitura para o cliente e concentra escrita em RPCs `security definer` com locks, idempotência e validação de saldo. As leituras agregadas usam `security invoker` e RLS. O frontend usa centavos inteiros, deriva status de parcelas e consome agregações no fuso `America/Sao_Paulo`.
 
 **Stack:** React 19, TypeScript, Vite 8, Tailwind CSS v4, React Router 7, Supabase Free/PostgreSQL, Recharts, Vitest 5, Testing Library e Lucide.
 
 **Spec:** `docs/superpowers/specs/2026-11-25-etapa3-design.md`
 
-**Depende de:** Planos 1 e 2 concluídos, incluindo `src/lib/money.ts`, `src/types/contract.ts`, `src/types/client.ts`, `src/types/project.ts`, migrations `0006` e `0007` e as rotas já protegidas.
+**Depende de:** Planos 1 e 2 concluídos, incluindo `src/lib/money.ts`, `src/types/contract.ts`, `src/types/client.ts`, `src/types/project.ts`, migrations `0006` e `0008` e as rotas já protegidas.
 
 ## Restrições globais
 
@@ -39,7 +39,7 @@
 | ---- | ---------------- |
 | `src/types/finance.ts` | Contratos de tipos de parcelas, pagamentos, despesas, entradas e agregações. |
 | `src/lib/finance.ts` | Saldos, status de parcela, hoje em São Paulo e períodos determinísticos. |
-| `supabase/migrations/0008_etapa3_finance.sql` | Categorias, parcelas, pagamentos, despesas, RLS, RPCs e agregações. |
+| `supabase/migrations/0009_etapa3_finance.sql` | Categorias, parcelas, pagamentos, despesas, RLS, RPCs e agregações. |
 | `supabase/tests/etapa3_finance.sql` | Idempotência, estorno, saldo, imutabilidade, limites, savepoint e isolamento. |
 | `src/services/contractService.ts` | Contratos, parcelas, pagamentos, estornos e filtro por cliente. |
 | `src/services/expenseService.ts` | Despesas, categorias, notas e coleção de vencidas. |
@@ -484,10 +484,10 @@ git commit -m "feat: adicionar dominio financeiro e periodos"
 
 ---
 
-### Tarefa 2: Criar schema financeiro 0008 e bloquear escrita direta
+### Tarefa 2: Criar schema financeiro 0009 e bloquear escrita direta
 
 **Arquivos:**
-- Criar: `supabase/migrations/0008_etapa3_finance.sql`
+- Criar: `supabase/migrations/0009_etapa3_finance.sql`
 
 **Interfaces:**
 - Consome: `public.contracts`, `public.projects`, `public.clients`, `public.client_activities` e `public.set_updated_at()`.
@@ -497,7 +497,7 @@ git commit -m "feat: adicionar dominio financeiro e periodos"
 - [ ] **Etapa 1: Escrever a migration completa**
 
 ```sql
--- supabase/migrations/0008_etapa3_finance.sql
+-- supabase/migrations/0009_etapa3_finance.sql
 begin;
 
 create table public.expense_categories (
@@ -684,13 +684,13 @@ commit;
 
 - [ ] **Etapa 2: Revisar a fronteira de segurança**
 
-Comando: `git diff --check && git diff -- supabase/migrations/0008_etapa3_finance.sql`
+Comando: `git diff --check && git diff -- supabase/migrations/0009_etapa3_finance.sql`
 Esperado: as cinco tabelas têm RLS e somente `select` para `authenticated`; `contracts` permanece somente com `SELECT` para `authenticated`; as FKs incluem `owner_id`; o índice único de categoria usa expressão; `numeric(14,2)` limita cada registro a `999999999999.99`; os índices de data de São Paulo correspondem às expressões usadas nas agregações; as verificações de pagamento/despesa estão presentes; não existe proteção por GUC nem trigger de ajuste de total.
 
 - [ ] **Etapa 3: Criar commit**
 
 ```bash
-git add supabase/migrations/0008_etapa3_finance.sql
+git add supabase/migrations/0009_etapa3_finance.sql
 git commit -m "feat: criar schema financeiro com escrita restrita"
 ```
 
@@ -700,7 +700,7 @@ git commit -m "feat: criar schema financeiro com escrita restrita"
 
 **Arquivos:**
 - Criar: `supabase/tests/etapa3_finance.sql`
-- Modificar: `supabase/migrations/0008_etapa3_finance.sql`
+- Modificar: `supabase/migrations/0009_etapa3_finance.sql`
 
 **Interfaces:**
 - Produz: `create_contract(jsonb)`, `replace_contract_installments(uuid,jsonb)`, `adjust_contract(uuid,numeric)` e `cancel_contract(uuid)`.
@@ -889,7 +889,7 @@ rollback;
 
 - [ ] **Etapa 2: Confirmar o vermelho**
 
-Esperado: `public.create_contract(jsonb)` não existe. A execução real exige migrations 0001–0008 aplicadas pelo usuário.
+Esperado: `public.create_contract(jsonb)` não existe. A execução real exige migrations 0001–0009 aplicadas pelo usuário.
 
 - [ ] **Etapa 3: Inserir as RPCs de contrato antes de `commit;`**
 
@@ -1241,14 +1241,14 @@ Esperado: `contracts` permanece somente com `SELECT` para `authenticated` e o `U
 - [ ] **Etapa 5: Criar commit**
 
 ```bash
-git add supabase/migrations/0008_etapa3_finance.sql supabase/tests/etapa3_finance.sql
+git add supabase/migrations/0009_etapa3_finance.sql supabase/tests/etapa3_finance.sql
 git commit -m "feat: adicionar contratos e parcelas financeiras"
 ```
 
 ### Tarefa 4: Substituir `update_client` e liberar o total antes de dependências financeiras
 
 **Arquivos:**
-- Modificar: `supabase/migrations/0008_etapa3_finance.sql`
+- Modificar: `supabase/migrations/0009_etapa3_finance.sql`
 - Modificar: `supabase/tests/etapa3_finance.sql`
 - Modificar: `supabase/tests/etapa3_clients.sql`
 - Modificar: `src/services/clientService.ts`
@@ -1445,7 +1445,7 @@ $$;
 
 - [ ] **Etapa 2: Confirmar o vermelho**
 
-Aplicar as migrations 0001–0008 e executar o teste SQL. Esperado: RED no primeiro aumento sem dependências, pois a função do Plano 1 sempre exige `CONTRACT_ADJUST_REQUIRED` quando o total muda.
+Aplicar as migrations 0001–0009 e executar o teste SQL. Esperado: RED no primeiro aumento sem dependências, pois a função do Plano 1 sempre exige `CONTRACT_ADJUST_REQUIRED` quando o total muda.
 
 - [ ] **Etapa 3: Substituir integralmente a RPC antes de `commit;`**
 
@@ -1764,7 +1764,7 @@ Esperado: aumento sem dependências passa; projeto cancelado é excluído da som
 - [ ] **Etapa 8: Criar commit**
 
 ```bash
-git add supabase/migrations/0008_etapa3_finance.sql supabase/tests/etapa3_finance.sql supabase/tests/etapa3_clients.sql src/services/clientService.ts src/services/clientService.test.ts src/components/clients/ClientForm.tsx src/components/clients/ClientForm.test.tsx
+git add supabase/migrations/0009_etapa3_finance.sql supabase/tests/etapa3_finance.sql supabase/tests/etapa3_clients.sql src/services/clientService.ts src/services/clientService.test.ts src/components/clients/ClientForm.tsx src/components/clients/ClientForm.test.tsx
 git commit -m "feat: liberar ajuste inicial de contrato pelo cliente"
 ```
 
@@ -1773,7 +1773,7 @@ git commit -m "feat: liberar ajuste inicial de contrato pelo cliente"
 ### Tarefa 5: Implementar recebimentos, alocações e estornos idempotentes
 
 **Arquivos:**
-- Modificar: `supabase/migrations/0008_etapa3_finance.sql`
+- Modificar: `supabase/migrations/0009_etapa3_finance.sql`
 - Modificar: `supabase/tests/etapa3_finance.sql`
 
 **Interfaces:**
@@ -2382,7 +2382,7 @@ Esperado: lock consultivo por proprietário/chave antes da consulta de idempotê
 
 - [ ] **Etapa 5: Provar idempotência e serialização de contratos/pagamentos**
 
-Execute o bloco abaixo no SQL Editor com as migrations 0001–0008 aplicadas, a extensão `dblink` disponível e ao menos um usuário já commitado em `auth.users`. A conexão `dblink` usa o socket local com o banco e o usuário atuais; ela precisa ser aceita pela configuração de autenticação do banco de teste. Não há `psql`, loop de sincronização nem `pg_sleep`: a sessão remota primeiro confirma os locks e somente depois a sessão local faz probes com `lock_timeout`. O timeout é apenas uma proteção contra bloqueio infinito; como cada lock conflitante já está comprovadamente adquirido, o resultado esperado é sempre `55P03`, nunca `40P01`. Além dos locks de cliente/contrato/parcela/pagamento, o harness isola uma única advisory `:contract:<id>` para `update_client` e mantém advisories de contrato separadas para cada RPC de projeto. O cleanup dos fixtures, incluindo projetos, é tentado em transação remota mesmo quando uma asserção falha; rollback, cleanup e disconnect são tentados individualmente nos caminhos normal e de exceção.
+Execute o bloco abaixo no SQL Editor com as migrations 0001–0009 aplicadas, a extensão `dblink` disponível e ao menos um usuário já commitado em `auth.users`. A conexão `dblink` usa o socket local com o banco e o usuário atuais; ela precisa ser aceita pela configuração de autenticação do banco de teste. Não há `psql`, loop de sincronização nem `pg_sleep`: a sessão remota primeiro confirma os locks e somente depois a sessão local faz probes com `lock_timeout`. O timeout é apenas uma proteção contra bloqueio infinito; como cada lock conflitante já está comprovadamente adquirido, o resultado esperado é sempre `55P03`, nunca `40P01`. Além dos locks de cliente/contrato/parcela/pagamento, o harness isola uma única advisory `:contract:<id>` para `update_client` e mantém advisories de contrato separadas para cada RPC de projeto. O cleanup dos fixtures, incluindo projetos, é tentado em transação remota mesmo quando uma asserção falha; rollback, cleanup e disconnect são tentados individualmente nos caminhos normal e de exceção.
 
 ```sql
 create extension if not exists dblink;
@@ -2872,7 +2872,7 @@ $$;
 - [ ] **Etapa 6: Criar commit**
 
 ```bash
-git add supabase/migrations/0008_etapa3_finance.sql supabase/tests/etapa3_finance.sql
+git add supabase/migrations/0009_etapa3_finance.sql supabase/tests/etapa3_finance.sql
 git commit -m "feat: adicionar recebimentos e estornos idempotentes"
 ```
 
@@ -2881,7 +2881,7 @@ git commit -m "feat: adicionar recebimentos e estornos idempotentes"
 ### Tarefa 6: Implementar despesas e categorias
 
 **Arquivos:**
-- Modificar: `supabase/migrations/0008_etapa3_finance.sql`
+- Modificar: `supabase/migrations/0009_etapa3_finance.sql`
 - Modificar: `supabase/tests/etapa3_finance.sql`
 
 **Interfaces:**
@@ -3552,7 +3552,7 @@ Esperado: categoria única por proprietário/nome em minúsculas; criação/edi�
 
 - [ ] **Etapa 5: Provar serialização entre `set_project_status` e despesa vinculada**
 
-Execute o bloco abaixo no SQL Editor após as migrations 0001–0008, com `dblink` disponível e ao menos um usuário já commitado em `auth.users`. Assim como no harness anterior, a conexão remota usa o socket local e depende da autenticação configurada no banco. O fixture é commitado para que as duas sessões o vejam; em seguida, locks já confirmados são usados em probes determinísticos com `lock_timeout`. `set_project_status(project_id,status)` adquire `:contract:<id>` antes de travar projeto e contrato; a despesa criada carrega ambos os vínculos. O teste cobre a criação da despesa durante o status, a criação normal após a liberação e a direção inversa contra os locks FK; os dois probes de bloqueio esperam `55P03`, sem loops, `pg_sleep`, `psql` ou comandos meta. Rollback, cleanup e disconnect são tentados individualmente também no caminho normal.
+Execute o bloco abaixo no SQL Editor após as migrations 0001–0009, com `dblink` disponível e ao menos um usuário já commitado em `auth.users`. Assim como no harness anterior, a conexão remota usa o socket local e depende da autenticação configurada no banco. O fixture é commitado para que as duas sessões o vejam; em seguida, locks já confirmados são usados em probes determinísticos com `lock_timeout`. `set_project_status(project_id,status)` adquire `:contract:<id>` antes de travar projeto e contrato; a despesa criada carrega ambos os vínculos. O teste cobre a criação da despesa durante o status, a criação normal após a liberação e a direção inversa contra os locks FK; os dois probes de bloqueio esperam `55P03`, sem loops, `pg_sleep`, `psql` ou comandos meta. Rollback, cleanup e disconnect são tentados individualmente também no caminho normal.
 
 ```sql
 create extension if not exists dblink;
@@ -3725,14 +3725,14 @@ $$;
 - [ ] **Etapa 6: Criar commit**
 
 ```bash
-git add supabase/migrations/0008_etapa3_finance.sql supabase/tests/etapa3_finance.sql
+git add supabase/migrations/0009_etapa3_finance.sql supabase/tests/etapa3_finance.sql
 git commit -m "feat: adicionar despesas e categorias"
 ```
 
 ### Tarefa 7: Implementar resumo e fluxo de caixa
 
 **Arquivos:**
-- Modificar: `supabase/migrations/0008_etapa3_finance.sql`
+- Modificar: `supabase/migrations/0009_etapa3_finance.sql`
 - Modificar: `supabase/tests/etapa3_finance.sql`
 
 **Interfaces:**
@@ -4466,13 +4466,13 @@ Esperado: contrato cancelado sai apenas dos totais ativos; recebido histórico p
 
 - [ ] **Etapa 5: Executar o teste SQL completo**
 
-Comando: aplicar `supabase/tests/etapa3_finance.sql` no SQL Editor com as migrations 0001–0008 já aplicadas.
+Comando: aplicar `supabase/tests/etapa3_finance.sql` no SQL Editor com as migrations 0001–0009 já aplicadas.
 Esperado: notices de `update_client`, contratos/parcelas e validação textual, pagamentos/estornos, despesas/categorias e resumo/fluxo/RLS; término em `ROLLBACK`, sem dados persistidos. Os notices dos dois harnesses de concorrência pertencem às execuções separadas das Tarefas 5 e 6.
 
 - [ ] **Etapa 6: Criar commit**
 
 ```bash
-git add supabase/migrations/0008_etapa3_finance.sql supabase/tests/etapa3_finance.sql
+git add supabase/migrations/0009_etapa3_finance.sql supabase/tests/etapa3_finance.sql
 git commit -m "feat: adicionar resumo e fluxo de caixa"
 ```
 
@@ -7884,7 +7884,7 @@ Expected: PASS dos quatro arquivos; `/financeiro` usa `FinancePage`, a aba do cl
 No `README.md`, atualizar o estado atual para:
 - Clientes, Projetos e Financeiro implementados após a execução deste plano;
 - rotas `/clientes`, `/clientes/novo`, `/clientes/:id`, `/projetos`, `/projetos/novo`, `/projetos/:id` e `/financeiro`;
-- migrations `0006_etapa3_clients.sql`, `0007_etapa3_projects.sql` e `0008_etapa3_finance.sql` e seus testes SQL;
+- migrations `0006_etapa3_clients.sql`, `0008_etapa3_projects.sql` e `0009_etapa3_finance.sql` e seus testes SQL;
 - contratos ativos, recebido líquido histórico, pendente, despesas pagas, fluxo e lucro possuem semânticas distintas;
 - conclusão/entrega de projeto não cria receita;
 - validação autenticada da migration e RLS entre dois usuários continuam pendentes até execução real, com evidência registrada.
@@ -7894,8 +7894,8 @@ No `README.md`, atualizar o estado atual para:
 Executar:
 
 ```bash
-rg -n "current_date|generate_series" src supabase/migrations/0008_etapa3_finance.sql supabase/tests/etapa3_finance.sql
-rg -n "financial_expenses\.client_id" src supabase/migrations/0008_etapa3_finance.sql supabase/tests/etapa3_finance.sql
+rg -n "current_date|generate_series" src supabase/migrations/0009_etapa3_finance.sql supabase/tests/etapa3_finance.sql
+rg -n "financial_expenses\.client_id" src supabase/migrations/0009_etapa3_finance.sql supabase/tests/etapa3_finance.sql
 rg -n "CONTINUACAO|corrigir depois|TODO|FIXME|Cliente'" src supabase
 rg -n "zinc-|rose-|emerald-|border-white|bg-black|text-white|bg-white|text-black" src/components/finance src/components/clients/ClientFinancePanel.tsx src/pages/FinancePage.tsx
 rg -n "toISOString" src/lib/finance.ts src/pages/FinancePage.tsx src/components/clients/ClientFinancePanel.tsx
@@ -7919,7 +7919,7 @@ Esperado: testes, build e lint com código 0. Corrigir qualquer falha antes do c
 
 - [ ] **Etapa 10: Validação SQL e autenticada real**
 
-Aplicar as migrations 0001–0008 em um projeto Supabase de teste e executar `supabase/tests/etapa3_finance.sql` no SQL Editor. Esperado: todas as asserções passam e o script termina em `ROLLBACK`.
+Aplicar as migrations 0001–0009 em um projeto Supabase de teste e executar `supabase/tests/etapa3_finance.sql` no SQL Editor. Esperado: todas as asserções passam e o script termina em `ROLLBACK`.
 
 Depois, com duas contas reais e distintas:
 1. autenticar a conta A e criar cliente, contrato, parcela, recebimento, estorno, despesa paga e categoria;

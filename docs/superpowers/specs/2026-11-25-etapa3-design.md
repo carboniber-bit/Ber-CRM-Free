@@ -234,7 +234,7 @@ Histórico unificado do cliente e do projeto.
 - `created_by uuid default auth.uid()`.
 - `created_at timestamptz not null default now()`.
 
-A tabela é criada já na migration `0006`, porque a conversão precisa gravar o evento `conversion` na mesma transação. A migration `0007` acrescenta índices, triggers e eventos de projeto. A ficha do cliente combina essas atividades com as timelines dos leads vinculados, sem copiar eventos antigos.
+A tabela é criada já na migration `0006`, porque a conversão precisa gravar o evento `conversion` na mesma transação. A migration `0008` acrescenta índices, triggers e eventos de projeto. A ficha do cliente combina essas atividades com as timelines dos leads vinculados, sem copiar eventos antigos.
 
 ### 5.8 `expense_categories`
 
@@ -474,8 +474,8 @@ Novos serviços seguirão o padrão de `leadService`/`followupService`: Supabase
 ## 14. Migrations e ordem de entrega
 
 - `0006_etapa3_clients.sql`: clientes, vínculos, contratos (incluindo `creation_key`), projetos básicos, `client_activities`, RPCs de cliente/conversão, RLS, ajuste de `lead_activities` e ampliação das colunas monetárias de `leads` para `numeric(14,2)`.
-- `0007_etapa3_projects.sql`: tarefas, revisões, índices e triggers adicionais de `client_activities`, RPCs de projeto e regras de progresso/status.
-- `0008_etapa3_finance.sql`: categorias, parcelas, pagamentos, despesas, RPCs financeiros e agregações.
+- `0008_etapa3_projects.sql`: tarefas, revisões, índices e triggers adicionais de `client_activities`, RPCs de projeto e regras de progresso/status.
+- `0009_etapa3_finance.sql`: categorias, parcelas, pagamentos, despesas, RPCs financeiros e agregações.
 
 As migrations são aditivas e não apagam dados da Etapa 2. A aplicação no Supabase será feita pelo usuário no SQL Editor e só será dada como concluída após confirmação/validação real.
 

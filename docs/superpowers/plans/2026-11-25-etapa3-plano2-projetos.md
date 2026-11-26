@@ -4,7 +4,7 @@
 
 **Goal:** Entregar projetos com cards, lista e Kanban, tarefas, progresso derivado, revisões, aprovação e entrega, integrados ao cliente e ao histórico sem alterar receita.
 
-**Architecture:** A migration `0007` acrescenta tarefas e revisões com RLS, triggers de timestamps/histórico e RPCs para projetos, cuja escrita direta continua bloqueada pela fundação. O frontend calcula progresso somente a partir de tarefas ativas e reutiliza o padrão de fila por ID do Pipeline de leads.
+**Architecture:** A migration `0008` acrescenta tarefas e revisões com RLS, triggers de timestamps/histórico e RPCs para projetos, cuja escrita direta continua bloqueada pela fundação. O frontend calcula progresso somente a partir de tarefas ativas e reutiliza o padrão de fila por ID do Pipeline de leads.
 
 **Tech Stack:** React 19, TypeScript, Vite 8, Tailwind CSS v4, React Router v7, Supabase Free/PostgreSQL, `@dnd-kit`, Vitest 5, Testing Library, Lucide.
 
@@ -47,7 +47,7 @@
 | ---- | ---------------- |
 | `src/types/project.ts` | Projeto, tarefa, revisão, métricas e payloads. |
 | `src/lib/projectProgress.ts` | Progresso e sugestão de prazo. |
-| `supabase/migrations/0007_etapa3_projects.sql` | Tarefas, revisões, RLS, triggers e RPCs de projeto. |
+| `supabase/migrations/0008_etapa3_projects.sql` | Tarefas, revisões, RLS, triggers e RPCs de projeto. |
 | `supabase/tests/etapa3_projects.sql` | Alocação, histórico, rollback e isolamento. |
 | `supabase/tests/etapa3_task_concurrency.sql` | Serialização de CRUD direto e reordenação com conexões independentes. |
 | `src/services/projectService.ts` | Fronteira Supabase de projetos/tarefas/revisões. |
@@ -343,10 +343,10 @@ git commit -m "feat: adicionar dominio e progresso de projetos"
 
 ---
 
-### Task 2: Criar tarefas e revisões na migration 0007
+### Task 2: Criar tarefas e revisões na migration 0008
 
 **Files:**
-- Create: `supabase/migrations/0007_etapa3_projects.sql`
+- Create: `supabase/migrations/0008_etapa3_projects.sql`
 
 **Interfaces:**
 - Consumes: `public.projects`, `public.client_activities`, `public.set_updated_at` from Plan 1.
@@ -355,7 +355,7 @@ git commit -m "feat: adicionar dominio e progresso de projetos"
 - [ ] **Step 1: Write the complete schema migration**
 
 ```sql
--- supabase/migrations/0007_etapa3_projects.sql
+-- supabase/migrations/0008_etapa3_projects.sql
 begin;
 
 create table public.project_tasks (
@@ -636,13 +636,13 @@ commit;
 
 - [ ] **Step 2: Review RLS and trigger behavior**
 
-Run: `git diff --check && git diff -- supabase/migrations/0007_etapa3_projects.sql`
+Run: `git diff --check && git diff -- supabase/migrations/0008_etapa3_projects.sql`
 Expected: tasks have owner CRUD policies; revisions have owner read/insert/update but no delete; both have composite owner/project FKs; direct INSERT of a completed/approved revision is normalized and logged; the allocation trigger defensively rejects contract totals below the sum of non-cancelled projects without acquiring an advisory after the row; `update_client` and `adjust_contract` own serialization and acquire `:contract:<id>` before any `FOR UPDATE`; task writes and reorders share a transactional per-owner advisory lock; tables and trigger functions explicitly revoke `public` and `anon`, leaving only the minimum grants for `authenticated`; trigger functions are `security definer` with empty `search_path` and are never granted for direct client execution.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add supabase/migrations/0007_etapa3_projects.sql
+git add supabase/migrations/0008_etapa3_projects.sql
 git commit -m "feat: criar tarefas e revisoes de projeto"
 ```
 
@@ -652,7 +652,7 @@ git commit -m "feat: criar tarefas e revisoes de projeto"
 
 **Files:**
 - Create: `supabase/tests/etapa3_projects.sql`
-- Modify: `supabase/migrations/0007_etapa3_projects.sql`
+- Modify: `supabase/migrations/0008_etapa3_projects.sql`
 
 **Interfaces:**
 - Produces: `create_project(jsonb)`, `update_project(uuid,jsonb)`, `set_project_status(uuid,text)`, `deliver_project(uuid,jsonb)`.
@@ -1088,7 +1088,7 @@ rollback;
 
 - [ ] **Step 2: Confirm the test is red**
 
-Expected before implementation: `public.create_project(jsonb)` does not exist, so the complete contract test fails RED. Against a baseline implementation, the old numeric cast rounds `0.001` and the old delivery validation accepts non-HTTP schemes, so the new SQL assertions also fail before the fixes. Runtime execution requires migrations 0001–0007 applied by the user.
+Expected before implementation: `public.create_project(jsonb)` does not exist, so the complete contract test fails RED. Against a baseline implementation, the old numeric cast rounds `0.001` and the old delivery validation accepts non-HTTP schemes, so the new SQL assertions also fail before the fixes. Runtime execution requires migrations 0001–0008 applied by the user.
 
 - [ ] **Step 3: Insert project RPCs before `commit;`**
 
@@ -1387,7 +1387,7 @@ Expected: `update_client` and `adjust_contract` acquire the contract advisory be
 - [ ] **Step 5: Commit**
 
 ```bash
-git add supabase/migrations/0007_etapa3_projects.sql supabase/tests/etapa3_projects.sql
+git add supabase/migrations/0008_etapa3_projects.sql supabase/tests/etapa3_projects.sql
 git commit -m "feat: adicionar RPCs e alocacao de projetos"
 ```
 
@@ -1396,7 +1396,7 @@ git commit -m "feat: adicionar RPCs e alocacao de projetos"
 ### Task 4: Implementar ordenação de tarefas e serviços de tarefas/revisões
 
 **Files:**
-- Modify: `supabase/migrations/0007_etapa3_projects.sql`
+- Modify: `supabase/migrations/0008_etapa3_projects.sql`
 - Modify: `supabase/tests/etapa3_projects.sql`
 - Create: `supabase/tests/etapa3_task_concurrency.sql`
 - Create: `src/services/projectTaskService.ts`
@@ -1997,7 +1997,7 @@ export async function updateRevision(id: string, input: ProjectRevisionWrite): P
 
 `updateTask` never sends `completed_at`/`cancelled_at`; `updateRevision` never sends `completed_at`/`approved_at`. Os triggers do banco são a única fonte desses timestamps. A validação de prazo anterior ao início permanece na UI, e a constraint SQL continua como barreira final.
 
-Após aplicar as migrations 0001–0007, execute `supabase/tests/etapa3_projects.sql` e `supabase/tests/etapa3_task_concurrency.sql` no SQL Editor. O primeiro prova a ordenação 0..N-1 e a rejeição de listas inválidas; o segundo confirma a advisory em duas conexões e exige `55P03` nos seis probes de INSERT, UPDATE e DELETE diretos contra reordenação, nunca `40P01`.
+Após aplicar as migrations 0001–0008, execute `supabase/tests/etapa3_projects.sql` e `supabase/tests/etapa3_task_concurrency.sql` no SQL Editor. O primeiro prova a ordenação 0..N-1 e a rejeição de listas inválidas; o segundo confirma a advisory em duas conexões e exige `55P03` nos seis probes de INSERT, UPDATE e DELETE diretos contra reordenação, nunca `40P01`.
 
 Run: `npm test -- src/services/projectTaskService.test.ts src/services/projectRevisionService.test.ts && npm run build`
 Expected: PASS and build exit 0.
@@ -2005,7 +2005,7 @@ Expected: PASS and build exit 0.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add supabase/migrations/0007_etapa3_projects.sql supabase/tests/etapa3_projects.sql supabase/tests/etapa3_task_concurrency.sql src/services/projectTaskService.ts src/services/projectTaskService.test.ts src/services/projectRevisionService.ts src/services/projectRevisionService.test.ts
+git add supabase/migrations/0008_etapa3_projects.sql supabase/tests/etapa3_projects.sql supabase/tests/etapa3_task_concurrency.sql src/services/projectTaskService.ts src/services/projectTaskService.test.ts src/services/projectRevisionService.ts src/services/projectRevisionService.test.ts
 git commit -m "feat: adicionar servicos de tarefas e revisoes"
 ```
 
@@ -7115,7 +7115,7 @@ CRM profissional construído por etapas, 100% em planos gratuitos.
 O CRM inclui Leads / Prospecção, Oportunidades, Pipeline Kanban, Follow-ups, Dashboard,
 Configurações, Clientes com contratos e Projetos com tarefas, revisões, histórico e entrega.
 Financeiro e Relatórios continuam como placeholders. A validação autenticada das migrations
-`0006`/`0007` e o isolamento RLS entre dois usuários permanecem pendentes até execução real
+`0006`/`0008` e o isolamento RLS entre dois usuários permanecem pendentes até execução real
 com as contas de teste.
 
 ## Stack
@@ -7170,7 +7170,7 @@ Projeto Supabase: `nuzjlizqdldhygsliwwc`
    [`0004_followup_atomic.sql`](supabase/migrations/0004_followup_atomic.sql),
    [`0005_followup_rpc_json.sql`](supabase/migrations/0005_followup_rpc_json.sql),
    [`0006_etapa3_clients.sql`](supabase/migrations/0006_etapa3_clients.sql) e
-   [`0007_etapa3_projects.sql`](supabase/migrations/0007_etapa3_projects.sql).
+   [`0008_etapa3_projects.sql`](supabase/migrations/0008_etapa3_projects.sql).
    As migrations criam tabelas privadas, índices, políticas RLS, triggers e RPCs transacionais.
 4. **Crie seu usuário**: Dashboard → Authentication → Users → *Add user* →
    informe e-mail e senha (marque *Auto Confirm User*). Não há cadastro público.
@@ -7220,7 +7220,7 @@ src/
   utils/          helpers
   routes/         AppRoutes + ProtectedRoute
 supabase/
-  migrations/   0001–0007 (profiles, leads, follow-ups, clientes e projetos)
+  migrations/   0001–0008 (profiles, leads, follow-ups, clientes e projetos)
   tests/        etapa3_clients.sql, etapa3_projects.sql e etapa3_task_concurrency.sql
 ```
 
@@ -7306,7 +7306,7 @@ Expected: all commands exit 0. Fix regressions before proceeding.
 
 - [ ] **Step 5: Browser verification**
 
-With migration 0007 applied and a real authenticated session, verify:
+With migration 0008 applied and a real authenticated session, verify:
 1. Create a client/contract and two projects whose allocated values equal but do not exceed the contract.
 2. Um terceiro projeto que exceda o contrato é rejeitado com uma mensagem compreensível.
 3. Cards, list and Kanban show the same project and progress.
