@@ -29,7 +29,7 @@
 - Registros com dependências são cancelados/arquivados, não excluídos definitivamente; tarefas podem ser excluídas com confirmação.
 - TDD RED/GREEN em cada comportamento novo; commits pequenos e frequentes.
 - Não afirmar que migration, RLS entre dois usuários ou validação autenticada foi executada sem evidência real.
-- A Etapa 4 não começa sem autorização explícita.
+- Relatórios, Configurações, Backup e Segurança pertencem à mesma Etapa 3; nenhuma etapa nova começa sem autorização explícita.
 
 ## Rulings da auditoria de 2026-11-26
 
@@ -7176,8 +7176,8 @@ const modules = [
   {
     moduleKey: 'relatorios',
     title: 'Relatórios',
-    stage: 'Etapa 4',
-    description: 'Relatórios de conversão, nichos e desempenho chegam na Etapa 4.',
+    stage: 'Etapa 3',
+    description: 'Relatórios de conversão, nichos e desempenho chegam na Etapa 3, no plano de finalização.',
     actionLabel: 'Ir para Financeiro',
     actionTo: '/financeiro',
   },
@@ -7331,8 +7331,8 @@ const MODULES = {
   },
   relatorios: {
     title: 'Relatórios',
-    description: 'Relatórios de conversão, nichos e desempenho chegam na Etapa 4.',
-    stage: 'Etapa 4',
+    description: 'Relatórios de conversão, nichos e desempenho chegam na Etapa 3, no plano de finalização.',
+    stage: 'Etapa 3',
     icon: BarChart3,
     actionLabel: 'Ir para Financeiro',
     actionTo: '/financeiro',
