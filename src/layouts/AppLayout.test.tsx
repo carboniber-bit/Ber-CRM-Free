@@ -198,6 +198,6 @@ describe('AppLayout sino de atrasados', () => {
       '/financeiro', '/relatorios', '/configuracoes',
     ])
     expect(within(nav).queryByRole('link', { name: 'Follow-ups' })).toBeNull()
-    expect(screen.getByText('Etapa 2 — leads, oportunidades, pipeline e prospecção.')).toBeTruthy()
+    expect(screen.getByText('Etapa 3 — clientes, projetos e financeiro.')).toBeTruthy()
   })
 })

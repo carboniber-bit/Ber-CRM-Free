@@ -187,9 +187,7 @@ export function AppLayout() {
       <aside inert={drawerOpen} className="hidden w-60 shrink-0 flex-col border-r border-line bg-surface p-4 lg:flex">
         <Logo className="mb-8 px-2 text-ink" />
         <NavContent />
-        <div className="mt-auto rounded-xl border border-line bg-elevated p-3 text-xs text-muted">
-          Etapa 2 — leads, oportunidades, pipeline e prospecção.
-        </div>
+        <p className="px-3 text-[11px] leading-relaxed text-muted/60">Etapa 3 — clientes, projetos e financeiro.</p>
       </aside>
 
       {drawerOpen && (

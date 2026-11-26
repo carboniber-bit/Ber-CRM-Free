@@ -8,7 +8,7 @@ export function AuthLayout() {
       <main className="w-full max-w-sm">
         <Outlet />
       </main>
-      <p className="mt-8 text-xs text-muted/60">CRM de prospecção comercial · Etapa 1 — Fundação</p>
+      <p className="mt-8 text-xs text-muted/60">CRM de prospecção comercial · Carboni Digital Business</p>
     </div>
   )
 }
