@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as activityService from './activityService'
 import { listRecentActivities } from './activityService'
+import { countConvertedLeads } from './clientService'
 import { listFollowups } from './followupService'
 import { listLeads, listRecentLeads } from './leadService'
 import { DASHBOARD_LEAD_WINDOW, getDashboardData } from './dashboardService'
@@ -12,6 +13,7 @@ vi.mock('./activityService', () => ({
   listRecentActivities: vi.fn(),
   listRecentStatusChanges: vi.fn(),
 }))
+vi.mock('./clientService', () => ({ countConvertedLeads: vi.fn() }))
 vi.mock('./followupService', () => ({ listFollowups: vi.fn() }))
 vi.mock('./leadService', () => ({ listLeads: vi.fn(), listRecentLeads: vi.fn() }))
 
@@ -71,10 +73,11 @@ beforeEach(() => {
   vi.mocked(listRecentActivities).mockResolvedValue([activity])
   vi.mocked(activityService.listRecentStatusChanges).mockResolvedValue([statusChange])
   vi.mocked(listRecentLeads).mockResolvedValue([lead('l-2')])
+  vi.mocked(countConvertedLeads).mockResolvedValue(0)
 })
 
 describe('getDashboardData', () => {
-  it('inicia as cinco consultas em paralelo com os limites e a ordem exigidos', async () => {
+  it('inicia as seis consultas em paralelo com os limites e a ordem exigidos', async () => {
     const request = getDashboardData()
 
     // Promise.all inicia todas antes de qualquer resposta: nenhuma consulta espera a anterior.
@@ -83,15 +86,18 @@ describe('getDashboardData', () => {
     expect(listRecentActivities).toHaveBeenCalledTimes(1)
     expect(activityService.listRecentStatusChanges).toHaveBeenCalledTimes(1)
     expect(listRecentLeads).toHaveBeenCalledTimes(1)
+    expect(countConvertedLeads).toHaveBeenCalledTimes(1)
     // 'all' nos follow-ups: o painel de pendentes/atrasados filtra no cliente (computeIndicators).
     expect(listLeads).toHaveBeenCalledWith({}, 'created_desc', 0, DASHBOARD_LEAD_WINDOW)
     expect(listFollowups).toHaveBeenCalledWith('all')
     expect(listRecentActivities).toHaveBeenCalledWith(8)
     expect(activityService.listRecentStatusChanges).toHaveBeenCalledWith(5)
     expect(listRecentLeads).toHaveBeenCalledWith(5)
+    expect(countConvertedLeads).toHaveBeenCalledWith()
     expect(DASHBOARD_LEAD_WINDOW).toBe(1000)
     const startOrder = [
       vi.mocked(listLeads).mock.invocationCallOrder[0],
+      vi.mocked(countConvertedLeads).mock.invocationCallOrder[0],
       vi.mocked(listFollowups).mock.invocationCallOrder[0],
       vi.mocked(listRecentActivities).mock.invocationCallOrder[0],
       vi.mocked(activityService.listRecentStatusChanges).mock.invocationCallOrder[0],
@@ -102,10 +108,11 @@ describe('getDashboardData', () => {
     await request
   })
 
-  it('devolve as cinco fontes juntas na forma que a página lê', async () => {
+  it('devolve as seis fontes juntas na forma que a página lê', async () => {
     await expect(getDashboardData()).resolves.toEqual({
       leads: [lead('l-1'), lead('l-2')],
       totalLeads: 2,
+      convertedCount: 0,
       followups: [followup],
       recentActivities: [activity],
       recentStatusChanges: [statusChange],
@@ -125,12 +132,36 @@ describe('getDashboardData', () => {
     expect(result.totalLeads).toBe(1042)
   })
 
-  it('falha em qualquer uma das cinco derruba a carga inteira, sem painel pela metade', async () => {
+  it('convertedCount é global e inclui conversões fora da janela de leads', async () => {
+    vi.mocked(listLeads).mockResolvedValue({
+      leads: Array.from({ length: DASHBOARD_LEAD_WINDOW }, (_, index) => lead(`l-${index}`, { status: 'novo' })),
+      total: 1042,
+    })
+    vi.mocked(countConvertedLeads).mockResolvedValue(37)
+
+    const result = await getDashboardData()
+
+    expect(result.leads).toHaveLength(DASHBOARD_LEAD_WINDOW)
+    expect(result.leads.some((item) => item.status === 'aceitou')).toBe(false)
+    expect(result.convertedCount).toBe(37)
+    expect(countConvertedLeads).toHaveBeenCalledTimes(1)
+  })
+
+  it('falha em qualquer uma das seis derruba a carga inteira, sem painel pela metade', async () => {
     vi.mocked(listFollowups).mockRejectedValue(new Error('Falha de conexão com o Supabase.'))
 
     await expect(getDashboardData()).rejects.toThrow('Falha de conexão com o Supabase.')
     expect(listRecentActivities).toHaveBeenCalledTimes(1)
     expect(activityService.listRecentStatusChanges).toHaveBeenCalledTimes(1)
+    expect(countConvertedLeads).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejeição da contagem global de convertidos derruba a carga inteira', async () => {
+    vi.mocked(countConvertedLeads).mockRejectedValue(new Error('Falha na contagem de convertidos.'))
+
+    await expect(getDashboardData()).rejects.toThrow('Falha na contagem de convertidos.')
+    expect(listLeads).toHaveBeenCalledTimes(1)
+    expect(listFollowups).toHaveBeenCalledTimes(1)
   })
 
   it('cada chamada é uma carga nova: nada é cacheado entre atualizações', async () => {
@@ -140,5 +171,6 @@ describe('getDashboardData', () => {
     expect(listLeads).toHaveBeenCalledTimes(2)
     expect(listRecentActivities).toHaveBeenCalledTimes(2)
     expect(activityService.listRecentStatusChanges).toHaveBeenCalledTimes(2)
+    expect(countConvertedLeads).toHaveBeenCalledTimes(2)
   })
 })

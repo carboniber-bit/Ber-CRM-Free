@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   AlertTriangle, CalendarClock, CheckCircle2, FolderKanban, Handshake,
@@ -56,6 +56,7 @@ export function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const hasLoadedRef = useRef(false)
   // Relógio do render, com o mesmo tick da página de Follow-ups: um contato que vence com o
   // dashboard aberto tem que aparecer como atrasado sem depender de recarga de dados.
   const [now, setNow] = useState(() => Date.now())
@@ -73,6 +74,7 @@ export function DashboardPage() {
       (result) => {
         if (!active) return
         setData(result)
+        hasLoadedRef.current = true
         // Uma carga lenta não pode nascer com o relógio do início da requisição.
         setNow(Date.now())
         setError(null)
@@ -80,8 +82,7 @@ export function DashboardPage() {
       },
       (cause: unknown) => {
         if (!active) return
-        // Carga falhou: dados antigos na tela seriam números apresentados como atuais.
-        setData(null)
+        if (!hasLoadedRef.current) setData(null)
         setError(cause instanceof Error ? cause.message : 'Erro ao carregar dashboard.')
         setLoading(false)
       },
@@ -96,7 +97,7 @@ export function DashboardPage() {
   }
 
   const indicators = useMemo(
-    () => (data ? computeIndicators(data.leads, data.followups, now) : null),
+    () => (data ? computeIndicators(data.leads, data.followups, data.convertedCount, now) : null),
     [data, now],
   )
   // As séries agregam sobre até 1000 linhas: memos para a página não recontar a cada tecla do
@@ -129,7 +130,7 @@ export function DashboardPage() {
     [data],
   )
 
-  if (loading) {
+  if (loading && !data) {
     return (
       <div className="flex flex-col gap-5">
         <span role="status" className="sr-only">Carregando dashboard…</span>
@@ -144,7 +145,7 @@ export function DashboardPage() {
     )
   }
 
-  if (error || !data || !indicators || !charts) {
+  if ((error && !data) || !data || !indicators || !charts) {
     return (
       <Card className="border-danger/40" role="alert">
         <p className="text-sm text-danger">{error ?? 'Erro ao carregar dashboard.'}</p>
@@ -153,7 +154,8 @@ export function DashboardPage() {
     )
   }
 
-  const hasAnyData = data.leads.length > 0
+  const hasAnyData = data.convertedCount > 0
+    || data.leads.length > 0
     || data.followups.length > 0
     || data.recentActivities.length > 0
     || data.recentStatusChanges.length > 0
@@ -162,13 +164,22 @@ export function DashboardPage() {
   // Frase montada como string (não como texto JSX espalhado) para que a quebra de linha do
   // código não insira espaço antes do ';' nem do '.' no aviso de janela de leads.
   const windowNote = data.leads.length === DASHBOARD_LEAD_WINDOW
-    ? `Os indicadores de leads (exceto o total) e os gráficos são calculados sobre os ${DASHBOARD_LEAD_WINDOW} leads mais recentes${
+    ? `Os indicadores de leads (exceto o total e Convertidos) e os gráficos são calculados sobre os ${DASHBOARD_LEAD_WINDOW} leads mais recentes${
         data.totalLeads > DASHBOARD_LEAD_WINDOW ? `; há ${data.totalLeads} leads no total` : ''
       }. As contagens de follow-ups usam todos os follow-ups carregados. Afine a lista nas páginas de Leads e de Oportunidades.`
     : null
 
   return (
     <div className="flex flex-col gap-5">
+      {error && (
+        <Card className="border-danger/40" role="alert">
+          <p className="text-sm text-danger">
+            Não foi possível atualizar. Exibindo o último snapshot carregado: {error}
+          </p>
+          <Button variant="outline" className="mt-3" onClick={reload}>Tentar novamente</Button>
+        </Card>
+      )}
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="font-display text-xl font-bold text-ink">Dashboard</h1>

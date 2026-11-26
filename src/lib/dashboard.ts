@@ -24,6 +24,7 @@ const CONTATADOS: LeadStatus[] = situationStatuses('contato_realizado')
 export function computeIndicators(
   leads: Lead[],
   followups: Followup[],
+  convertedCount: number,
   now = Date.now(),
 ): DashboardIndicators {
   const opportunities = leads.filter(isEligibleOpportunity)
@@ -34,7 +35,7 @@ export function computeIndicators(
     contatados: leads.filter((l) => CONTATADOS.includes(l.status)).length,
     interessados: leads.filter((l) => l.status === 'interessado').length,
     negociando: leads.filter((l) => l.status === 'negociando').length,
-    convertidos: leads.filter((l) => l.status === 'aceitou').length,
+    convertidos: convertedCount,
     totalOportunidades: opportunities.length,
     altaPrioridade: opportunities.filter((l) => l.priority === 'alta' || l.priority === 'muito_alta').length,
     followupsPendentes: pending.length,

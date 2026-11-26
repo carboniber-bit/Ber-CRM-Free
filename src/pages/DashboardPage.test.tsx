@@ -250,6 +250,7 @@ function dashboardData(overrides: Partial<DashboardData> = {}): DashboardData {
   return {
     leads: LEADS,
     totalLeads: LEADS.length,
+    convertedCount: 0,
     followups: FOLLOWUPS,
     recentActivities: ACTIVITIES,
     recentStatusChanges: STATUS_CHANGES,
@@ -503,10 +504,36 @@ describe('DashboardPage estados da carga', () => {
     expect(indicatorValue('Total de leads')).toBe('6')
   })
 
-  it('só mostra o estado global quando todas as cinco fontes estão vazias', async () => {
+  it('preserva o último dashboard e permite retry quando a atualização falha', async () => {
+    vi.mocked(getDashboardData)
+      .mockResolvedValueOnce(dashboardData())
+      .mockRejectedValueOnce(new Error('Falha temporária no dashboard.'))
+    renderPage()
+    await settle()
+    expect(indicatorValue('Total de leads')).toBe('6')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Atualizar' }))
+    await settle()
+
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain('Falha temporária no dashboard.')
+    expect(alert.textContent).toContain('último snapshot')
+    expect(indicatorValue('Total de leads')).toBe('6')
+    expect(screen.getAllByTestId('chart').length).toBeGreaterThan(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tentar novamente' }))
+    await settle()
+
+    expect(getDashboardData).toHaveBeenCalledTimes(3)
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(indicatorValue('Total de leads')).toBe('6')
+  })
+
+  it('só mostra o estado global quando todas as seis fontes estão vazias', async () => {
     const { container } = await renderLoaded({
       leads: [],
       totalLeads: 0,
+      convertedCount: 0,
       followups: [],
       recentActivities: [],
       recentStatusChanges: [],
@@ -536,11 +563,18 @@ describe('DashboardPage estados da carga', () => {
     ['atividades', { recentActivities: [makeActivity({ description: 'Atividade carregada' })] }, 'Observação — Atividade carregada'],
     ['mudanças de status', { recentStatusChanges: [makeActivity({ type: 'mudanca_status', description: 'Status carregado' })] }, 'Status carregado'],
     ['leads recentes', { recentLeads: [barbearia] }, barbearia.name],
+    ['convertidos', { convertedCount: 7 }, '7'],
   ]
 
   it.each(nonEmptySources)('mantém o dashboard quando só %s tem dados', async (_source, override, visibleText) => {
     const { container } = await renderLoaded({
-      leads: [], totalLeads: 0, followups: [], recentActivities: [], recentStatusChanges: [], recentLeads: [],
+      leads: [],
+      totalLeads: 0,
+      convertedCount: 0,
+      followups: [],
+      recentActivities: [],
+      recentStatusChanges: [],
+      recentLeads: [],
       ...override,
     })
 
@@ -553,7 +587,7 @@ describe('DashboardPage estados da carga', () => {
 })
 
 describe('DashboardPage indicadores', () => {
-  it('rendera os 10 indicadores com os números calculados sobre os leads carregados', async () => {
+  it('rendera os 10 indicadores e Convertidos usa a contagem global', async () => {
     await renderLoaded()
 
     expect(indicatorValue('Total de leads')).toBe('6')
@@ -561,7 +595,7 @@ describe('DashboardPage indicadores', () => {
     expect(indicatorValue('Contatados')).toBe('1')
     expect(indicatorValue('Interessados')).toBe('1')
     expect(indicatorValue('Em negociação')).toBe('1')
-    // Nenhum lead com status 'aceitou' na carga: zero real, não número decorativo.
+    // A fixture global tem convertedCount 0: nenhum vínculo real, independente do status na janela.
     expect(indicatorValue('Convertidos')).toBe('0')
     // Elegível = needs não vazio e status elegível: ficam fora a clínica perdida e a barbearia sem needs.
     expect(indicatorValue('Oportunidades')).toBe('4')
@@ -580,7 +614,7 @@ describe('DashboardPage indicadores', () => {
 })
 
 describe('DashboardPage janela de leads', () => {
-  it('avisa o recorte dos indicadores de leads e gráficos sem esconder o total exato', async () => {
+  it('avisa o recorte dos indicadores de leads e gráficos sem esconder total exato nem Convertidos', async () => {
     const windowed = Array.from({ length: LEAD_WINDOW }, (_, index) => makeLead({
       id: `janela-${index}`,
       name: `Lead da janela ${index + 1}`,
@@ -591,15 +625,28 @@ describe('DashboardPage janela de leads', () => {
 
     const hint = screen.getByRole('status')
     expect(hint.textContent).toBe(
-      'Os indicadores de leads (exceto o total) e os gráficos são calculados sobre os 1000 leads '
+      'Os indicadores de leads (exceto o total e Convertidos) e os gráficos são calculados sobre os 1000 leads '
       + 'mais recentes; há 1042 leads no total. As contagens de follow-ups usam todos os follow-ups '
       + 'carregados. Afine a lista nas páginas de Leads e de Oportunidades.',
     )
-    // O cartão usa o count exato do banco; apenas os derivados de leads usam a janela.
+    // Total de leads e Convertidos vêm de counts exatos; apenas os demais derivados usam a janela.
     expect(indicatorValue('Total de leads')).toBe('1042')
     expect(indicatorValue('Follow-ups pendentes')).toBe('7')
     expect(indicatorValue('Follow-ups atrasados')).toBe('1')
     expect(chartRows('Leads cadastrados ao longo do tempo').at(-1)).toEqual({ month: '11/26', total: 1000 })
+  })
+
+  it('KPI Convertidos usa o total global fora da janela e o funil continua por status', async () => {
+    const windowed = Array.from({ length: LEAD_WINDOW }, (_, index) => makeLead({
+      id: `janela-convertida-${index}`,
+      name: `Lead da janela ${index + 1}`,
+      status: 'novo',
+      created_at: at(10, 15),
+    }))
+    await renderLoaded({ leads: windowed, totalLeads: 1042, convertedCount: 42 })
+
+    expect(indicatorValue('Convertidos')).toBe('42')
+    expect(chartRows('Conversão de leads').at(-1)).toEqual({ label: 'Aceitou', total: 0 })
   })
 
   it('omite o total quando a janela é o banco inteiro', async () => {
@@ -612,7 +659,7 @@ describe('DashboardPage janela de leads', () => {
     await renderLoaded({ leads: windowed, totalLeads: LEAD_WINDOW })
 
     expect(screen.getByRole('status').textContent).toBe(
-      'Os indicadores de leads (exceto o total) e os gráficos são calculados sobre os 1000 leads '
+      'Os indicadores de leads (exceto o total e Convertidos) e os gráficos são calculados sobre os 1000 leads '
       + 'mais recentes. As contagens de follow-ups usam todos os follow-ups carregados. '
       + 'Afine a lista nas páginas de Leads e de Oportunidades.',
     )

@@ -41,7 +41,7 @@ describe('computeIndicators', () => {
       followup({ id: 'f2', status: 'pendente', due_at: '2099-01-01T00:00:00Z' }),
       followup({ id: 'f3', status: 'concluido' }),
     ]
-    const i = computeIndicators(leads, followups)
+    const i = computeIndicators(leads, followups, 1)
     expect(i.totalLeads).toBe(6)
     expect(i.novos).toBe(1)
     expect(i.contatados).toBe(1)
@@ -54,13 +54,23 @@ describe('computeIndicators', () => {
     expect(i.followupsAtrasados).toBe(1)
   })
 
+  it('usa convertedCount global e não deriva o KPI do status aceitou', () => {
+    const now = Date.parse('2026-11-25T12:00:00Z')
+    const accepted = lead({ status: 'aceitou' })
+
+    expect(computeIndicators([accepted], [], 42, now).convertidos).toBe(42)
+    expect(computeIndicators([accepted], [], 0, now).convertidos).toBe(0)
+    // O funil continua sendo a régua de status, independente da contagem global de vínculos.
+    expect(conversionFunnel([accepted]).at(-1)).toEqual({ label: 'Aceitou', total: 1 })
+  })
+
   it('usa o timestamp explícito para decidir atraso sem ler o relógio interno', () => {
     const dueAt = '2020-01-01T00:00:00.000Z'
     const pending = [followup({ due_at: dueAt })]
 
-    expect(computeIndicators([], pending, Date.parse('2019-12-31T23:59:59.999Z')).followupsAtrasados).toBe(0)
-    expect(computeIndicators([], pending, Date.parse(dueAt)).followupsAtrasados).toBe(0)
-    expect(computeIndicators([], pending, Date.parse('2020-01-01T00:00:00.001Z')).followupsAtrasados).toBe(1)
+    expect(computeIndicators([], pending, 0, Date.parse('2019-12-31T23:59:59.999Z')).followupsAtrasados).toBe(0)
+    expect(computeIndicators([], pending, 0, Date.parse(dueAt)).followupsAtrasados).toBe(0)
+    expect(computeIndicators([], pending, 0, Date.parse('2020-01-01T00:00:00.001Z')).followupsAtrasados).toBe(1)
   })
 
   it('trata os três status de contato como contatados', () => {
@@ -71,7 +81,7 @@ describe('computeIndicators', () => {
       lead({ status: 'novo' }),
       lead({ status: 'ignorou' }),
     ]
-    expect(computeIndicators(leads, []).contatados).toBe(3)
+    expect(computeIndicators(leads, [], 0).contatados).toBe(3)
     const funnel = conversionFunnel(leads)
     expect(funnel.map((s) => s.label)).toEqual(['Novo', 'Contatado', 'Interessado', 'Negociando', 'Aceitou'])
     expect(funnel[1].total).toBe(3)
