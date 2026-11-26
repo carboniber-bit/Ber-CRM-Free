@@ -6,32 +6,28 @@ import { ModulePlaceholderPage } from './ModulePlaceholderPage'
 
 const modules = [
   {
-    moduleKey: 'clientes',
-    title: 'Clientes',
-    stage: 'Etapa 3',
-    description: 'Leads convertidos virão para cá na Etapa 3, com contratos e histórico completo. Nenhum lead é contado como cliente antes da conversão.',
-  },
-  {
     moduleKey: 'projetos',
     title: 'Projetos',
     stage: 'Etapa 3',
-    description: 'Acompanhamento dos serviços contratados (site, cardápio, catálogo) chega na Etapa 3.',
+    description: 'O módulo Projetos será implementado no Plano 2 da Etapa 3. Até lá, os projetos básicos permanecem na ficha do cliente.',
   },
   {
     moduleKey: 'financeiro',
     title: 'Financeiro',
-    stage: 'Etapa 4',
-    description: 'Valores contratados e recebidos, separados dos estimados, chegam na Etapa 4.',
+    stage: 'Etapa 3',
+    description: 'Valores contratados e recebidos, separados dos estimados, chegam na Etapa 3, pelo Plano 3.',
   },
   {
     moduleKey: 'relatorios',
     title: 'Relatórios',
-    stage: 'Etapa 4',
-    description: 'Relatórios de conversão, nichos e desempenho chegam na Etapa 4.',
+    stage: 'Etapa 3',
+    description: 'Relatórios de conversão, nichos e desempenho chegam na Etapa 3, no plano de finalização.',
   },
 ] as const
 
-function renderModule(moduleKey: typeof modules[number]['moduleKey']) {
+type ModuleKey = typeof modules[number]['moduleKey']
+
+function renderModule(moduleKey: ModuleKey) {
   return render(
     <MemoryRouter initialEntries={[`/${moduleKey}`]}>
       <Routes>
@@ -65,6 +61,7 @@ describe('ModulePlaceholderPage', () => {
     expect(screen.getByRole('heading', { level: 1, name: title })).toBeTruthy()
     expect(screen.getByRole('heading', { level: 3, name: `${title} — disponível na ${stage}` })).toBeTruthy()
     expect(screen.getByText(description)).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: 'Clientes' })).toBeNull()
 
     const link = screen.getByRole('link', { name: 'Voltar para Leads' })
     expect(link.getAttribute('href')).toBe('/leads')
@@ -74,11 +71,9 @@ describe('ModulePlaceholderPage', () => {
     expect(container.querySelectorAll('a button, a a, button a, a input, a select, a textarea')).toHaveLength(0)
   })
 
-  it('o CTA navega para a lista de leads', async () => {
-    renderModule('clientes')
-
+  it('o CTA de Projetos navega para a lista de leads', async () => {
+    renderModule('projetos')
     fireEvent.click(screen.getByRole('link', { name: 'Voltar para Leads' }))
-
     expect(await screen.findByText('Lista de leads')).toBeTruthy()
   })
 })

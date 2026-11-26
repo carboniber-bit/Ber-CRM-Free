@@ -1,30 +1,24 @@
 import { Link } from 'react-router-dom'
-import { ArrowLeft, BarChart3, FolderKanban, Users, Wallet, type LucideIcon } from 'lucide-react'
+import { ArrowLeft, BarChart3, FolderKanban, Wallet, type LucideIcon } from 'lucide-react'
 import { EmptyState } from '../components/ui/EmptyState'
 
 const MODULES = {
-  clientes: {
-    title: 'Clientes',
-    description: 'Leads convertidos virão para cá na Etapa 3, com contratos e histórico completo. Nenhum lead é contado como cliente antes da conversão.',
-    stage: 'Etapa 3',
-    icon: Users,
-  },
   projetos: {
     title: 'Projetos',
-    description: 'Acompanhamento dos serviços contratados (site, cardápio, catálogo) chega na Etapa 3.',
+    description: 'O módulo Projetos será implementado no Plano 2 da Etapa 3. Até lá, os projetos básicos permanecem na ficha do cliente.',
     stage: 'Etapa 3',
     icon: FolderKanban,
   },
   financeiro: {
     title: 'Financeiro',
-    description: 'Valores contratados e recebidos, separados dos estimados, chegam na Etapa 4.',
-    stage: 'Etapa 4',
+    description: 'Valores contratados e recebidos, separados dos estimados, chegam na Etapa 3, pelo Plano 3.',
+    stage: 'Etapa 3',
     icon: Wallet,
   },
   relatorios: {
     title: 'Relatórios',
-    description: 'Relatórios de conversão, nichos e desempenho chegam na Etapa 4.',
-    stage: 'Etapa 4',
+    description: 'Relatórios de conversão, nichos e desempenho chegam na Etapa 3, no plano de finalização.',
+    stage: 'Etapa 3',
     icon: BarChart3,
   },
 } as const satisfies Record<string, { title: string; description: string; stage: string; icon: LucideIcon }>

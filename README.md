@@ -2,14 +2,15 @@
 
 CRM profissional construído por etapas, 100% em planos gratuitos.
 
-**Etapa atual: 2 — Planos 1, 2 e 3 implementados.** O CRM inclui Leads / Prospecção
-(lista com filtros e paginação, ficha, checklist de presença digital, oportunidade e valores,
-timeline, follow-ups, WhatsApp manual e importação/exportação CSV), além de Oportunidades,
-Pipeline Kanban, página de Follow-ups, Dashboard com gráficos e Configurações.
-A validação final foi executada com dados reais; o teste de isolamento RLS entre dois
-usuários permanece pendente até existir uma segunda conta temporária de teste.
-Módulos de Clientes, Projetos, Financeiro e Relatórios estão preparados como placeholders
-e serão implementados nas próximas etapas.
+**Etapa atual: 3 — Plano 1 (Clientes) implementado; Projetos e Financeiro nos próximos planos.**
+O CRM inclui Leads / Prospecção, Oportunidades, Pipeline Kanban, Follow-ups, Dashboard,
+Configurações e Clientes. O módulo Clientes possui lista com filtros e paginação,
+cadastro com contrato inicial, ficha com projetos básicos, contratos e histórico combinado,
+arquivamento confirmado e conversão de leads por vínculo real.
+A aplicação das migrations `0006` (Clientes) e `0007` (link exato do Maps) e do teste SQL da Etapa 3 deve ser executada pelo usuário.
+O teste de isolamento RLS entre dois usuários permanece pendente até existir uma segunda
+conta temporária de teste. Projetos, Financeiro e Relatórios continuam como placeholders
+até seus respectivos planos.
 
 ## Stack
 
@@ -60,10 +61,15 @@ Projeto Supabase: `nuzjlizqdldhygsliwwc`
    e execute, nesta ordem, [`0001_profiles.sql`](supabase/migrations/0001_profiles.sql),
    [`0002_etapa2.sql`](supabase/migrations/0002_etapa2.sql),
    [`0003_duplicate_canonical.sql`](supabase/migrations/0003_duplicate_canonical.sql),
-   [`0004_followup_atomic.sql`](supabase/migrations/0004_followup_atomic.sql) e
-   [`0005_followup_rpc_json.sql`](supabase/migrations/0005_followup_rpc_json.sql).
+   [`0004_followup_atomic.sql`](supabase/migrations/0004_followup_atomic.sql),
+   [`0005_followup_rpc_json.sql`](supabase/migrations/0005_followup_rpc_json.sql),
+   [`0006_etapa3_clients.sql`](supabase/migrations/0006_etapa3_clients.sql) e
+   [`0007_lead_maps_url.sql`](supabase/migrations/0007_lead_maps_url.sql).
    As migrations criam as tabelas privadas, os índices, as políticas RLS e as
-   RPCs e triggers transacionais de follow-up.
+   RPCs e triggers transacionais. Depois aplique
+   [`supabase/tests/etapa3_clients.sql`](supabase/tests/etapa3_clients.sql) para a
+   validação SQL da Etapa 3. A aplicação das migrations e a execução desse teste SQL
+   são responsabilidade do usuário; o frontend não as executa automaticamente.
 4. **Crie seu usuário**: Dashboard → Authentication → Users → *Add user* →
    informe e-mail e senha (marque *Auto Confirm User*). Não há cadastro público.
 5. Acesse `/status` no app para validar tudo, depois faça login em `/login`.
@@ -85,29 +91,34 @@ src/
     ui/           Button, Input, Card, Modal, Toast, StatusBadge, PresenceBadge, ScoreBar…
     auth/         telas de autenticação
     leads/        LeadForm, LeadFiltersBar, LeadChecklist, OpportunityPanel, LeadTimeline,
-                  LeadFollowups, FollowupDialog, ContactDialog, WhatsAppDialog, CsvImportModal
+                  LeadFollowups, FollowupDialog, ContactDialog, WhatsAppDialog, CsvImportModal,
+                  ConversionDialog
+    clients/      ClientForm, ClientHistory
     pipeline/     KanbanCard e KanbanColumn
     followups/    FollowupItem
   pages/          LoginPage, DashboardPage, StatusPage, NotFoundPage, LeadsPage,
                   LeadNewPage, LeadDetailPage, LeadEditPage, OpportunitiesPage,
-                  PipelinePage, FollowUpsPage, SettingsPage, ModulePlaceholderPage
+                  PipelinePage, FollowUpsPage, SettingsPage, ClientsPage, ClientNewPage,
+                  ClientDetailPage, ModulePlaceholderPage
   layouts/        AuthLayout (login) e AppLayout (app autenticado, sidebar + drawer mobile)
   hooks/          useAuth, useToast
   services/       authService, leadService, activityService, followupService,
-                  digitalCheckService, dashboardService, settingsService
+                  digitalCheckService, dashboardService, settingsService, clientService
   lib/            supabase.ts (cliente único), db.ts, csv.ts, format.ts, leadForm.ts,
-                  opportunity.ts, whatsapp.ts, dashboard.ts, pipeline.ts (+ testes próprios)
-  types/          Profile, Lead, Activity, Followup, Check, Settings
+                  money.ts, url.ts, opportunity.ts, whatsapp.ts, dashboard.ts, pipeline.ts
+  types/          Profile, Lead, Activity, Followup, Check, Settings, Client, Contract,
+                  Project, ClientHistoryEntry, LeadClientLink
   utils/          helpers
   routes/         AppRoutes + ProtectedRoute
 supabase/
-  migrations/   0001–0005 (profiles, leads, CRM, duplicidades e follow-ups atômicos)
+  migrations/   0001–0007 (profiles, leads, CRM, duplicidades, follow-ups, clientes e Maps)
+  tests/        etapa3_clients.sql (validação SQL executada pelo usuário)
 ```
 
 Rotas protegidas: `/` (dashboard) · `/leads` · `/leads/novo` · `/leads/:id` ·
 `/leads/:id/editar` · `/oportunidades` · `/pipeline` · `/followups` · `/configuracoes` ·
-`/clientes` · `/projetos` · `/financeiro` · `/relatorios`. `/login` e `/status` são públicas;
-rotas desconhecidas exibem a página 404.
+`/clientes` · `/clientes/novo` · `/clientes/:id` · `/projetos` · `/financeiro` ·
+`/relatorios`. `/login` e `/status` são públicas; rotas desconhecidas exibem a página 404.
 
 ## Fluxo de prospecção
 
@@ -134,7 +145,8 @@ Limites atuais dos planos gratuitos:
   concorrente durante a leitura pode alterar o conjunto retornado.
 - O Pipeline carrega até 500 leads por consulta e a exportação CSV inclui até 1000
   registros da view filtrada; a interface avisa quando há mais resultados.
-- Valores estimados não são faturamento nem dinheiro recebido. Projetos e Financeiro
+- Valores estimados não são faturamento nem dinheiro recebido. A ficha do cliente mostra
+  projetos básicos e valores contratados; os módulos Projetos, Financeiro e Relatórios
   ainda não foram implementados.
 
 ## Deploy na Vercel (plano Hobby, gratuito)
@@ -155,9 +167,11 @@ Limites atuais dos planos gratuitos:
 
 | Etapa | Escopo | Status |
 | ----- | ------ | ------ |
-| 1 | Fundação, auth, Supabase, deploy | ✅ concluída |
-| 2 · Plano 1 | Fundação do CRM: vitest, migration `0002`, types, services, kit UI, sidebar | ✅ concluída |
-| 2 · Plano 2 | Leads / prospecção: lista, ficha, follow-ups, WhatsApp, CSV | ✅ concluída |
+| 1 | Fundação, auth, Supabase, deploy | concluída |
+| 2 · Plano 1 | Fundação do CRM: vitest, migration `0002`, types, services, kit UI, sidebar | concluída |
+| 2 · Plano 2 | Leads / prospecção: lista, ficha, follow-ups, WhatsApp, CSV | concluída |
 | 2 · Plano 3 | Oportunidades, pipeline Kanban, follow-ups, dashboard, configurações | implementado; validação RLS entre 2 usuários pendente |
-| 3 | Projetos | planejada |
-| 4 | Financeiro | planejada |
+| 3 · Plano 1 | Clientes, contratos, histórico e conversão de leads | implementado; migration e validação SQL pendentes de execução pelo usuário |
+| 3 · Plano 2 | Projetos | planejado |
+| 3 · Plano 3 | Financeiro | planejado |
+| 3 · Finalização | Relatórios, configurações, backup, segurança e auditoria | planejada |
