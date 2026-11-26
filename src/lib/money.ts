@@ -37,7 +37,7 @@ export function parseMoneyInput(value: string): Cents | null {
 }
 
 export function fromMoneyDecimal(value: string | number | null): Cents {
-  if (value === null || value === '') return 0
+  if (value === null) return 0
   const input = String(value)
   if (!/^\d+(?:\.\d{1,2})?$/.test(input)) {
     throw new Error('Valor monetário inválido recebido do banco.')

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  formatMoney,
   fromMoneyDecimal,
   MAX_MONEY_CENTS,
   parseMoneyInput,
@@ -26,11 +27,19 @@ describe('money', () => {
   })
 
   it('não transforma valor inválido do banco em zero', () => {
+    expect(() => fromMoneyDecimal('')).toThrow('Valor monetário inválido recebido do banco.')
     expect(() => fromMoneyDecimal('abc')).toThrow('Valor monetário inválido recebido do banco.')
     expect(() => fromMoneyDecimal('-1.00')).toThrow('Valor monetário inválido recebido do banco.')
     expect(() => fromMoneyDecimal('1000000000000.00')).toThrow('Valor monetário inválido recebido do banco.')
     expect(() => toMoneyDecimal(-1)).toThrow('Valor monetário inválido.')
     expect(() => toMoneyDecimal(Number.NaN)).toThrow('Valor monetário inválido.')
+  })
+
+  it('aceita e renderiza o limite monetário exato', () => {
+    expect(parseMoneyInput('999.999.999.999,99')).toBe(MAX_MONEY_CENTS)
+    expect(fromMoneyDecimal('999999999999.99')).toBe(MAX_MONEY_CENTS)
+    expect(toMoneyDecimal(MAX_MONEY_CENTS)).toBe('999999999999.99')
+    expect(formatMoney(MAX_MONEY_CENTS)).toBe('R$\u00a0999.999.999.999,99')
   })
 
   it('serializa e soma sem ponto flutuante', () => {
