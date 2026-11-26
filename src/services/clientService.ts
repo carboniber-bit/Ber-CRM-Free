@@ -35,6 +35,21 @@ interface ProjectRow extends Omit<Project, 'contracted_value_cents'> {
   contracted_value: string | number
 }
 
+async function fetchAllPages<T>(
+  fetchPage: (from: number, to: number) => PromiseLike<{ data: unknown; error: { message: string } | null }>,
+): Promise<T[]> {
+  const rows: T[] = []
+  const pageSize = 1000
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await fetchPage(from, from + pageSize - 1)
+    throwDbError(error)
+    const page = (data ?? []) as T[]
+    rows.push(...page)
+    if (page.length < pageSize) break
+  }
+  return rows
+}
+
 function toContract(row: ContractRow): Contract {
   const { total_value, ...contract } = row
   return { ...contract, total_value_cents: fromMoneyDecimal(total_value) }
@@ -131,32 +146,57 @@ export async function getClient(id: string): Promise<ClientDetail | null> {
   if (!data) return null
   const record = data as Client
 
-  const [contractsResult, projectsResult, activitiesResult, linksResult] = await Promise.all([
-    client.from('contracts').select('*').eq('client_id', id).order('contracted_at', { ascending: false }),
-    client.from('projects').select('*').eq('client_id', id).order('created_at', { ascending: false }),
-    client.from('client_activities').select('*').eq('client_id', id).order('created_at', { ascending: false }),
-    client.from('lead_client_links').select('*').eq('client_id', id).order('converted_at', { ascending: false }),
+  const [contracts, projects, activities, links] = await Promise.all([
+    fetchAllPages<ContractRow>((from, to) => client.from('contracts').select('*')
+      .eq('client_id', id)
+      .order('contracted_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to)),
+    fetchAllPages<ProjectRow>((from, to) => client.from('projects').select('*')
+      .eq('client_id', id)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to)),
+    fetchAllPages<ClientActivity>((from, to) => client.from('client_activities').select('*')
+      .eq('client_id', id)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to)),
+    fetchAllPages<LeadClientLink>((from, to) => client.from('lead_client_links').select('*')
+      .eq('client_id', id)
+      .order('converted_at', { ascending: false })
+      .order('id', { ascending: true })
+      .range(from, to)),
   ])
-  throwDbError(contractsResult.error)
-  throwDbError(projectsResult.error)
-  throwDbError(activitiesResult.error)
-  throwDbError(linksResult.error)
-
-  const contracts = (contractsResult.data ?? []) as ContractRow[]
-  const projects = (projectsResult.data ?? []) as ProjectRow[]
-  const activities = (activitiesResult.data ?? []) as ClientActivity[]
-  const links = (linksResult.data ?? []) as LeadClientLink[]
   const linkedLeads: ClientDetail['linkedLeads'] = []
   const leadActivities: Activity[] = []
+  const leadChunkSize = 100
 
-  for (const link of links) {
-    const leadResult = await client.from('leads').select('id,name').eq('id', link.lead_id).maybeSingle()
+  for (let index = 0; index < links.length; index += leadChunkSize) {
+    const linkChunk = links.slice(index, index + leadChunkSize)
+    const leadIds = linkChunk.map((link) => link.lead_id)
+    const leadResult = await client.from('leads').select('id,name').in('id', leadIds)
     throwDbError(leadResult.error)
-    if (!leadResult.data) continue
-    linkedLeads.push({ leadId: link.lead_id, leadName: leadResult.data.name })
-    const activityResult = await client.from('lead_activities').select('*').eq('lead_id', link.lead_id).order('created_at', { ascending: false })
-    throwDbError(activityResult.error)
-    leadActivities.push(...((activityResult.data ?? []) as Activity[]))
+    const leadNames = new Map(
+      ((leadResult.data ?? []) as Array<{ id: string; name: string }>)
+        .map((lead) => [lead.id, lead.name]),
+    )
+    const namedLeadIds: string[] = []
+    for (const link of linkChunk) {
+      const leadName = leadNames.get(link.lead_id)
+      if (leadName === undefined) continue
+      linkedLeads.push({ leadId: link.lead_id, leadName })
+      namedLeadIds.push(link.lead_id)
+    }
+    if (namedLeadIds.length === 0) continue
+    const chunkActivities = await fetchAllPages<Activity>((from, to) => (
+      client.from('lead_activities').select('*')
+        .in('lead_id', namedLeadIds)
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: true })
+        .range(from, to)
+    ))
+    leadActivities.push(...chunkActivities)
   }
 
   const leadNames = new Map(linkedLeads.map((lead) => [lead.leadId, lead.leadName]))
@@ -231,8 +271,10 @@ export async function findClientDuplicateCandidates(
     if (value) identifierFilters.add(`${column}.eq.${JSON.stringify(value)}`)
   }
   addIdentifierFilter('cnpj_digits', cnpj)
-  addIdentifierFilter('phone_canonical', phone)
-  addIdentifierFilter('whatsapp_canonical', whatsapp)
+  for (const identifier of [phone, whatsapp]) {
+    addIdentifierFilter('phone_canonical', identifier)
+    addIdentifierFilter('whatsapp_canonical', identifier)
+  }
 
   const merge = (rows: Client[]) => {
     for (const row of rows) if (row.id !== excludeId) candidates.set(row.id, row)

@@ -37,6 +37,7 @@ interface QueryCall {
   select: string
   selectOptions: SelectOptions | null
   eq: Array<[string, unknown]>
+  inFilters: Array<[string, unknown[]]>
   or: string | null
   ilike: Array<[string, string]>
   order: Array<[string, { ascending: boolean }]>
@@ -77,6 +78,7 @@ class FakeQuery implements PromiseLike<QueryResult> {
   private selectColumns = ''
   private selectOptions: SelectOptions | null = null
   private readonly eqFilters: Array<[string, unknown]> = []
+  private readonly inFilters: Array<[string, unknown[]]> = []
   private orFilter: string | null = null
   private readonly ilikeFilters: Array<[string, string]> = []
   private readonly orderCalls: Array<[string, { ascending: boolean }]> = []
@@ -100,6 +102,11 @@ class FakeQuery implements PromiseLike<QueryResult> {
 
   eq(column: string, value: unknown): this {
     this.eqFilters.push([column, value])
+    return this
+  }
+
+  in(column: string, values: readonly unknown[]): this {
+    this.inFilters.push([column, [...values]])
     return this
   }
 
@@ -162,6 +169,7 @@ class FakeQuery implements PromiseLike<QueryResult> {
       select: this.selectColumns,
       selectOptions: this.selectOptions,
       eq: [...this.eqFilters],
+      inFilters: [...this.inFilters],
       or: this.orFilter,
       ilike: [...this.ilikeFilters],
       order: [...this.orderCalls],
@@ -342,6 +350,21 @@ function makeInitialContract(overrides: Partial<InitialContractInput> = {}): Ini
   }
 }
 
+function makeTwoPages<T>(makeRow: (index: number) => T): [T[], T[]] {
+  return [
+    Array.from({ length: 1000 }, (_, index) => makeRow(index)),
+    [makeRow(1000)],
+  ]
+}
+
+function chunkRows<T>(rows: T[], size = 100): T[][] {
+  const chunks: T[][] = []
+  for (let index = 0; index < rows.length; index += size) {
+    chunks.push(rows.slice(index, index + size))
+  }
+  return chunks
+}
+
 let supabase: FakeSupabase
 
 beforeEach(() => {
@@ -406,6 +429,7 @@ describe('clientService', () => {
       select: '*',
       selectOptions: { count: 'exact' },
       eq: [['status', 'active']],
+      inFilters: [],
       or: 'name.ilike."%Empresa%",responsible_name.ilike."%Empresa%",email.ilike."%Empresa%"',
       ilike: [['city', '%São Paulo%']],
       order: [['name', { ascending: true }], ['id', { ascending: true }]],
@@ -480,6 +504,191 @@ describe('clientService', () => {
     expect(detail?.projects[0]).not.toHaveProperty('contracted_value')
   })
 
+  it('getClient pagina contratos além do limite do PostgREST', async () => {
+    const client = makeClient()
+    const [firstPage, lastPage] = makeTwoPages((index) => makeContractRow({
+      id: `contract-${String(index).padStart(4, '0')}`,
+    }))
+    const contracts = [...firstPage, ...lastPage]
+    supabase.queue('clients', { data: client, error: null })
+    supabase.queue('contracts', { data: firstPage, error: null })
+    supabase.queue('contracts', { data: lastPage, error: null })
+    supabase.queue('projects', { data: [], error: null })
+    supabase.queue('client_activities', { data: [], error: null })
+    supabase.queue('lead_client_links', { data: [], error: null })
+
+    const detail = await getClient(client.id)
+
+    expect(detail?.contracts).toHaveLength(1001)
+    expect(detail?.contracts.map((contract) => contract.id)).toEqual(contracts.map((contract) => contract.id))
+    const queries = supabase.calls.filter((call) => call.table === 'contracts')
+    expect(queries.map((call) => call.range)).toEqual([[0, 999], [1000, 1999]])
+    const expectedOrder = [['contracted_at', { ascending: false }], ['id', { ascending: true }]] as const
+    expect(queries.map((call) => call.order)).toEqual([expectedOrder, expectedOrder])
+  })
+
+  it('getClient pagina projetos além do limite do PostgREST', async () => {
+    const client = makeClient()
+    const [firstPage, lastPage] = makeTwoPages((index) => makeProjectRow({
+      id: `project-${String(index).padStart(4, '0')}`,
+    }))
+    const projects = [...firstPage, ...lastPage]
+    supabase.queue('clients', { data: client, error: null })
+    supabase.queue('contracts', { data: [], error: null })
+    supabase.queue('projects', { data: firstPage, error: null })
+    supabase.queue('projects', { data: lastPage, error: null })
+    supabase.queue('client_activities', { data: [], error: null })
+    supabase.queue('lead_client_links', { data: [], error: null })
+
+    const detail = await getClient(client.id)
+
+    expect(detail?.projects).toHaveLength(1001)
+    expect(detail?.projects.map((project) => project.id)).toEqual(projects.map((project) => project.id))
+    const queries = supabase.calls.filter((call) => call.table === 'projects')
+    expect(queries.map((call) => call.range)).toEqual([[0, 999], [1000, 1999]])
+    const expectedOrder = [['created_at', { ascending: false }], ['id', { ascending: true }]] as const
+    expect(queries.map((call) => call.order)).toEqual([expectedOrder, expectedOrder])
+  })
+
+  it('getClient pagina atividades do cliente além do limite do PostgREST', async () => {
+    const client = makeClient()
+    const [firstPage, lastPage] = makeTwoPages((index) => makeClientActivity({
+      id: `client-activity-${String(index).padStart(4, '0')}`,
+    }))
+    const activities = [...firstPage, ...lastPage]
+    supabase.queue('clients', { data: client, error: null })
+    supabase.queue('contracts', { data: [], error: null })
+    supabase.queue('projects', { data: [], error: null })
+    supabase.queue('client_activities', { data: firstPage, error: null })
+    supabase.queue('client_activities', { data: lastPage, error: null })
+    supabase.queue('lead_client_links', { data: [], error: null })
+
+    const detail = await getClient(client.id)
+
+    expect(detail?.activities).toHaveLength(1001)
+    expect(detail?.activities.map((activity) => activity.id)).toEqual(activities.map((activity) => activity.id))
+    const queries = supabase.calls.filter((call) => call.table === 'client_activities')
+    expect(queries.map((call) => call.range)).toEqual([[0, 999], [1000, 1999]])
+    const expectedOrder = [['created_at', { ascending: false }], ['id', { ascending: true }]] as const
+    expect(queries.map((call) => call.order)).toEqual([expectedOrder, expectedOrder])
+  })
+
+  it('getClient pagina vínculos de leads além do limite do PostgREST', async () => {
+    const client = makeClient()
+    const [firstPage, lastPage] = makeTwoPages((index) => makeLink({
+      id: `link-${String(index).padStart(4, '0')}`,
+      lead_id: `lead-${index}`,
+    }))
+    const links = [...firstPage, ...lastPage]
+    supabase.queue('clients', { data: client, error: null })
+    supabase.queue('contracts', { data: [], error: null })
+    supabase.queue('projects', { data: [], error: null })
+    supabase.queue('client_activities', { data: [], error: null })
+    supabase.queue('lead_client_links', { data: firstPage, error: null })
+    supabase.queue('lead_client_links', { data: lastPage, error: null })
+    for (const chunk of chunkRows(links)) {
+      supabase.queue('leads', {
+        data: chunk.map((link) => ({ id: link.lead_id, name: `Lead ${link.lead_id}` })),
+        error: null,
+      })
+    }
+
+    const detail = await getClient(client.id)
+
+    const queries = supabase.calls.filter((call) => call.table === 'lead_client_links')
+    expect(queries.map((call) => call.range)).toEqual([[0, 999], [1000, 1999]])
+    const expectedOrder = [['converted_at', { ascending: false }], ['id', { ascending: true }]] as const
+    expect(queries.map((call) => call.order)).toEqual([expectedOrder, expectedOrder])
+    expect(detail?.linkedLeads).toEqual(links.map((link) => ({
+      leadId: link.lead_id,
+      leadName: `Lead ${link.lead_id}`,
+    })))
+  })
+
+  it('getClient pagina atividades dos leads e preserva o histórico combinado', async () => {
+    const client = makeClient()
+    const [firstPage, lastPage] = makeTwoPages((index) => makeLeadActivity({
+      id: `lead-activity-${String(index).padStart(4, '0')}`,
+      created_at: new Date(Date.UTC(2026, 10, 1, 0, 0, index)).toISOString(),
+    }))
+    const activities = [...firstPage, ...lastPage]
+    supabase.queue('clients', { data: client, error: null })
+    supabase.queue('contracts', { data: [], error: null })
+    supabase.queue('projects', { data: [], error: null })
+    supabase.queue('client_activities', { data: [], error: null })
+    supabase.queue('lead_client_links', { data: [makeLink()], error: null })
+    supabase.queue('leads', { data: [{ id: 'lead-1', name: 'Lead Um' }], error: null })
+    supabase.queue('lead_activities', { data: firstPage, error: null })
+    supabase.queue('lead_activities', { data: lastPage, error: null })
+
+    const detail = await getClient(client.id)
+
+    expect(detail?.history).toHaveLength(1001)
+    expect(detail?.history.map((entry) => entry.id)).toEqual(
+      [...activities].reverse().map((activity) => activity.id),
+    )
+    expect(detail?.history.every((entry) => entry.source === 'lead' && entry.leadName === 'Lead Um')).toBe(true)
+    const queries = supabase.calls.filter((call) => call.table === 'lead_activities')
+    expect(queries.map((call) => call.range)).toEqual([[0, 999], [1000, 1999]])
+    const expectedOrder = [['created_at', { ascending: false }], ['id', { ascending: true }]] as const
+    expect(queries.map((call) => call.order)).toEqual([expectedOrder, expectedOrder])
+  })
+
+  it('getClient agrupa nomes e atividades dos leads em consultas in de até 100 IDs', async () => {
+    const client = makeClient()
+    const leadIds = Array.from({ length: 101 }, (_, index) => `lead-${index}`)
+    const links = leadIds.map((leadId, index) => makeLink({
+      id: `link-${String(index).padStart(4, '0')}`,
+      lead_id: leadId,
+    }))
+    const firstChunk = leadIds.slice(0, 100)
+    const secondChunk = leadIds.slice(100)
+    supabase.queue('clients', { data: client, error: null })
+    supabase.queue('contracts', { data: [], error: null })
+    supabase.queue('projects', { data: [], error: null })
+    supabase.queue('client_activities', { data: [], error: null })
+    supabase.queue('lead_client_links', { data: links, error: null })
+    supabase.queue('leads', {
+      data: [...firstChunk].reverse().map((leadId) => ({ id: leadId, name: `Lead ${leadId}` })),
+      error: null,
+    })
+    supabase.queue('leads', {
+      data: secondChunk.map((leadId) => ({ id: leadId, name: `Lead ${leadId}` })),
+      error: null,
+    })
+    supabase.queue('lead_activities', {
+      data: [makeLeadActivity({ id: 'activity-first', lead_id: firstChunk[0] })],
+      error: null,
+    })
+    supabase.queue('lead_activities', {
+      data: [makeLeadActivity({ id: 'activity-second', lead_id: secondChunk[0] })],
+      error: null,
+    })
+
+    const detail = await getClient(client.id)
+
+    const leadQueries = supabase.calls.filter((call) => call.table === 'leads')
+    expect(leadQueries).toHaveLength(2)
+    expect(leadQueries.map((call) => call.inFilters)).toEqual([
+      [['id', firstChunk]],
+      [['id', secondChunk]],
+    ])
+    expect(leadQueries.every((call) => call.eq.length === 0 && !call.maybeSingle)).toBe(true)
+    const activityQueries = supabase.calls.filter((call) => call.table === 'lead_activities')
+    expect(activityQueries).toHaveLength(2)
+    expect(activityQueries.map((call) => call.inFilters)).toEqual([
+      [['lead_id', firstChunk]],
+      [['lead_id', secondChunk]],
+    ])
+    expect(activityQueries.every((call) => call.eq.length === 0)).toBe(true)
+    expect(detail?.linkedLeads).toEqual(leadIds.map((leadId) => ({
+      leadId,
+      leadName: `Lead ${leadId}`,
+    })))
+    expect(detail?.history.map((entry) => entry.id).sort()).toEqual(['activity-first', 'activity-second'])
+    expect(supabase.mutations).toEqual([])
+  })
+
   it('getClient combina eventos do cliente e dos leads sem copiar no banco', async () => {
     const client = makeClient()
     const firstLink = makeLink()
@@ -497,33 +706,44 @@ describe('clientService', () => {
       error: null,
     })
     supabase.queue('lead_client_links', { data: [firstLink, secondLink], error: null })
-    supabase.queue('leads', { data: { id: 'lead-1', name: 'Lead Um' }, error: null })
-    supabase.queue('leads', { data: { id: 'lead-2', name: 'Lead Dois' }, error: null })
-    supabase.queue('lead_activities', {
-      data: [makeLeadActivity({ id: 'lead-old', created_at: '2026-11-24T12:00:00Z' })],
+    supabase.queue('leads', {
+      data: [
+        { id: 'lead-1', name: 'Lead Um' },
+        { id: 'lead-2', name: 'Lead Dois' },
+      ],
       error: null,
     })
     supabase.queue('lead_activities', {
-      data: [makeLeadActivity({
-        id: 'lead-new',
-        lead_id: 'lead-2',
-        description: 'Resposta do lead 2',
-        created_at: '2026-11-25T13:00:00Z',
-      })],
+      data: [
+        makeLeadActivity({ id: 'lead-old', created_at: '2026-11-24T12:00:00Z' }),
+        makeLeadActivity({
+          id: 'lead-new',
+          lead_id: 'lead-2',
+          description: 'Resposta do lead 2',
+          created_at: '2026-11-25T13:00:00Z',
+        }),
+      ],
       error: null,
     })
 
     const detail = await getClient(client.id)
 
+    const leadQueries = supabase.calls.filter((call) => call.table === 'leads')
+    expect(leadQueries).toHaveLength(1)
+    expect(leadQueries[0].inFilters).toEqual([['id', ['lead-1', 'lead-2']]])
+    expect(leadQueries[0].maybeSingle).toBe(false)
     const activityQueries = supabase.calls.filter((call) => call.table === 'lead_activities')
-    expect(activityQueries).toHaveLength(2)
-    expect(activityQueries.map((call) => call.eq)).toEqual([
-      [['lead_id', 'lead-1']],
-      [['lead_id', 'lead-2']],
+    expect(activityQueries).toHaveLength(1)
+    expect(activityQueries.map((call) => call.eq)).toEqual([[]])
+    expect(activityQueries.map((call) => call.inFilters)).toEqual([
+      [['lead_id', ['lead-1', 'lead-2']]],
     ])
     expect(activityQueries.every((call) => call.select === '*')).toBe(true)
     expect(activityQueries.every((call) => (
-      JSON.stringify(call.order) === JSON.stringify([['created_at', { ascending: false }]])
+      JSON.stringify(call.order) === JSON.stringify([
+        ['created_at', { ascending: false }],
+        ['id', { ascending: true }],
+      ])
     ))).toBe(true)
     expect(detail?.linkedLeads).toEqual([
       { leadId: 'lead-1', leadName: 'Lead Um' },
@@ -561,7 +781,7 @@ describe('clientService', () => {
       error: null,
     })
     supabase.queue('lead_client_links', { data: [makeLink()], error: null })
-    supabase.queue('leads', { data: { id: 'lead-1', name: 'Lead Um' }, error: null })
+    supabase.queue('leads', { data: [{ id: 'lead-1', name: 'Lead Um' }], error: null })
     supabase.queue('lead_activities', {
       data: [
         makeLeadActivity({ id: 'conversao-lead', type: 'conversao', description: 'Lead convertido.' }),
@@ -707,6 +927,40 @@ describe('clientService', () => {
     expect(supabase.calls[0].ilike).toEqual([])
     expect(supabase.calls[0].order).toEqual([['id', { ascending: true }]])
     expect(supabase.calls[0].limit).toBe(100)
+  })
+
+  it('findClientDuplicateCandidates encontra WhatsApp canônico quando informado como telefone', async () => {
+    const existing = makeClient({
+      phone_canonical: null,
+      whatsapp_canonical: '5511999999999',
+    })
+    supabase.queue('clients', { data: [existing], error: null })
+
+    const result = await findClientDuplicateCandidates({
+      name: '', city: null, phone: '(11) 99999-9999', whatsapp: null, cnpj: null,
+    })
+
+    expect(result).toEqual([existing])
+    expect(supabase.calls[0].or).toBe(
+      'phone_canonical.eq."5511999999999",whatsapp_canonical.eq."5511999999999"',
+    )
+  })
+
+  it('findClientDuplicateCandidates encontra telefone canônico quando informado como WhatsApp', async () => {
+    const existing = makeClient({
+      phone_canonical: '5511999999999',
+      whatsapp_canonical: null,
+    })
+    supabase.queue('clients', { data: [existing], error: null })
+
+    const result = await findClientDuplicateCandidates({
+      name: '', city: null, phone: null, whatsapp: '(11) 99999-9999', cnpj: null,
+    })
+
+    expect(result).toEqual([existing])
+    expect(supabase.calls[0].or).toBe(
+      'phone_canonical.eq."5511999999999",whatsapp_canonical.eq."5511999999999"',
+    )
   })
 
   it('findClientDuplicateCandidates não usa OR com nome digitado', async () => {
