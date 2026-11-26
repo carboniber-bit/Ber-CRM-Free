@@ -1,6 +1,6 @@
 # Etapa 3 — Clientes, Projetos, Produção e Financeiro (Design)
 
-Data: 2026-11-25 · Status: aprovado em conversa, aguardando revisão do documento
+Data: 2026-11-25 · Status: aprovado pelo usuário em 2026-11-25
 Projeto: Ber CRM Free · Repo: carboniber-bit/Ber-CRM-Free
 
 ## 1. Objetivo
@@ -124,6 +124,7 @@ Fonte única da receita contratada.
 - `owner_id uuid`.
 - `client_id uuid not null`.
 - `source_link_id uuid unique`: quando criado por conversão; nulo em contrato manual.
+- `creation_key uuid unique`: identificação idempotente do contrato inicial criado junto de um cliente manual; usa a mesma `creation_key` do cliente.
 - `service text not null`.
 - `total_value numeric(14,2) not null check (total_value >= 0)`.
 - `contracted_at date not null`.
@@ -233,7 +234,7 @@ Histórico unificado do cliente e do projeto.
 - `created_by uuid default auth.uid()`.
 - `created_at timestamptz not null default now()`.
 
-A ficha do cliente combina essas atividades com as timelines dos leads vinculados, sem copiar eventos antigos.
+A tabela é criada já na migration `0006`, porque a conversão precisa gravar o evento `conversion` na mesma transação. A migration `0007` acrescenta índices, triggers e eventos de projeto. A ficha do cliente combina essas atividades com as timelines dos leads vinculados, sem copiar eventos antigos.
 
 ### 5.8 `expense_categories`
 
@@ -336,15 +337,16 @@ Regras:
 ## 6. RLS e integridade
 
 - RLS habilitado em todas as tabelas privadas.
-- Policies de SELECT/INSERT/UPDATE para `owner_id = auth.uid()`; DELETE apenas onde a exclusão é segura e explicitamente necessária.
+- Policies de SELECT para `owner_id = auth.uid()`; INSERT/UPDATE/DELETE diretos apenas onde a exclusão ou edição é segura e explicitamente necessária.
 - Nenhum grant para `anon`; grants explícitos para `authenticated`.
-- Tabelas e alocações financeiras concedem somente SELECT ao cliente; INSERT/UPDATE/DELETE financeiros são revogados e ocorrem exclusivamente por RPCs `security definer` com `search_path = ''`, nomes totalmente qualificados, validação explícita de `auth.uid()`/`owner_id`, `revoke all from public` e `grant execute` somente a `authenticated`.
-- `client_activities` também é somente SELECT para o cliente; eventos são gravados por RPCs/triggers com as mesmas proteções de `security definer`.
+- Na fundação, `clients`, `lead_client_links`, `contracts`, `projects` e `client_activities` concedem somente SELECT ao cliente; as escritas fundamentais ocorrem por RPCs `security definer` controladas, para que cliente sem contrato, vínculo forjado ou histórico adulterado não sejam criados por REST direto.
+- Tabelas e alocações financeiras também concedem somente SELECT ao cliente; INSERT/UPDATE/DELETE financeiros são revogados e ocorrem exclusivamente por RPCs `security definer` com `search_path = ''`, nomes totalmente qualificados, validação explícita de `auth.uid()`/`owner_id`, `revoke all from public` e `grant execute` somente a `authenticated`.
+- `client_activities` continua somente SELECT para o cliente; eventos são gravados pelas RPCs de cliente/projeto com as mesmas proteções de `security definer`.
 - FKs compostas por `owner_id` ligam filhos a pais do mesmo usuário.
 - Chaves únicas de suporte: `unique (owner_id, id)` em `leads`, `clients`, `lead_client_links`, `contracts`, `projects` e `expense_categories`; `unique (owner_id, client_id, id)` em `contracts` e `projects`; `unique (owner_id, contract_id, id)` em `contract_installments` e `financial_payments`.
 - `source_link_id` usa FK composta `(owner_id, source_link_id)` para `lead_client_links`; `installment_id` e `related_payment_id` usam FKs compostas com `contract_id`.
 - Índices por proprietário, status, datas, cliente/projeto/contrato e vencimentos.
-- RPCs de leitura e operações ordinárias usam `security invoker`; RPCs com escrita financeira exclusiva usam `security definer` controlado conforme o §6. Todas usam `search_path = ''`, locks explícitos quando necessário e retorno JSONB.
+- RPCs de leitura e operações ordinárias sem privilégio elevado usam `security invoker`; as escritas fundamentais de cliente/projeto e as escritas financeiras exclusivas usam `security definer` controlado conforme o §6. Todas usam `search_path = ''`, locks explícitos quando necessário e retorno JSONB.
 - `service_role` não é usado no frontend nem nesta etapa.
 
 ## 7. Conversão idempotente
@@ -383,7 +385,9 @@ Proteções:
 ## 8. Cadastro manual e edição de cliente
 
 - `create_client` recebe `creation_key`, cria cliente + contrato inicial atomicamente e retorna o existente se a chave for repetida.
+- Valores monetários são validados como decimal não negativo com no máximo duas casas e limite de `999999999999.99` antes do cast para `numeric(14,2)`; arredondamento silencioso e estouro são rejeitados.
 - `update_client` atualiza cliente + contrato inicial atomicamente; se o contrato já possuir parcelas/pagamentos, o valor é ajustado somente via `adjust_contract`.
+- Editar um cliente já inativo sem reativá-lo preserva seu `archived_at` original; reativar limpa esse campo e arquivar define a data quando ainda não houver uma.
 - CNPJ duplicado bloqueia e informa qual cliente já existe.
 - Demais suspeitas de duplicidade são avisos não bloqueantes.
 - Após a conversão, `contracted_value` e `received_value` do lead ficam somente leitura; o contrato é a fonte financeira.
@@ -461,13 +465,16 @@ Novos serviços seguirão o padrão de `leadService`/`followupService`: Supabase
 - Respostas obsoletas são descartadas por flag de componente ativo e versão de mutação.
 - Kanban de projetos reutiliza o padrão de fila por ID já validado no Pipeline de leads.
 - RPCs são usados em toda operação multi-registro ou que altere saldo financeiro.
+- Ordem de locks: RPCs de cliente adquirem `:clients` antes de linhas; RPCs que alteram contrato ou alocação adquirem `:contract:<id>` antes de linhas; pagamentos adquirem `:payment:<key>` antes de linhas. `deliver_project` não disputa contrato e trava somente o projeto. Se uma transação precisar de várias advisories, a ordem é lexicográfica. Nunca segurar uma linha para esperar uma advisory.
+- A escrita direta de tarefas é a exceção controlada: uma trigger `BEFORE STATEMENT` adquire `:project_tasks:<owner_id>` antes de qualquer linha. A RPC de reordenação adquire a mesma advisory e depois bloqueia projeto e tarefas por `id`, antes de qualquer update, evitando ciclos com INSERT, UPDATE e DELETE diretos.
+- Testes de concorrência usam conexões independentes e confirmam os locks antes dos probes; deadlock `40P01` é falha, não resultado aceitável.
 - Erros de banco são traduzidos para mensagens compreensíveis, sem expor detalhes internos.
 - Falha de refresh mantém o último dado válido e exibe opção de tentar novamente.
 
 ## 14. Migrations e ordem de entrega
 
-- `0006_etapa3_clients.sql`: clientes, vínculos, contratos, projetos básicos, RPCs de cliente/conversão, RLS, ajuste de `lead_activities` e ampliação das colunas monetárias de `leads` para `numeric(14,2)`.
-- `0007_etapa3_projects.sql`: tarefas, revisões, histórico do cliente, índices, triggers e regras de progresso/status.
+- `0006_etapa3_clients.sql`: clientes, vínculos, contratos (incluindo `creation_key`), projetos básicos, `client_activities`, RPCs de cliente/conversão, RLS, ajuste de `lead_activities` e ampliação das colunas monetárias de `leads` para `numeric(14,2)`.
+- `0007_etapa3_projects.sql`: tarefas, revisões, índices e triggers adicionais de `client_activities`, RPCs de projeto e regras de progresso/status.
 - `0008_etapa3_finance.sql`: categorias, parcelas, pagamentos, despesas, RPCs financeiros e agregações.
 
 As migrations são aditivas e não apagam dados da Etapa 2. A aplicação no Supabase será feita pelo usuário no SQL Editor e só será dada como concluída após confirmação/validação real.
