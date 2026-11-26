@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-25-etapa3-design.md`
 
-**Depends on:** `docs/superpowers/plans/2026-11-25-etapa3-plano1-clientes.md` completed, including `src/types/project.ts`, `src/types/contract.ts`, `src/lib/money.ts`, `clientService` and migration `0006`.
+**Depends on:** `docs/superpowers/plans/2026-11-25-etapa3-plano1-clientes.md` completed, including `src/types/project.ts`, `src/types/contract.ts`, `src/lib/money.ts`, `clientService` and migrations `0006`–`0007`.
 
 ## Global Constraints
 
@@ -30,6 +30,17 @@
 - TDD RED/GREEN em cada comportamento novo; commits pequenos e frequentes.
 - Não afirmar que migration, RLS entre dois usuários ou validação autenticada foi executada sem evidência real.
 - A Etapa 4 não começa sem autorização explícita.
+
+## Rulings da auditoria de 2026-11-26
+
+- Ações de criação ficam somente nos cabeçalhos de tarefas e revisões; `EmptyState` é informativo para evitar comandos duplicados com o mesmo nome acessível.
+- A fixture de edição representa cliente e contrato atuais disponíveis; o teste aguarda o formulário antes de interagir, enquanto o bloqueio por contrato indisponível continua sendo testado separadamente.
+- Clientes elegíveis são todos exceto `inactive`; contratos elegíveis continuam sendo somente `active`.
+- Campos de entrega/arquivos preservam o texto digitado com `type="text"` e `inputMode="url"`; a validação HTTP(S) explícita rejeita whitespace antes da RPC.
+- O merge otimista do Kanban preserva `client_name` porque a RPC não retorna essa relação derivada.
+- Cards, lista e Kanban recebem os mesmos filtros; o board mantém o limite de 500 e sinaliza resultados parciais.
+- Revisão aprovada é imutável no banco, inclusive descrição, responsável, notas, projeto e proprietário, além do status.
+- A sequência documentada de migrations inclui `0007_lead_maps_url.sql` entre a fundação de clientes e a migration de projetos.
 
 ## Convenções de teste
 
@@ -528,8 +539,17 @@ begin
     if old.project_id is distinct from new.project_id then
       raise exception 'A revisão não pode ser movida para outro projeto.' using errcode = '42501';
     end if;
-    if old.status = 'approved' and new.status is distinct from old.status then
-      raise exception 'Uma revisão aprovada não pode voltar para outro status.' using errcode = '23514';
+    if old.status = 'approved' then
+      if new.status is distinct from old.status then
+        raise exception 'Uma revisão aprovada não pode voltar para outro status.' using errcode = '23514';
+      end if;
+      if new.description is distinct from old.description
+        or new.responsible_name is distinct from old.responsible_name
+        or new.notes is distinct from old.notes
+        or new.project_id is distinct from old.project_id
+        or new.owner_id is distinct from old.owner_id then
+        raise exception 'Uma revisão aprovada não pode ser alterada.' using errcode = '23514';
+      end if;
     end if;
     if old.status is not distinct from new.status then
       new.completed_at := old.completed_at;
@@ -951,6 +971,24 @@ begin
   exception when check_violation then
     if sqlerrm <> 'Uma revisão aprovada não pode voltar para outro status.' then raise; end if;
   end;
+
+  do $$
+  declare
+    v_original_description text;
+  begin
+    select description into v_original_description from public.project_revisions where id = v_revision_id;
+    begin
+      update public.project_revisions set description = 'Conteúdo sobrescrito após aprovação'
+        where id = v_revision_id;
+      raise exception 'Revisão aprovada permitiu alteração de descrição.';
+    exception when check_violation then
+      if sqlerrm <> 'Uma revisão aprovada não pode ser alterada.' then raise; end if;
+    end;
+    if (select description from public.project_revisions where id = v_revision_id) is distinct from v_original_description then
+      raise exception 'Trigger não bloqueou alteração de descrição de revisão aprovada.';
+    end if;
+  end;
+  $$;
 
   insert into public.project_tasks (owner_id, project_id, title, status, completed_at)
   values (v_owner, v_project_id, 'Tarefa concluída pelo banco', 'completed', '2000-01-01T00:00:00Z')
@@ -2156,7 +2194,7 @@ git commit -m "feat: adicionar servicos de tarefas e revisoes"
 - Consumes: `Project`, `ProjectMoveStatus`, `ProjectDetail`, `ProjectListItem`, `ProjectFilters`, `ProjectSort`, `ProjectListResult`, `ProjectBoardResult`, `ProjectFormOptions`, `ProjectWrite`, `DeliveryInput`, `calculateProjectProgress`, money helpers.
 - Produces:
   - `listProjects(filters, sort, page, pageSize = 24): Promise<ProjectListResult>`
-  - `listProjectsForBoard(): Promise<ProjectBoardResult>`
+  - `listProjectsForBoard(filters: ProjectFilters): Promise<ProjectBoardResult>`
   - `getProject(id): Promise<ProjectDetail | null>`
   - `createProject(input): Promise<Project>`, `updateProject(id,input): Promise<Project>`, `setProjectStatus(id,status: ProjectMoveStatus): Promise<Project>`, `deliverProject(id,input): Promise<Project>`
   - `listProjectFormOptions(): Promise<ProjectFormOptions>`
@@ -2286,20 +2324,46 @@ describe('projectService', () => {
   it('listProjectsForBoard marks 500 rows as partial', async () => {
     const rows = Array.from({ length: 500 }, (_, index) => ({ ...projectRow, id: `project-${index}` }))
     const projects = {
-      select: vi.fn(), is: vi.fn(), neq: vi.fn(), order: vi.fn(), limit: vi.fn(),
+      select: vi.fn(), is: vi.fn(), neq: vi.fn(), or: vi.fn(), eq: vi.fn(), gte: vi.fn(), lte: vi.fn(),
+      order: vi.fn(), limit: vi.fn(),
     }
-    for (const method of [projects.select, projects.is, projects.neq, projects.order]) {
+    for (const method of [projects.select, projects.is, projects.neq, projects.or, projects.eq, projects.gte, projects.lte, projects.order]) {
       method.mockReturnValue(projects)
     }
     projects.limit.mockResolvedValue({ data: rows, error: null })
     const tasks = tasksQuery([])
     from.mockImplementation((table: string) => table === 'projects' ? projects : tasks)
-    const result = await listProjectsForBoard()
+    const result = await listProjectsForBoard({})
     expect(projects.is).toHaveBeenCalledWith('archived_at', null)
     expect(projects.neq).toHaveBeenCalledWith('status', 'cancelled')
     expect(projects.limit).toHaveBeenCalledWith(500)
     expect(result.partial).toBe(true)
     expect(result.projects).toHaveLength(500)
+  })
+
+  it('listProjectsForBoard applies the same search, client, status, priority and deadline filters', async () => {
+    const projects = {
+      select: vi.fn(), is: vi.fn(), neq: vi.fn(), or: vi.fn(), eq: vi.fn(), gte: vi.fn(), lte: vi.fn(),
+      order: vi.fn(), limit: vi.fn(),
+    }
+    for (const method of [projects.select, projects.is, projects.neq, projects.or, projects.eq, projects.gte, projects.lte, projects.order]) {
+      method.mockReturnValue(projects)
+    }
+    projects.limit.mockResolvedValue({ data: [], error: null })
+    from.mockImplementation((table: string) => table === 'projects' ? projects : tasksQuery([]))
+    await listProjectsForBoard({
+      search: 'Site, "Alpha"', clientId: 'client-1', status: 'in_development',
+      priority: 'high', dueFrom: '2026-12-01', dueTo: '2026-12-31',
+    })
+    const pattern = `name.ilike.${JSON.stringify('%Site, "Alpha"%')}`
+    expect(projects.or).toHaveBeenCalledWith([
+      pattern, pattern.replace('name.', 'service.'), pattern.replace('name.', 'description.'),
+    ].join(','))
+    expect(projects.eq).toHaveBeenCalledWith('client_id', 'client-1')
+    expect(projects.eq).toHaveBeenCalledWith('status', 'in_development')
+    expect(projects.eq).toHaveBeenCalledWith('priority', 'high')
+    expect(projects.gte).toHaveBeenCalledWith('due_date', '2026-12-01')
+    expect(projects.lte).toHaveBeenCalledWith('due_date', '2026-12-31')
   })
 
   it('getProject returns null for missing project', async () => {
@@ -2377,9 +2441,9 @@ describe('projectService', () => {
     })
   })
 
-  it('listProjectFormOptions excludes inactive clients and cancelled contracts and returns real balances', async () => {
+  it('listProjectFormOptions excludes only inactive clients and cancelled contracts and returns real balances', async () => {
     const clientsQuery = {
-      select: vi.fn(), eq: vi.fn(), order: vi.fn(),
+      select: vi.fn(), neq: vi.fn(), order: vi.fn(),
     }
     const contractsQuery = {
       select: vi.fn(), eq: vi.fn(), order: vi.fn(),
@@ -2391,13 +2455,17 @@ describe('projectService', () => {
       query.select.mockReturnValue(query)
       query.order.mockResolvedValue({ data: [], error: null })
     }
-    clientsQuery.eq.mockReturnValue(clientsQuery)
+    clientsQuery.neq.mockReturnValue(clientsQuery)
     contractsQuery.eq.mockReturnValue(contractsQuery)
     projectsQuery.neq.mockReturnValue(projectsQuery)
     clientsQuery.order.mockResolvedValue({
       data: [
         { id: 'client-1', name: 'Cliente Ativo', status: 'active' },
-        { id: 'client-2', name: 'Cliente Arquivado', status: 'inactive', archived_at: '2026-11-01T00:00:00Z' },
+        { id: 'client-2', name: 'Cliente Em Projeto', status: 'in_project' },
+        { id: 'client-3', name: 'Aguardando Pagamento', status: 'awaiting_payment' },
+        { id: 'client-4', name: 'Aguardando Aprovação', status: 'awaiting_approval' },
+        { id: 'client-5', name: 'Projeto Concluído', status: 'project_completed' },
+        { id: 'client-6', name: 'Cliente Arquivado', status: 'inactive', archived_at: '2026-11-01T00:00:00Z' },
       ],
       error: null,
     })
@@ -2425,11 +2493,17 @@ describe('projectService', () => {
 
     const result = await listProjectFormOptions()
 
-    expect(clientsQuery.eq).toHaveBeenCalledWith('status', 'active')
+    expect(clientsQuery.neq).toHaveBeenCalledWith('status', 'inactive')
     expect(contractsQuery.eq).toHaveBeenCalledWith('status', 'active')
     expect(projectsQuery.neq).toHaveBeenCalledWith('status', 'cancelled')
     expect(result).toEqual({
-      clients: [{ id: 'client-1', name: 'Cliente Ativo' }],
+      clients: [
+        { id: 'client-1', name: 'Cliente Ativo' },
+        { id: 'client-2', name: 'Cliente Em Projeto' },
+        { id: 'client-3', name: 'Aguardando Pagamento' },
+        { id: 'client-4', name: 'Aguardando Aprovação' },
+        { id: 'client-5', name: 'Projeto Concluído' },
+      ],
       contracts: [{
         id: 'contract-1', client_id: 'client-1', service: 'Site', total_value_cents: 100000,
         allocated_cents: 50000, remaining_cents: 50000, due_date: '2026-12-31',
@@ -2570,9 +2644,19 @@ export async function listProjects(
   return { projects: await attachMetrics((data ?? []) as ProjectRow[]), total: count ?? 0 }
 }
 
-export async function listProjectsForBoard(): Promise<ProjectBoardResult> {
-  const { data, error } = await requireSupabase()
-    .from('projects').select('*, clients(name)')
+export async function listProjectsForBoard(filters: ProjectFilters): Promise<ProjectBoardResult> {
+  let query = requireSupabase().from('projects').select('*, clients(name)')
+  const search = filters.search?.trim()
+  if (search) {
+    const pattern = JSON.stringify(`%${search}%`)
+    query = query.or(['name', 'service', 'description'].map((column) => `${column}.ilike.${pattern}`).join(','))
+  }
+  if (filters.clientId) query = query.eq('client_id', filters.clientId)
+  if (filters.status) query = query.eq('status', filters.status)
+  if (filters.priority) query = query.eq('priority', filters.priority)
+  if (filters.dueFrom) query = query.gte('due_date', filters.dueFrom)
+  if (filters.dueTo) query = query.lte('due_date', filters.dueTo)
+  const { data, error } = await query
     .is('archived_at', null).neq('status', 'cancelled')
     .order('due_date', { ascending: true, nullsFirst: false })
     .order('created_at', { ascending: false })
@@ -2641,7 +2725,7 @@ export async function deliverProject(id: string, input: DeliveryInput): Promise<
 export async function listProjectFormOptions(): Promise<ProjectFormOptions> {
   const client = requireSupabase()
   const [clientsResult, contractsResult, projectsResult] = await Promise.all([
-    client.from('clients').select('id,name,status').eq('status', 'active').order('name'),
+    client.from('clients').select('id,name,status').neq('status', 'inactive').order('name'),
     client.from('contracts').select('id,client_id,service,total_value,due_date,status').eq('status', 'active').order('service'),
     client.from('projects').select('contract_id,contracted_value,status').neq('status', 'cancelled').order('contract_id'),
   ])
@@ -2650,7 +2734,7 @@ export async function listProjectFormOptions(): Promise<ProjectFormOptions> {
   throwDbError(projectsResult.error)
 
   const clients = ((clientsResult.data ?? []) as Array<{ id: string; name: string; status: string }>)
-    .filter((row) => row.status === 'active')
+    .filter((row) => row.status !== 'inactive')
     .map(({ id, name }): ProjectFormClientOption => ({ id, name }))
   const allocated = new Map<string, number>()
   for (const row of (projectsResult.data ?? []) as Array<{ contract_id: string; contracted_value: string | number; status: string }>) {
@@ -2843,8 +2927,9 @@ describe('useProjectStatusQueue', () => {
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
   })
 
-  it('preserva métricas e client_name ao mesclar a resposta confirmada', async () => {
-    setProjectStatus.mockResolvedValue({ ...project, status: 'planning' })
+  it('preserva métricas e client_name ao mesclar o Project retornado pelo RPC sem relação', async () => {
+    const { client_name: _clientName, progressPercent: _progressPercent, activeTasks: _activeTasks, completedTasks: _completedTasks, ...projectWithoutBoardFields } = project
+    setProjectStatus.mockResolvedValue({ ...projectWithoutBoardFields, status: 'planning' })
     const { result } = renderHook(() => useProjectStatusQueue({
       projects: [project], onChange: vi.fn(), onRefresh: vi.fn(),
     }))
@@ -3080,7 +3165,7 @@ export function useProjectStatusQueue(
         mutationVersionRef.current += 1
         if (latestIntentVersionRef.current.get(id) === version) {
           updateProjects((items) => items.map((project) => (
-            project.id === id ? { ...project, ...updated } : project
+            project.id === id ? { ...project, ...updated, client_name: project.client_name } : project
           )))
         }
       } catch (error) {
@@ -3985,6 +4070,26 @@ describe('ProjectsPage', () => {
     render(<MemoryRouter><ProjectsPage /></MemoryRouter>)
     fireEvent.click(screen.getByRole('button', { name: 'Kanban' }))
     expect((await screen.findByText(/até 500 projetos/)).textContent).toMatch(/até 500 projetos/)
+    expect(listProjectsForBoard).toHaveBeenCalledWith({})
+  })
+
+  it('aplica os mesmos filtros da lista ao Kanban e atualiza o recorte ao limpar', async () => {
+    render(<MemoryRouter><ProjectsPage /></MemoryRouter>)
+    await screen.findByRole('option', { name: 'Empresa A' })
+    fireEvent.change(screen.getByLabelText('Buscar projetos'), { target: { value: 'Site' } })
+    fireEvent.change(screen.getByLabelText('Cliente'), { target: { value: 'client-1' } })
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'in_development' } })
+    fireEvent.change(screen.getByLabelText('Prioridade'), { target: { value: 'high' } })
+    fireEvent.change(screen.getByLabelText('Prazo inicial'), { target: { value: '2026-12-01' } })
+    fireEvent.change(screen.getByLabelText('Prazo final'), { target: { value: '2026-12-31' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Aplicar filtros' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Kanban' }))
+    await waitFor(() => expect(listProjectsForBoard).toHaveBeenLastCalledWith({
+      search: 'Site', clientId: 'client-1', status: 'in_development',
+      priority: 'high', dueFrom: '2026-12-01', dueTo: '2026-12-31',
+    }))
+    fireEvent.click(screen.getByRole('button', { name: 'Limpar filtros' }))
+    await waitFor(() => expect(listProjectsForBoard).toHaveBeenLastCalledWith({}))
   })
 
   it('mantém falha do board distinta de vazio e faz retry por requestRefresh', async () => {
@@ -3998,6 +4103,7 @@ describe('ProjectsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Tentar novamente' }))
     expect((await screen.findByText('Site da Empresa')).textContent).toBe('Site da Empresa')
     expect(listProjectsForBoard).toHaveBeenCalledTimes(2)
+    expect(listProjectsForBoard).toHaveBeenLastCalledWith({})
   })
 
   it('preserve o board anterior em falha de atualização manual', async () => {
@@ -4666,7 +4772,7 @@ export function ProjectsPage() {
     setBoardLoading(true)
     setBoardError(null)
     try {
-      const result = await listProjectsForBoard()
+      const result = await listProjectsForBoard(filters)
       if (!mountedRef.current || request !== boardRequestRef.current) return
       setBoardProjects(result.projects)
       setBoardPartial(result.partial)
@@ -4677,7 +4783,7 @@ export function ProjectsPage() {
     } finally {
       if (mountedRef.current && request === boardRequestRef.current) setBoardLoading(false)
     }
-  }, [])
+  }, [filters])
 
   useEffect(() => {
     if (view === 'kanban') void loadBoard()
@@ -4809,7 +4915,7 @@ export function ProjectsPage() {
 
       {view === 'kanban' ? (
         <section className="flex flex-col gap-4" aria-label="Kanban de projetos">
-          <p className="text-sm text-muted">Visão geral sem filtros da lista, limitada a 500 projetos não arquivados e não cancelados.</p>
+          <p className="text-sm text-muted">Kanban com os filtros aplicados, limitado a 500 projetos não arquivados e não cancelados.</p>
           {boardPartial && (
             <div className="rounded-xl border border-lime/40 bg-lime/5 p-4 text-sm text-lime" role="status">
               Mostrando até 500 projetos. O resultado do Kanban é parcial; use a lista filtrada para localizar projetos fora deste recorte.
@@ -4907,7 +5013,7 @@ export function ProjectsPage() {
 }
 ```
 
-Os filtros pertencem a cards/lista porque `listProjectsForBoard()` preserva o contrato sem filtros da Task 5. O Kanban informa esse recorte explicitamente. A fila é a única chamadora de `setProjectStatus`; retry e refresh manual passam por `requestRefresh`.
+Cards, lista e Kanban compartilham o mesmo `ProjectFilters`; `listProjectsForBoard(filters)` aplica busca, cliente, status, prioridade e prazo antes de anexar métricas. A fila é a única chamadora de `setProjectStatus`; retry e refresh manual passam por `requestRefresh` e preservam o recorte carregado.
 
 - [ ] **Step 4: Run tests and build**
 
@@ -5391,7 +5497,6 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
           icon={ListTodo}
           title="Nenhuma tarefa cadastrada."
           description="Crie tarefas para acompanhar a execução e calcular o progresso automaticamente."
-          action={<Button type="button" variant="mint" disabled={actionsDisabled} onClick={openCreate}>Nova tarefa</Button>}
         />
       ) : currentTasks.length > 0 && (
         <ol className="flex flex-col gap-3">
@@ -5698,6 +5803,18 @@ describe('ProjectDeliveryPanel', () => {
     expect(deliverProject).not.toHaveBeenCalled()
   })
 
+  it('preserva whitespace inicial em input de URL até a validação explícita', async () => {
+    render(<ProjectDeliveryPanel project={project} onDelivered={vi.fn()} />)
+    const input = screen.getByLabelText('Link de entrega *') as HTMLInputElement
+    expect(input.type).toBe('text')
+    expect(input.inputMode).toBe('url')
+    fireEvent.change(input, { target: { value: ' https://example.test/entrega' } })
+    expect(input.value).toBe(' https://example.test/entrega')
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    expect((await screen.findByText('Informe uma URL HTTP(S) válida.')).textContent).toBe('Informe uma URL HTTP(S) válida.')
+    expect(deliverProject).not.toHaveBeenCalled()
+  })
+
   it('não permite entregar projeto cancelado', () => {
     render(<ProjectDeliveryPanel project={{ ...project, status: 'cancelled' }} onDelivered={vi.fn()} />)
     expect(screen.getByText(/Entrega indisponível/).textContent).toMatch(/Entrega indisponível/)
@@ -5960,7 +6077,6 @@ export function ProjectRevisionList({ projectId, onChanged, disabled = false }: 
           icon={MessageSquareText}
           title="Nenhuma revisão registrada."
           description="Registre ajustes solicitados pelo cliente e aprove cada revisão explicitamente."
-          action={<Button type="button" variant="mint" disabled={actionsDisabled} onClick={openCreate}>Nova revisão</Button>}
         />
       ) : currentRevisions.map((revision) => (
         <Card key={revision.id} className="flex flex-col gap-3">
@@ -6187,8 +6303,8 @@ export function ProjectDeliveryPanel({ project, onDelivered }: ProjectDeliveryPa
         <p className="mt-1 text-sm text-muted">A entrega é explícita e não cria receita nem altera pagamentos.</p>
       </div>
       <form className="flex flex-col gap-4" onSubmit={submit} noValidate>
-        <Input label="Link de entrega *" type="url" value={draft.deliveryUrl} error={errors.deliveryUrl} disabled={saving} onChange={(event) => { setDraft((current) => ({ ...current, deliveryUrl: event.target.value })); setErrors((current) => ({ ...current, deliveryUrl: undefined })) }} required />
-        <Input label="Link dos arquivos" type="url" value={draft.filesUrl} error={errors.filesUrl} disabled={saving} onChange={(event) => { setDraft((current) => ({ ...current, filesUrl: event.target.value })); setErrors((current) => ({ ...current, filesUrl: undefined })) }} />
+        <Input label="Link de entrega *" type="text" inputMode="url" value={draft.deliveryUrl} error={errors.deliveryUrl} disabled={saving} onChange={(event) => { setDraft((current) => ({ ...current, deliveryUrl: event.target.value })); setErrors((current) => ({ ...current, deliveryUrl: undefined })) }} required />
+        <Input label="Link dos arquivos" type="text" inputMode="url" value={draft.filesUrl} error={errors.filesUrl} disabled={saving} onChange={(event) => { setDraft((current) => ({ ...current, filesUrl: event.target.value })); setErrors((current) => ({ ...current, filesUrl: undefined })) }} />
         <Textarea label="Notas finais" value={draft.finalNotes} disabled={saving} onChange={(event) => setDraft((current) => ({ ...current, finalNotes: event.target.value }))} rows={3} />
         <label className="flex items-start gap-2 text-sm text-ink">
           <input type="checkbox" checked={draft.confirmed} disabled={saving} onChange={(event) => { setDraft((current) => ({ ...current, confirmed: event.target.checked })); setErrors((current) => ({ ...current, confirmed: undefined })) }} />
@@ -6299,7 +6415,13 @@ describe('ProjectDetailPage', () => {
     updateProject.mockReset()
     setProjectStatus.mockReset()
     deliverProject.mockReset()
-    listProjectFormOptions.mockReset().mockResolvedValue({ clients: [], contracts: [] })
+    listProjectFormOptions.mockReset().mockResolvedValue({
+      clients: [{ id: 'client-1', name: 'Empresa A' }],
+      contracts: [{
+        id: 'contract-1', client_id: 'client-1', service: 'Site', total_value_cents: 123456,
+        allocated_cents: 123456, remaining_cents: 0, due_date: '2026-12-10',
+      }],
+    })
     toast.mockReset()
     listTasks.mockReset().mockResolvedValue([])
     listRevisions.mockReset().mockResolvedValue([])
@@ -6314,13 +6436,15 @@ describe('ProjectDetailPage', () => {
     expect(screen.queryByText(/recebido/i)).toBeNull()
   })
 
-  it('renderiza tarefas e revisões nas abas com serviços filhos mockados', async () => {
+  it('renderiza tarefas e revisões nas abas com serviços filhos mockados e uma única ação por estado vazio', async () => {
     renderPage()
     fireEvent.click(await screen.findByRole('tab', { name: 'Tarefas' }))
     expect((await screen.findByText('Nenhuma tarefa cadastrada.')).textContent).toBe('Nenhuma tarefa cadastrada.')
+    expect(screen.getAllByRole('button', { name: 'Nova tarefa' })).toHaveLength(1)
     expect(listTasks).toHaveBeenCalledWith('p1')
     fireEvent.click(screen.getByRole('tab', { name: 'Revisões' }))
     expect((await screen.findByText('Nenhuma revisão registrada.')).textContent).toBe('Nenhuma revisão registrada.')
+    expect(screen.getAllByRole('button', { name: 'Nova revisão' })).toHaveLength(1)
     expect(listRevisions).toHaveBeenCalledWith('p1')
   })
 
@@ -6381,7 +6505,9 @@ describe('ProjectDetailPage', () => {
     updateProject.mockResolvedValue({ ...project, name: 'Site atualizado' })
     renderPage()
     fireEvent.click(await screen.findByRole('button', { name: 'Editar projeto' }))
-    fireEvent.change(screen.getByLabelText('Nome do projeto *'), { target: { value: 'Site atualizado' } })
+    const nameInput = await screen.findByLabelText('Nome do projeto *')
+    expect(screen.queryByText('Carregando formulário de projeto…')).toBeNull()
+    fireEvent.change(nameInput, { target: { value: 'Site atualizado' } })
     fireEvent.click(screen.getByRole('button', { name: 'Salvar alterações' }))
     await waitFor(() => expect(updateProject).toHaveBeenCalledWith('p1', expect.objectContaining({ name: 'Site atualizado' })))
     await waitFor(() => expect(getProject).toHaveBeenCalledTimes(2))
@@ -7304,7 +7430,8 @@ Projeto Supabase: `nuzjlizqdldhygsliwwc`
    [`0003_duplicate_canonical.sql`](supabase/migrations/0003_duplicate_canonical.sql),
    [`0004_followup_atomic.sql`](supabase/migrations/0004_followup_atomic.sql),
    [`0005_followup_rpc_json.sql`](supabase/migrations/0005_followup_rpc_json.sql),
-   [`0006_etapa3_clients.sql`](supabase/migrations/0006_etapa3_clients.sql) e
+   [`0006_etapa3_clients.sql`](supabase/migrations/0006_etapa3_clients.sql),
+   [`0007_lead_maps_url.sql`](supabase/migrations/0007_lead_maps_url.sql) e
    [`0008_etapa3_projects.sql`](supabase/migrations/0008_etapa3_projects.sql).
    As migrations criam tabelas privadas, índices, políticas RLS, triggers e RPCs transacionais.
 4. **Crie seu usuário**: Dashboard → Authentication → Users → *Add user* →
