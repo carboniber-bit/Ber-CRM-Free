@@ -4,6 +4,8 @@ import { localDayBoundary, onlyDigits } from '../lib/format'
 import { normalizePhoneForComparison } from '../lib/whatsapp'
 import {
   situationStatuses,
+  NICHES,
+  NICHE_LABELS,
   type Lead,
   type LeadFilters,
   type LeadSort,
@@ -38,6 +40,42 @@ const SORTS: Record<LeadSort, { column: string; ascending: boolean }> = {
 
 const DUPLICATE_CANDIDATE_LIMIT = 100
 
+function withoutAccents(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+}
+
+function accentVariants(value: string): string[] {
+  let variants = ['']
+  for (const word of value.toLowerCase().split(' ')) {
+    const forms = [...new Set([word, withoutAccents(word)])]
+    variants = variants.flatMap((prefix) => forms.map((form) => prefix ? `${prefix} ${form}` : form))
+  }
+  return variants
+}
+
+function nichePatterns(value: string): string[] {
+  return accentVariants(value).flatMap((variant) => {
+    const pattern = variant.replace(/[\s_/-]+/g, '%')
+    return [pattern, `${pattern} %`, `${pattern}/%`, `${pattern}-%`]
+  })
+}
+
+const NICHE_FILTER_ALIASES: Record<string, string[]> = {
+  manicure: ['manicure / nail designer'],
+  nail_designer: ['manicure / nail designer'],
+  salao_beleza: ['estúdio de beleza'],
+  clinica_estetica: ['clínica estética'],
+  comercio: ['comércio'],
+}
+
+const NICHE_FILTERS = new Map<string, string[]>(
+  NICHES.map((niche) => [niche, [...new Set([
+    ...nichePatterns(niche),
+    ...nichePatterns(NICHE_LABELS[niche]),
+    ...(NICHE_FILTER_ALIASES[niche] ?? []).flatMap(nichePatterns),
+  ])]]),
+)
+
 export async function listLeads(
   filters: LeadFilters,
   sort: LeadSort,
@@ -48,7 +86,11 @@ export async function listLeads(
   let query = client.from('leads').select('*', { count: 'exact' })
 
   if (filters.search) query = query.ilike('name', `%${filters.search}%`)
-  if (filters.niche) query = query.eq('niche', filters.niche)
+  if (filters.niche) {
+    const patterns = NICHE_FILTERS.get(filters.niche)
+    if (patterns) query = query.or(patterns.map((pattern) => `niche.ilike.${pattern}`).join(','))
+    else query = query.eq('niche', filters.niche)
+  }
   if (filters.city) query = query.ilike('city', filters.city)
   if (filters.district) query = query.ilike('district', filters.district)
   if (filters.status) query = query.eq('status', filters.status)

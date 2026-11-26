@@ -325,7 +325,7 @@ function CsvImportModalContent({ open, onClose, onImported }: CsvImportModalProp
     <Modal open={open} onClose={requestClose} title="Importar leads por CSV" wide dismissible={!busy}>
       <div className="flex min-w-0 flex-col gap-4" aria-busy={busy}>
         <p className="text-sm text-muted">
-          Colunas aceitas: nome (obrigatória), responsavel, nicho, telefone, whatsapp, email, cnpj, instagram, facebook, site, cardapio_url, catalogo_url, pais, estado, cidade, bairro, endereco, cep, status, servico, valor_estimado, observacoes, origem, tem_site, tem_instagram, tem_facebook, tem_cardapio, tem_catalogo, tem_landing, tem_whatsapp_comercial. Presença: sim / não / não verificado.
+          Colunas aceitas: nome (obrigatória), responsavel, nicho, telefone, whatsapp, email, cnpj, instagram, facebook, site, cardapio_url, catalogo_url, pais, estado, cidade, bairro, endereco, cep, status, servico, valor_estimado, observacoes, origem, tem_site, tem_instagram, tem_facebook, tem_cardapio, tem_catalogo, tem_landing, tem_whatsapp_comercial, maps_url. Presença: sim / não / não verificado.
         </p>
 
         <div>

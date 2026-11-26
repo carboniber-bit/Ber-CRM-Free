@@ -17,7 +17,7 @@ export const CSV_HEADERS = [
   'pais', 'estado', 'cidade', 'bairro', 'endereco', 'cep',
   'status', 'servico', 'valor_estimado', 'observacoes', 'origem',
   'tem_site', 'tem_instagram', 'tem_facebook', 'tem_cardapio',
-  'tem_catalogo', 'tem_landing', 'tem_whatsapp_comercial',
+  'tem_catalogo', 'tem_landing', 'tem_whatsapp_comercial', 'maps_url',
 ] as const
 
 const PRESENCE_EXPORT: Record<Presence, string> = { yes: 'sim', no: 'não', unverified: 'não verificado' }
@@ -32,6 +32,7 @@ export function leadsToCsv(leads: Lead[]): string {
     PRESENCE_EXPORT[l.has_website], PRESENCE_EXPORT[l.has_instagram], PRESENCE_EXPORT[l.has_facebook],
     PRESENCE_EXPORT[l.has_digital_menu], PRESENCE_EXPORT[l.has_digital_catalog],
     PRESENCE_EXPORT[l.has_landing_page], PRESENCE_EXPORT[l.has_business_whatsapp],
+    l.maps_url ?? '',
   ])
   return Papa.unparse(
     { fields: [...CSV_HEADERS], data: rows },
@@ -230,6 +231,7 @@ export function parseLeadsCsv(text: string): CsvParsedRow[] {
     draft.website = get('site') || null
     draft.menu_url = get('cardapio_url') || null
     draft.catalog_url = get('catalogo_url') || null
+    draft.maps_url = get('maps_url') || null
     draft.country = get('pais') || null
     draft.state = get('estado') || null
     draft.city = get('cidade') || null

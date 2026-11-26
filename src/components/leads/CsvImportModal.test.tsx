@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastContext } from '../../hooks/useToast'
-import { findDuplicateCandidates } from '../../services/leadService'
+import { createLead, findDuplicateCandidates } from '../../services/leadService'
+import type { Lead } from '../../types/lead'
 import { CsvImportModal } from './CsvImportModal'
 
 vi.mock('../../services/leadService', () => ({
@@ -66,5 +67,24 @@ describe('CsvImportModal seleção de arquivo', () => {
 
     expect(valueWrites).toContain('')
     expect(findDuplicateCandidates).not.toHaveBeenCalled()
+  })
+})
+
+describe('CsvImportModal links do estabelecimento', () => {
+  it('normaliza o Maps e o Instagram antes de persistir o lead importado', async () => {
+    vi.mocked(createLead).mockResolvedValue({} as Lead)
+    const { input } = renderModal()
+
+    selectFile(
+      input,
+      'links.csv',
+      'nome,maps_url,instagram\nEstabelecimento de teste,maps.app.goo.gl/exemplo,@perfil.exemplo\n',
+    )
+    fireEvent.click(await screen.findByRole('button', { name: 'Importar 1 lead' }))
+
+    await waitFor(() => expect(createLead).toHaveBeenCalledWith(expect.objectContaining({
+      maps_url: 'https://maps.app.goo.gl/exemplo',
+      instagram: 'https://www.instagram.com/perfil.exemplo/',
+    })))
   })
 })

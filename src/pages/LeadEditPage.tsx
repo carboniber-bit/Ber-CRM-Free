@@ -97,6 +97,7 @@ export function LeadEditPage() {
     website: editable.website,
     menu_url: editable.menu_url,
     catalog_url: editable.catalog_url,
+    maps_url: editable.maps_url,
     country: editable.country,
     state: editable.state,
     city: editable.city,

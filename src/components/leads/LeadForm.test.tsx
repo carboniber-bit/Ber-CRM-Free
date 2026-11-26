@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { emptyLeadDraft } from '../../types/lead'
+import { createLead, findDuplicateCandidates } from '../../services/leadService'
+import { emptyLeadDraft, type Lead } from '../../types/lead'
 import { LeadForm } from './LeadForm'
 
 vi.mock('../../services/leadService', () => ({
@@ -34,6 +35,40 @@ function renderForm(leadId?: string) {
     </MemoryRouter>,
   )
 }
+
+describe('LeadForm links', () => {
+  it('salva o link exato do Maps e normaliza um usuário do Instagram', async () => {
+    vi.mocked(findDuplicateCandidates).mockResolvedValue([])
+    vi.mocked(createLead).mockResolvedValue({
+      ...emptyLeadDraft(),
+      id: '00000000-0000-0000-0000-000000000101',
+      owner_id: '00000000-0000-0000-0000-000000000201',
+      score: 0,
+      priority: 'baixa',
+      needs: [],
+      score_reasons: [],
+      next_contact_at: null,
+      last_verified_at: null,
+      created_at: '2026-11-22T00:00:00Z',
+      updated_at: '2026-11-22T00:00:00Z',
+      name: 'Estabelecimento de teste',
+    } as Lead)
+    renderForm()
+
+    fireEvent.change(screen.getByLabelText('Google Maps (link exato)'), {
+      target: { value: 'maps.app.goo.gl/exemplo' },
+    })
+    fireEvent.change(screen.getByLabelText('Instagram (link ou @usuario)'), {
+      target: { value: '@perfil.exemplo' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar lead' }))
+
+    await waitFor(() => expect(createLead).toHaveBeenCalledWith(expect.objectContaining({
+      maps_url: 'https://maps.app.goo.gl/exemplo',
+      instagram: 'https://www.instagram.com/perfil.exemplo/',
+    })))
+  })
+})
 
 describe('LeadForm status', () => {
   it('não permite mudar status diretamente ao editar', () => {

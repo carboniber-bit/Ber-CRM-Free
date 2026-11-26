@@ -1,10 +1,10 @@
 import type { LeadWrite } from '../types/lead'
 import { onlyDigits } from './format'
-import { normalizeUrl } from './url'
+import { normalizeInstagramUrl, normalizeMapsUrl, normalizeUrl } from './url'
 
 export type LeadDraftErrors = Partial<Record<keyof LeadWrite, string>>
 
-const URL_FIELDS = ['website', 'menu_url', 'catalog_url', 'instagram', 'facebook'] as const
+const URL_FIELDS = ['website', 'menu_url', 'catalog_url', 'facebook'] as const
 const VALUE_FIELDS = ['estimated_value', 'negotiated_value', 'contracted_value', 'received_value'] as const
 
 export function validateLeadDraft(draft: LeadWrite): LeadDraftErrors {
@@ -29,6 +29,12 @@ export function validateLeadDraft(draft: LeadWrite): LeadDraftErrors {
     const value = draft[field]
     if (value && !normalizeUrl(value)) errors[field] = 'Informe uma URL válida (http://, https:// ou domínio).'
   }
+  if (draft.instagram && !normalizeInstagramUrl(draft.instagram)) {
+    errors.instagram = 'Informe um usuário (@perfil) ou URL válida do Instagram.'
+  }
+  if (draft.maps_url && !normalizeMapsUrl(draft.maps_url)) {
+    errors.maps_url = 'Informe um link exato do estabelecimento no Google Maps.'
+  }
 
   for (const field of VALUE_FIELDS) {
     if (!Number.isFinite(draft[field]) || draft[field] < 0) errors[field] = 'Valor inválido.'
@@ -42,5 +48,7 @@ export function normalizeLeadDraftForSave(draft: LeadWrite): LeadWrite {
   for (const field of URL_FIELDS) {
     normalized[field] = normalizeUrl(draft[field] ?? '')
   }
+  normalized.instagram = normalizeInstagramUrl(draft.instagram ?? '') || null
+  normalized.maps_url = normalizeMapsUrl(draft.maps_url ?? '') || null
   return normalized
 }

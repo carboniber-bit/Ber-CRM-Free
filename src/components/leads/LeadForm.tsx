@@ -144,11 +144,12 @@ export function LeadForm({ initial, leadId, onSaved, onCancel }: LeadFormProps) 
           <Input disabled={busy} label="WhatsApp" type="tel" placeholder="(11) 99999-9999" value={draft.whatsapp ?? ''} error={errors.whatsapp} onChange={setText('whatsapp')} />
           <Input disabled={busy} label="E-mail" type="email" value={draft.email ?? ''} error={errors.email} onChange={setText('email')} />
           <Input disabled={busy} label="CNPJ (se público)" inputMode="numeric" placeholder="00.000.000/0000-00" value={draft.cnpj ?? ''} error={errors.cnpj} onChange={setText('cnpj')} />
-          <Input disabled={busy} label="Instagram (link)" type="url" placeholder="https://instagram.com/..." value={draft.instagram ?? ''} error={errors.instagram} onChange={setText('instagram')} />
+          <Input disabled={busy} label="Instagram (link ou @usuario)" type="url" placeholder="https://instagram.com/... ou @perfil" value={draft.instagram ?? ''} error={errors.instagram} onChange={setText('instagram')} />
           <Input disabled={busy} label="Facebook (link)" type="url" placeholder="https://facebook.com/..." value={draft.facebook ?? ''} error={errors.facebook} onChange={setText('facebook')} />
           <Input disabled={busy} label="Site (link)" type="url" placeholder="https://exemplo.com.br" value={draft.website ?? ''} error={errors.website} onChange={setText('website')} />
           <Input disabled={busy} label="Cardápio digital (link)" type="url" placeholder="https://exemplo.com.br/cardapio" value={draft.menu_url ?? ''} error={errors.menu_url} onChange={setText('menu_url')} />
           <Input disabled={busy} label="Catálogo digital (link)" type="url" placeholder="https://exemplo.com.br/catalogo" value={draft.catalog_url ?? ''} error={errors.catalog_url} onChange={setText('catalog_url')} />
+          <Input disabled={busy} label="Google Maps (link exato)" type="url" placeholder="https://maps.app.goo.gl/..." value={draft.maps_url ?? ''} error={errors.maps_url} onChange={setText('maps_url')} />
         </div>
       </section>
 

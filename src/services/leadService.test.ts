@@ -1,8 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { requireSupabase } from '../lib/db'
-import { emptyLeadDraft, type Lead } from '../types/lead'
-import { findDuplicateCandidates, updateLead } from './leadService'
+import { emptyLeadDraft, NICHES, NICHE_LABELS, type Lead } from '../types/lead'
+import { findDuplicateCandidates, listLeads, updateLead } from './leadService'
 
 vi.mock('../lib/db', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/db')>()
@@ -15,7 +15,15 @@ type StoredLead = Lead & {
   cnpj_digits: string | null
 }
 
-type QueryResult = { data: StoredLead[] | null; error: { message: string } | null }
+function matchesIlike(value: string, pattern: string): boolean {
+  const regex = pattern
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/%/g, '.*')
+    .replace(/_/g, '.')
+  return new RegExp(`^${regex}$`, 'i').test(value)
+}
+
+type QueryResult = { data: StoredLead[] | null; count: number | null; error: { message: string } | null }
 
 interface QueryCall {
   select: string
@@ -23,6 +31,7 @@ interface QueryCall {
   ilike: Array<[string, string]>
   order: Array<[string, { ascending: boolean }]>
   limit: number | null
+  range: [number, number] | null
 }
 
 class FakeSupabase {
@@ -45,16 +54,20 @@ class FakeQuery implements PromiseLike<QueryResult> {
   private selectColumns = ''
   private orFilter: string | null = null
   private ilikeFilters: Array<[string, string]> = []
+  private eqFilters: Array<[string, unknown]> = []
   private orderCalls: Array<[string, { ascending: boolean }]> = []
   private rowLimit: number | null = null
+  private rowRange: [number, number] | null = null
+  private exactCount = false
   private readonly client: FakeSupabase
 
   constructor(client: FakeSupabase) {
     this.client = client
   }
 
-  select(columns: string): this {
+  select(columns: string, options?: { count?: string }): this {
     this.selectColumns = columns
+    this.exactCount = options?.count === 'exact'
     return this
   }
 
@@ -63,13 +76,14 @@ class FakeQuery implements PromiseLike<QueryResult> {
     return this
   }
 
-  eq(): this {
+  eq(column: string, value: unknown): this {
+    this.eqFilters.push([column, value])
     return this
   }
 
   single(): Promise<QueryResult> {
-    if (this.client.error) return Promise.resolve({ data: null, error: this.client.error })
-    return Promise.resolve({ data: this.client.leads.slice(0, 1), error: null })
+    if (this.client.error) return Promise.resolve({ data: null, count: null, error: this.client.error })
+    return Promise.resolve({ data: this.client.leads.slice(0, 1), count: null, error: null })
   }
 
   or(filter: string): this {
@@ -92,6 +106,11 @@ class FakeQuery implements PromiseLike<QueryResult> {
     return this
   }
 
+  range(from: number, to: number): this {
+    this.rowRange = [from, to]
+    return this
+  }
+
   then<TResult1 = QueryResult, TResult2 = never>(
     onfulfilled?: ((value: QueryResult) => TResult1 | PromiseLike<TResult1>) | null,
     onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
@@ -106,23 +125,30 @@ class FakeQuery implements PromiseLike<QueryResult> {
       ilike: [...this.ilikeFilters],
       order: [...this.orderCalls],
       limit: this.rowLimit,
+      range: this.rowRange,
     })
 
-    if (this.client.error) return Promise.resolve({ data: null, error: this.client.error })
-    if (!this.orFilter && this.ilikeFilters.length === 0) {
-      return Promise.resolve({ data: [], error: null })
+    if (this.client.error) return Promise.resolve({ data: null, count: null, error: this.client.error })
+    if (!this.orFilter && this.ilikeFilters.length === 0 && this.rowRange === null) {
+      return Promise.resolve({ data: [], count: this.exactCount ? 0 : null, error: null })
     }
 
     let rows = [...this.client.leads]
+    rows = rows.filter((row) => this.eqFilters.every(([column, value]) => (
+      (row as unknown as Record<string, unknown>)[column] === value
+    )))
     if (this.orFilter) {
       const filters = this.orFilter.split(',').map((part) => {
-        const match = /^(\w+)\.eq\.("(?:[^"\\]|\\.)*")$/.exec(part)
+        const match = /^(\w+)\.(eq|ilike)\.(.*)$/.exec(part)
         if (!match) throw new Error(`Filtro OR não suportado pelo fake: ${part}`)
-        return { column: match[1], value: JSON.parse(match[2]) as string }
+        const [, column, operator, rawValue] = match
+        const value = operator === 'eq' ? JSON.parse(rawValue) as string : rawValue
+        return { column, operator, value }
       })
-      rows = rows.filter((row) => filters.some(({ column, value }) => (
-        (row as unknown as Record<string, unknown>)[column] === value
-      )))
+      rows = rows.filter((row) => filters.some(({ column, operator, value }) => {
+        const stored = String((row as unknown as Record<string, unknown>)[column] ?? '')
+        return operator === 'eq' ? stored === value : matchesIlike(stored, value)
+      }))
     }
     rows = rows.filter((row) => this.ilikeFilters.every(([column, pattern]) => (
       String((row as unknown as Record<string, unknown>)[column] ?? '').toLowerCase()
@@ -131,8 +157,10 @@ class FakeQuery implements PromiseLike<QueryResult> {
     if (this.orderCalls.some(([column, options]) => column === 'id' && options.ascending)) {
       rows.sort((a, b) => a.id.localeCompare(b.id))
     }
+    const count = this.exactCount ? rows.length : null
     if (this.rowLimit !== null) rows = rows.slice(0, this.rowLimit)
-    return Promise.resolve({ data: rows, error: null })
+    if (this.rowRange) rows = rows.slice(this.rowRange[0], this.rowRange[1] + 1)
+    return Promise.resolve({ data: rows, count, error: null })
   }
 }
 
@@ -174,6 +202,92 @@ const noIdentifiers = {
   city: null,
 }
 
+describe('listLeads', () => {
+  it.each(NICHES)('encontra o nicho canônico %s sem trazer os demais', async (niche) => {
+    const matching = makeStoredLead({ id: `match-${niche}`, niche })
+    const other = makeStoredLead({ id: `other-${niche}`, niche: null })
+    client = new FakeSupabase([matching, other])
+    vi.mocked(requireSupabase).mockReturnValue(client as unknown as SupabaseClient)
+
+    const result = await listLeads({ niche }, 'created_desc', 0, 20)
+
+    expect(result.leads.map((lead) => lead.id)).toEqual([matching.id])
+    expect(result.total).toBe(1)
+  })
+
+  it.each(NICHES)('encontra o rótulo pt-BR de %s com variações de caixa e acento', async (niche) => {
+    const label = NICHE_LABELS[niche]
+    const stored = makeStoredLead({ id: `label-${niche}`, niche: label.toUpperCase() })
+    client = new FakeSupabase([stored])
+    vi.mocked(requireSupabase).mockReturnValue(client as unknown as SupabaseClient)
+
+    const result = await listLeads({ niche }, 'created_desc', 0, 20)
+
+    expect(result.leads.map((lead) => lead.id)).toEqual([stored.id])
+  })
+
+  it.each([
+    ['manicure', 'manicure / nail designer'],
+    ['manicure', 'manicure/nail designer'],
+    ['manicure', 'manicure - nail designer'],
+    ['nail_designer', 'manicure / nail designer'],
+    ['salao_beleza', 'salao de beleza'],
+    ['salao_beleza', 'Salão de Beleza'],
+    ['salao_beleza', 'estúdio de beleza'],
+    ['salao_beleza', 'Estúdio de Beleza'],
+    ['clinica_estetica', 'Clínica de Estética'],
+    ['clinica_estetica', 'Clínica estetica'],
+    ['clinica_estetica', 'Clinica estética'],
+    ['comercio', 'Pequeno Comércio'],
+    ['comercio', 'Comércio'],
+  ])('encontra %s quando o texto armazenado é %s', async (niche, storedNiche) => {
+    const stored = makeStoredLead({ id: `combined-${niche}`, niche: storedNiche })
+    client = new FakeSupabase([stored])
+    vi.mocked(requireSupabase).mockReturnValue(client as unknown as SupabaseClient)
+
+    const result = await listLeads({ niche }, 'created_desc', 0, 20)
+
+    expect(result.leads.map((lead) => lead.id)).toEqual([stored.id])
+  })
+
+  it.each(NICHES)('isola o nicho %s dos demais valores canônicos', async (niche) => {
+    const stored = NICHES.map((value) => makeStoredLead({ id: `matrix-${value}`, niche: value }))
+    client = new FakeSupabase(stored)
+    vi.mocked(requireSupabase).mockReturnValue(client as unknown as SupabaseClient)
+
+    const result = await listLeads({ niche }, 'created_desc', 0, 20)
+
+    expect(result.leads.map((lead) => lead.id)).toEqual([`matrix-${niche}`])
+    expect(result.total).toBe(1)
+  })
+
+  it.each([
+    ['manicure', 'manicureiro'],
+    ['barbearia', 'barbeariaia'],
+    ['comercio', 'comercioexterior'],
+  ])('não confunde o filtro de %s com %s', async (niche, storedNiche) => {
+    const stored = makeStoredLead({ id: 'substring', niche: storedNiche })
+    client = new FakeSupabase([stored])
+    vi.mocked(requireSupabase).mockReturnValue(client as unknown as SupabaseClient)
+
+    const result = await listLeads({ niche }, 'created_desc', 0, 20)
+
+    expect(result.leads).toEqual([])
+    expect(result.total).toBe(0)
+  })
+
+  it('não confunde o filtro de manicure com nail designer puro', async () => {
+    const nailDesigner = makeStoredLead({ id: 'nail-only', niche: 'nail designer' })
+    client = new FakeSupabase([nailDesigner])
+    vi.mocked(requireSupabase).mockReturnValue(client as unknown as SupabaseClient)
+
+    const result = await listLeads({ niche: 'manicure' }, 'created_desc', 0, 20)
+
+    expect(result.leads).toEqual([])
+    expect(result.total).toBe(0)
+  })
+})
+
 describe('updateLead', () => {
   it('não envia status ao salvar os demais campos do formulário', async () => {
     const stored = makeStoredLead({ status: 'negociando' })
@@ -185,6 +299,17 @@ describe('updateLead', () => {
     expect(client.updates).toHaveLength(1)
     expect(client.updates[0]).not.toHaveProperty('status')
     expect(client.updates[0]).toHaveProperty('score')
+  })
+
+  it('persiste o link exato do Maps ao editar um lead', async () => {
+    const stored = makeStoredLead({})
+    client = new FakeSupabase([stored])
+    vi.mocked(requireSupabase).mockReturnValue(client as unknown as SupabaseClient)
+    const mapsUrl = 'https://maps.app.goo.gl/exemplo'
+
+    await updateLead(stored.id, { ...emptyLeadDraft(), name: stored.name, maps_url: mapsUrl })
+
+    expect(client.updates[0]).toHaveProperty('maps_url', mapsUrl)
   })
 })
 

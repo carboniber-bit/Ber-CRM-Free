@@ -121,6 +121,33 @@ describe('validateLeadDraft', () => {
       expect(validateLeadDraft(makeDraft({ [field]: null }))[field]).toBeUndefined()
       expect(validateLeadDraft(makeDraft({ [field]: '' }))[field]).toBeUndefined()
     }
+    expect(validateLeadDraft(makeDraft({ maps_url: null })).maps_url).toBeUndefined()
+    expect(validateLeadDraft(makeDraft({ maps_url: '' })).maps_url).toBeUndefined()
+  })
+
+  it.each([
+    'https://maps.app.goo.gl/exemplo',
+    'maps.app.goo.gl/exemplo',
+    'https://www.google.com/maps/place/Studio+Lis',
+  ])('aceita um link exato do Google Maps: %s', (mapsUrl) => {
+    expect(validateLeadDraft(makeDraft({ maps_url: mapsUrl })).maps_url).toBeUndefined()
+  })
+
+  it.each([
+    'https://example.com/estabelecimento',
+    'http://localhost:5173/lead',
+    'https://www.google.com/maps/search/?api=1&query=Studio+Lis',
+    'https://www.google.com/maps?api=1&query=Studio+Lis',
+  ])('rejeita um link que não é o Maps exato do estabelecimento: %s', (mapsUrl) => {
+    expect(validateLeadDraft(makeDraft({ maps_url: mapsUrl })).maps_url).toBeDefined()
+  })
+
+  it.each(['@perfil', '@perfil_123', '@perfil.exemplo'])('aceita o usuário do Instagram %s', (instagram) => {
+    expect(validateLeadDraft(makeDraft({ instagram })).instagram).toBeUndefined()
+  })
+
+  it.each(['@', '@.', '@a..b', '@perfil.', '@perfil com espaço', '@perfil/outro', '@perfil?x=1', '@perfil#x'])('rejeita o usuário inválido do Instagram %s', (instagram) => {
+    expect(validateLeadDraft(makeDraft({ instagram })).instagram).toBeDefined()
   })
 })
 
@@ -132,6 +159,7 @@ describe('normalizeLeadDraftForSave', () => {
       catalog_url: 'example.com:8080/catalogo',
       instagram: 'instagram.com/exemplo',
       facebook: 'facebook.com/exemplo',
+      maps_url: 'maps.app.goo.gl/exemplo',
     }))
 
     expect(normalized.website).toBe('https://example.com')
@@ -139,6 +167,7 @@ describe('normalizeLeadDraftForSave', () => {
     expect(normalized.catalog_url).toBe('https://example.com:8080/catalogo')
     expect(normalized.instagram).toBe('https://instagram.com/exemplo')
     expect(normalized.facebook).toBe('https://facebook.com/exemplo')
+    expect(normalized.maps_url).toBe('https://maps.app.goo.gl/exemplo')
   })
 
   it('preserva URLs HTTP/HTTPS já informadas', () => {
@@ -158,9 +187,22 @@ describe('normalizeLeadDraftForSave', () => {
       catalog_url: null,
       instagram: null,
       facebook: '',
+      maps_url: '',
     }))
 
     for (const field of URL_FIELDS) expect(normalized[field]).toBeNull()
+  })
+
+  it('converte um usuário antigo do Instagram em link absoluto', () => {
+    const normalized = normalizeLeadDraftForSave(makeDraft({ instagram: '@perfil.exemplo' }))
+
+    expect(normalized.instagram).toBe('https://www.instagram.com/perfil.exemplo/')
+  })
+
+  it('descarta um Maps que não seja um link exato válido', () => {
+    const normalized = normalizeLeadDraftForSave(makeDraft({ maps_url: 'https://example.com/estabelecimento' }))
+
+    expect(normalized.maps_url).toBeNull()
   })
 
   it('não muta o rascunho recebido', () => {

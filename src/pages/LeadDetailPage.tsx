@@ -7,6 +7,7 @@ import {
   STATUS_LABELS, type Lead, type LeadStatus, type Niche,
 } from '../types/lead'
 import { formatBRL, formatDateTime, formatPhone } from '../lib/format'
+import { buildMapsSearchUrl, normalizeInstagramUrl, normalizeMapsUrl, normalizeUrl } from '../lib/url'
 import { useToast } from '../hooks/useToast'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
@@ -226,12 +227,17 @@ function LeadDetailContent({ leadId }: { leadId: string }) {
     }
   }
 
+  const exactMapsUrl = normalizeMapsUrl(lead.maps_url ?? '')
+  const mapsSearchUrl = exactMapsUrl ? null : buildMapsSearchUrl([
+    lead.name, lead.address, lead.district, lead.city, lead.state, lead.zip_code,
+  ])
   const links = [
-    { label: 'Instagram', url: lead.instagram },
-    { label: 'Facebook', url: lead.facebook },
-    { label: 'Site', url: lead.website },
-    { label: 'Cardápio', url: lead.menu_url },
-    { label: 'Catálogo', url: lead.catalog_url },
+    { label: exactMapsUrl ? 'Abrir no Maps' : 'Buscar no Maps', url: exactMapsUrl || mapsSearchUrl },
+    { label: 'Instagram', url: normalizeInstagramUrl(lead.instagram) },
+    { label: 'Facebook', url: normalizeUrl(lead.facebook ?? '') },
+    { label: 'Site', url: normalizeUrl(lead.website ?? '') },
+    { label: 'Cardápio', url: normalizeUrl(lead.menu_url ?? '') },
+    { label: 'Catálogo', url: normalizeUrl(lead.catalog_url ?? '') },
   ]
 
   return (

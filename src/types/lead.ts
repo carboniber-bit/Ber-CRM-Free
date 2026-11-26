@@ -132,6 +132,7 @@ export interface Lead {
   website: string | null
   menu_url: string | null
   catalog_url: string | null
+  maps_url: string | null
   country: string | null
   state: string | null
   city: string | null
@@ -184,6 +185,7 @@ export function emptyLeadDraft(): LeadWrite {
     website: null,
     menu_url: null,
     catalog_url: null,
+    maps_url: null,
     country: 'Brasil',
     state: null,
     city: null,

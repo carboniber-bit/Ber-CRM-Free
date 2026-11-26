@@ -51,3 +51,42 @@ export function normalizeClientUrl(raw: string | null): string | null {
   if (!raw?.trim()) return ''
   return normalizeUrl(raw)
 }
+
+export function normalizeInstagramUrl(raw: string | null): string | null {
+  if (!raw) return ''
+  if (raw.startsWith('@')) {
+    const username = raw.slice(1)
+    return !username.includes('..') && /^[a-z\d_](?:[a-z\d._]{0,28}[a-z\d_])?$/i.test(username)
+      ? `https://www.instagram.com/${username}/`
+      : null
+  }
+  return normalizeUrl(raw)
+}
+
+export function normalizeMapsUrl(raw: string | null): string | null {
+  if (!raw) return ''
+  const normalized = normalizeUrl(raw)
+  if (!normalized) return null
+
+  try {
+    const url = new URL(normalized)
+    const hostname = url.hostname.toLowerCase().replace(/\.$/, '')
+    if (hostname === 'maps.app.goo.gl') return url.pathname.length > 1 ? normalized : null
+    if (hostname === 'goo.gl') return /^\/maps\/[^/]+\/?$/.test(url.pathname) ? normalized : null
+    if (hostname !== 'maps.google.com' && !/^(?:www\.)?google\.com(?:\.[a-z]{2})?$/.test(hostname)) return null
+
+    const hasPlacePath = /^\/maps\/(?:preview\/)?place\/[^/]+/.test(url.pathname)
+    const hasPlaceId = url.searchParams.get('q')?.toLowerCase().startsWith('placeid:')
+    const hasCid = Boolean(url.searchParams.get('cid'))
+    return hasPlacePath || hasPlaceId || hasCid ? normalized : null
+  } catch {
+    return null
+  }
+}
+
+export function buildMapsSearchUrl(parts: Array<string | null | undefined>): string | null {
+  const query = parts.map((part) => part?.trim() ?? '').filter(Boolean).join(', ')
+  return query
+    ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`
+    : null
+}

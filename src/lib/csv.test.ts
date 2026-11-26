@@ -33,11 +33,34 @@ describe('leadsToCsv', () => {
     expect(lines[1]).toContain('não') // presença no exportada em pt-BR
   })
 
-  it('mantém os 30 cabeçalhos e a quebra de linha LF', () => {
+  it('mantém os 31 cabeçalhos e a quebra de linha LF', () => {
     const csv = leadsToCsv([makeLead()])
-    expect(CSV_HEADERS).toHaveLength(30)
+    expect(CSV_HEADERS).toHaveLength(31)
+    expect(CSV_HEADERS.at(-1)).toBe('maps_url')
     expect(csv.split('\n')[0]).toBe(CSV_HEADERS.join(','))
     expect(csv).not.toContain('\r')
+  })
+
+  it('exporta o link exato do Google Maps na última coluna', () => {
+    const mapsUrl = 'https://maps.app.goo.gl/exemplo'
+    const csv = leadsToCsv([makeLead({ maps_url: mapsUrl })])
+    const parsed = Papa.parse<string[]>(csv)
+
+    expect(parsed.data[1][30]).toBe(mapsUrl)
+  })
+
+  it('mantém vazia a coluna do Maps quando o link exato não foi informado', () => {
+    const csv = leadsToCsv([makeLead()])
+    const parsed = Papa.parse<string[]>(csv)
+
+    expect(parsed.data[1][30]).toBe('')
+  })
+
+  it('protege a célula do Maps contra fórmulas', () => {
+    const csv = leadsToCsv([makeLead({ maps_url: '=HIJACK()' })])
+    const parsed = Papa.parse<string[]>(csv)
+
+    expect(parsed.data[1][30]).toBe("'=HIJACK()")
   })
 
   it.each([
@@ -228,12 +251,13 @@ describe('parseLeadsCsv', () => {
   })
 
   it('roundtrip export → import preserva dados essenciais', () => {
-    const original = makeLead()
+    const original = makeLead({ maps_url: 'https://maps.app.goo.gl/exemplo' })
     const rows = parseLeadsCsv(leadsToCsv([original]))
     expect(rows[0].errors).toEqual([])
     expect(rows[0].draft?.name).toBe(original.name)
     expect(rows[0].draft?.has_website).toBe('no')
     expect(rows[0].draft?.estimated_value).toBe(1500)
     expect(rows[0].draft?.niche).toBe('barbearia')
+    expect(rows[0].draft?.maps_url).toBe(original.maps_url)
   })
 })
