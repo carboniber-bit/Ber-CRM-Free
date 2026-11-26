@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { getLead } from '../services/leadService'
+import { getLeadClientLink } from '../services/clientService'
+import type { LeadClientLink } from '../types/client'
 import type { Lead, LeadWrite } from '../types/lead'
 import { LeadForm } from '../components/leads/LeadForm'
 import { Button } from '../components/ui/Button'
@@ -8,30 +10,61 @@ import { Card } from '../components/ui/Card'
 import { Skeleton } from '../components/ui/Skeleton'
 import { useToast } from '../hooks/useToast'
 
-interface LeadLoadState {
-  id: string
-  lead: Lead | null
-  error: string | null
-}
+type EditLoadState =
+  | { status: 'loading'; id: string }
+  | { status: 'ready'; id: string; lead: Lead; link: LeadClientLink | null }
+  | { status: 'error'; id: string; message: string }
 
 export function LeadEditPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { toast } = useToast()
-  const [loadState, setLoadState] = useState<LeadLoadState | null>(null)
+  const [loadState, setLoadState] = useState<EditLoadState | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const activeRef = useRef(true)
+  const requestRef = useRef(0)
+
+  const loadLeadAndLink = useCallback(async () => {
+    if (!id || !activeRef.current) return
+    const request = ++requestRef.current
+    setLoadState({ status: 'loading', id })
+
+    const [leadResult, linkResult] = await Promise.allSettled([
+      getLead(id),
+      getLeadClientLink(id),
+    ])
+    if (!activeRef.current || request !== requestRef.current) return
+
+    if (leadResult.status === 'rejected') {
+      setLoadState({
+        status: 'error',
+        id,
+        message: leadResult.reason instanceof Error ? leadResult.reason.message : 'Erro ao carregar lead.',
+      })
+      return
+    }
+    if (linkResult.status === 'rejected') {
+      const message = linkResult.reason instanceof Error ? linkResult.reason.message : 'Erro ao consultar vínculo.'
+      setLoadState({ status: 'error', id, message: `Não foi possível verificar o vínculo com o cliente. ${message}` })
+      return
+    }
+
+    setLoadState({ status: 'ready', id, lead: leadResult.value, link: linkResult.value })
+  }, [id, reloadKey])
 
   useEffect(() => {
-    if (!id) return
-    let active = true
-    void getLead(id).then(
-      (lead) => { if (active) setLoadState({ id, lead, error: null }) },
-      (error: unknown) => {
-        if (active) setLoadState({ id, lead: null, error: error instanceof Error ? error.message : 'Erro ao carregar lead.' })
-      },
-    )
-    return () => { active = false }
-  }, [id, reloadKey])
+    activeRef.current = true
+    void loadLeadAndLink()
+    return () => {
+      activeRef.current = false
+      requestRef.current += 1
+    }
+  }, [loadLeadAndLink])
+
+  const retry = () => {
+    setLoadState(null)
+    setReloadKey((key) => key + 1)
+  }
 
   if (!id) {
     return (
@@ -45,27 +78,27 @@ export function LeadEditPage() {
     )
   }
 
-  if (loadState?.id === id && loadState.error) {
-    return (
-      <div className="mx-auto flex max-w-4xl flex-col gap-5">
-        <h1 className="font-display text-xl font-bold text-ink">Editar lead</h1>
-        <Card className="border-danger/40" role="alert">
-          <p className="text-sm text-danger">{loadState.error}</p>
-          <div className="mt-3 flex gap-2">
-            <Button variant="outline" onClick={() => { setLoadState(null); setReloadKey((key) => key + 1) }}>Tentar novamente</Button>
-            <Button variant="ghost" onClick={() => navigate('/leads')}>Voltar para leads</Button>
-          </div>
-        </Card>
-      </div>
-    )
-  }
-
-  if (!loadState || loadState.id !== id || !loadState.lead) {
+  if (!loadState || loadState.id !== id || loadState.status === 'loading') {
     return (
       <div className="mx-auto flex max-w-4xl flex-col gap-5" aria-busy="true">
         <h1 className="font-display text-xl font-bold text-ink">Editar lead</h1>
         <Skeleton className="h-96" />
-        <span className="sr-only">Carregando lead…</span>
+        <span role="status" className="sr-only">Carregando lead…</span>
+      </div>
+    )
+  }
+
+  if (loadState.status === 'error') {
+    return (
+      <div className="mx-auto flex max-w-4xl flex-col gap-5">
+        <h1 className="font-display text-xl font-bold text-ink">Editar lead</h1>
+        <Card className="border-danger/40" role="alert">
+          <p className="text-sm text-danger">{loadState.message}</p>
+          <div className="mt-3 flex gap-2">
+            <Button variant="outline" onClick={retry}>Tentar novamente</Button>
+            <Button variant="ghost" onClick={() => navigate('/leads')}>Voltar para leads</Button>
+          </div>
+        </Card>
       </div>
     )
   }
@@ -128,9 +161,10 @@ export function LeadEditPage() {
         <LeadForm
           initial={initial}
           leadId={lead.id}
-          onSaved={(lead) => {
+          financialFieldsLocked={Boolean(loadState.link)}
+          onSaved={(savedLead) => {
             toast('Alterações salvas.')
-            navigate(`/leads/${lead.id}`)
+            navigate(`/leads/${savedLead.id}`)
           }}
           onCancel={() => navigate('/leads')}
         />

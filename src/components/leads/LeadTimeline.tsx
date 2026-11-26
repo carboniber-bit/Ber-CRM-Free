@@ -26,69 +26,79 @@ const icons: Record<ActivityType, LucideIcon> = {
 }
 
 export function LeadTimeline({ leadId, refreshKey }: { leadId: string; refreshKey: number }) {
-  return <LeadTimelineContent key={`${leadId}:${refreshKey}`} leadId={leadId} />
+  return <LeadTimelineContent key={leadId} leadId={leadId} refreshKey={refreshKey} />
 }
 
-function LeadTimelineContent({ leadId }: { leadId: string }) {
+function LeadTimelineContent({ leadId, refreshKey }: { leadId: string; refreshKey: number }) {
   const [activities, setActivities] = useState<Activity[]>([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const requestRef = useRef(0)
+  const mountedRef = useRef(true)
+  const hasLoadedRef = useRef(false)
 
-  const handleSuccess = useCallback((request: number, nextActivities: Activity[]) => {
-    if (request !== requestRef.current) return
-    setActivities(nextActivities)
-    setError(null)
-    setLoading(false)
-  }, [])
+  const loadActivities = useCallback(async (background: boolean) => {
+    if (!mountedRef.current) return
+    const request = ++requestRef.current
+    setRefreshing(background)
+    if (!background) {
+      setActivities([])
+      setLoading(true)
+      setError(null)
+    }
 
-  const handleError = useCallback((request: number, cause: unknown) => {
-    if (request !== requestRef.current) return
-    setError(cause instanceof Error ? cause.message : 'Erro ao carregar histórico.')
-    setLoading(false)
-  }, [])
+    try {
+      const nextActivities = await listActivities(leadId)
+      if (!mountedRef.current || request !== requestRef.current) return
+      hasLoadedRef.current = true
+      setActivities(nextActivities)
+      setError(null)
+    } catch (cause) {
+      if (!mountedRef.current || request !== requestRef.current) return
+      setError(cause instanceof Error ? cause.message : 'Erro ao carregar histórico.')
+    } finally {
+      if (mountedRef.current && request === requestRef.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
+    }
+  }, [leadId])
 
   useEffect(() => {
-    const request = ++requestRef.current
-    void listActivities(leadId).then(
-      (nextActivities) => handleSuccess(request, nextActivities),
-      (cause: unknown) => handleError(request, cause),
-    )
+    mountedRef.current = true
+    void loadActivities(hasLoadedRef.current)
     return () => {
+      mountedRef.current = false
       requestRef.current += 1
     }
-  }, [leadId, handleSuccess, handleError])
+  }, [loadActivities, refreshKey])
 
-  const retry = () => {
-    const request = ++requestRef.current
-    setActivities([])
-    setLoading(true)
-    setError(null)
-    void listActivities(leadId).then(
-      (nextActivities) => handleSuccess(request, nextActivities),
-      (cause: unknown) => handleError(request, cause),
-    )
-  }
+  const retry = () => void loadActivities(hasLoadedRef.current)
 
   return (
-    <Card title="Histórico de contatos" dot="pink" aria-busy={loading}>
+    <Card title="Histórico de contatos" dot="pink" aria-busy={loading || refreshing}>
       {loading && <span role="status" className="sr-only">Carregando histórico de contatos…</span>}
-      {loading ? (
-        <Skeleton className="h-32" />
-      ) : error ? (
+      {refreshing && <span role="status" className="sr-only">Atualizando histórico de contatos…</span>}
+      {error && (
         <div className="rounded-xl border border-danger/40 bg-danger/5 p-4" role="alert">
           <p className="text-sm font-medium text-danger">Não foi possível carregar o histórico.</p>
           <p className="mt-1 text-sm text-muted">{error}</p>
-          <Button type="button" variant="outline" className="mt-3" onClick={retry}>
+          <Button type="button" variant="outline" className="mt-3" onClick={retry} disabled={refreshing}>
             Tentar novamente
           </Button>
         </div>
+      )}
+      {loading ? (
+        <Skeleton className="h-32" />
       ) : activities.length === 0 ? (
-        <EmptyState
-          icon={MessageSquare}
-          title="Nenhum contato registrado"
-          description="Registre o primeiro contato, ligação ou observação para começar o histórico deste lead."
-        />
+        !error && (
+          <EmptyState
+            icon={MessageSquare}
+            title="Nenhum contato registrado"
+            description="Registre o primeiro contato, ligação ou observação para começar o histórico deste lead."
+          />
+        )
       ) : (
         <ol className="flex flex-col" aria-label="Atividades do lead">
           {activities.map((activity, index) => {

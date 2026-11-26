@@ -1,4 +1,4 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { AlertTriangle } from 'lucide-react'
 import { createLead, findDuplicateCandidates, updateLead } from '../../services/leadService'
@@ -31,13 +31,14 @@ import { Textarea } from '../ui/Textarea'
 interface LeadFormProps {
   initial?: LeadWrite
   leadId?: string
+  financialFieldsLocked?: boolean
   onSaved: (lead: Lead) => void
   onCancel: () => void
 }
 
 const sectionTitle = 'font-display text-sm font-semibold text-ink'
 
-export function LeadForm({ initial, leadId, onSaved, onCancel }: LeadFormProps) {
+export function LeadForm({ initial, leadId, financialFieldsLocked = false, onSaved, onCancel }: LeadFormProps) {
   const [draft, setDraft] = useState<LeadWrite>(initial ?? emptyLeadDraft())
   const [errors, setErrors] = useState<LeadDraftErrors>({})
   const [saving, setSaving] = useState(false)
@@ -46,6 +47,17 @@ export function LeadForm({ initial, leadId, onSaved, onCancel }: LeadFormProps) 
   const [duplicates, setDuplicates] = useState<Lead[]>([])
   const [duplicateLookupFailed, setDuplicateLookupFailed] = useState(false)
   const [prices, setPrices] = useState<ServicePrices | null>(null)
+  const mountedRef = useRef(true)
+  const requestRef = useRef(0)
+  const busyRef = useRef(false)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      requestRef.current += 1
+    }
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -67,21 +79,28 @@ export function LeadForm({ initial, leadId, onSaved, onCancel }: LeadFormProps) 
     (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
       set(key, (event.target.value || null) as LeadWrite[K])
 
-  const persist = async (payload: LeadWrite) => {
+  const persist = async (payload: LeadWrite, request: number) => {
+    if (!mountedRef.current || request !== requestRef.current || busyRef.current) return
+    busyRef.current = true
     setSaving(true)
     setSaveError(null)
     try {
       const lead = leadId ? await updateLead(leadId, payload) : await createLead(payload)
+      if (!mountedRef.current || request !== requestRef.current) return
       onSaved(lead)
     } catch (error) {
+      if (!mountedRef.current || request !== requestRef.current) return
       setSaveError(error instanceof Error ? error.message : 'Erro ao salvar.')
     } finally {
-      setSaving(false)
+      if (mountedRef.current && request === requestRef.current) {
+        busyRef.current = false
+        setSaving(false)
+      }
     }
   }
 
   const save = async (skipDuplicateCheck: boolean) => {
-    if (saving || checkingDuplicates) return
+    if (busyRef.current || !mountedRef.current) return
 
     const validation = validateLeadDraft(draft)
     setErrors(validation)
@@ -89,32 +108,42 @@ export function LeadForm({ initial, leadId, onSaved, onCancel }: LeadFormProps) 
     if (Object.values(validation).some(Boolean)) return
 
     const payload = normalizeLeadDraftForSave(draft)
+    const request = ++requestRef.current
     setDuplicates([])
     setDuplicateLookupFailed(false)
 
     if (skipDuplicateCheck) {
-      await persist(payload)
+      await persist(payload, request)
       return
     }
 
+    busyRef.current = true
     setCheckingDuplicates(true)
+    let shouldPersist = false
     try {
       const candidates = await findDuplicateCandidates(
         { phone: payload.phone, whatsapp: payload.whatsapp, cnpj: payload.cnpj, name: payload.name, city: payload.city },
         leadId,
       )
+      if (!mountedRef.current || request !== requestRef.current) return
       if (candidates.length > 0) {
         setDuplicates(candidates)
-        return
+      } else {
+        shouldPersist = true
       }
     } catch {
+      if (!mountedRef.current || request !== requestRef.current) return
       setDuplicateLookupFailed(true)
-      return
     } finally {
-      setCheckingDuplicates(false)
+      if (mountedRef.current && request === requestRef.current) {
+        busyRef.current = false
+        setCheckingDuplicates(false)
+      }
     }
 
-    await persist(payload)
+    if (shouldPersist && mountedRef.current && request === requestRef.current) {
+      await persist(payload, request)
+    }
   }
 
   const submit = (event: FormEvent) => {
@@ -193,8 +222,11 @@ export function LeadForm({ initial, leadId, onSaved, onCancel }: LeadFormProps) 
           />
           <Input disabled={busy} label="Valor potencial estimado (R$)" type="number" min="0" step="0.01" value={String(draft.estimated_value)} error={errors.estimated_value} onChange={(event) => set('estimated_value', Number(event.target.value) || 0)} />
           <Input disabled={busy} label="Valor negociado (R$)" type="number" min="0" step="0.01" value={String(draft.negotiated_value)} error={errors.negotiated_value} onChange={(event) => set('negotiated_value', Number(event.target.value) || 0)} />
-          <Input disabled={busy} label="Valor contratado (R$)" type="number" min="0" step="0.01" value={String(draft.contracted_value)} error={errors.contracted_value} onChange={(event) => set('contracted_value', Number(event.target.value) || 0)} />
-          <Input disabled={busy} label="Valor recebido (R$)" type="number" min="0" step="0.01" value={String(draft.received_value)} error={errors.received_value} onChange={(event) => set('received_value', Number(event.target.value) || 0)} />
+          <Input disabled={busy || financialFieldsLocked} label="Valor contratado (R$)" type="number" min="0" step="0.01" value={String(draft.contracted_value)} error={errors.contracted_value} onChange={(event) => set('contracted_value', Number(event.target.value) || 0)} />
+          <Input disabled={busy || financialFieldsLocked} label="Valor recebido (R$)" type="number" min="0" step="0.01" value={String(draft.received_value)} error={errors.received_value} onChange={(event) => set('received_value', Number(event.target.value) || 0)} />
+          {financialFieldsLocked && (
+            <p className="text-xs text-muted sm:col-span-2">Após a conversão, contrato e recebimentos são gerenciados no cliente.</p>
+          )}
           <Select disabled={busy || Boolean(leadId)} label="Status" value={draft.status} onChange={(event) => set('status', event.target.value as LeadWrite['status'])} options={LEAD_STATUSES.map((status) => ({ value: status, label: STATUS_LABELS[status] }))} />
           {leadId && (
             <p className="text-xs text-muted sm:col-span-2">
