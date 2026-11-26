@@ -7257,6 +7257,8 @@ const lead: Lead = {
   name: 'Estabelecimento de teste',
   phone: '11999999999',
   status: 'novo',
+  next_contact_at: null,
+  last_verified_at: null,
   score: 0,
   priority: 'media',
   needs: [],
@@ -7426,6 +7428,8 @@ function makeLead(overrides: Partial<Lead> = {}): Lead {
     responsible_name: 'Ana Responsável',
     phone: '11999999999',
     status: 'aceitou',
+    next_contact_at: null,
+    last_verified_at: null,
     contracted_value: 1500,
     received_value: 500,
     score: 0,
@@ -8550,6 +8554,8 @@ const lead: Lead = {
   priority: 'media',
   needs: [],
   score_reasons: [],
+  next_contact_at: null,
+  last_verified_at: null,
   created_at: '2026-11-25T12:00:00Z',
   updated_at: '2026-11-25T12:00:00Z',
 }
@@ -10725,8 +10731,9 @@ por:
     ui/           Button, Input, Card, Modal, Toast, StatusBadge, PresenceBadge, ScoreBar…
     auth/         telas de autenticação
     leads/        LeadForm, LeadFiltersBar, LeadChecklist, OpportunityPanel, LeadTimeline,
-                  LeadFollowups, FollowupDialog, ContactDialog, WhatsAppDialog, CsvImportModal
-    clients/      ClientForm, ClientHistory, ConversionDialog
+                  LeadFollowups, FollowupDialog, ContactDialog, WhatsAppDialog, CsvImportModal,
+                  ConversionDialog
+    clients/      ClientForm, ClientHistory
     pipeline/     KanbanCard e KanbanColumn
     followups/    FollowupItem
   pages/          LoginPage, DashboardPage, StatusPage, NotFoundPage, LeadsPage,
@@ -10803,7 +10810,7 @@ Run in this order:
 ```bash
 npm run build
 npm run lint
-npm test
+npm test -- --maxWorkers=4
 git diff --check
 ```
 
