@@ -56,7 +56,7 @@
 
 ---
 
-### Tarefa 1: Criar tipos financeiros e regras puras de saldo/período
+### Task 1: Criar tipos financeiros e regras puras de saldo/período
 
 **Arquivos:**
 - Criar: `src/types/finance.ts`
@@ -484,7 +484,7 @@ git commit -m "feat: adicionar dominio financeiro e periodos"
 
 ---
 
-### Tarefa 2: Criar schema financeiro 0009 e bloquear escrita direta
+### Task 2: Criar schema financeiro 0009 e bloquear escrita direta
 
 **Arquivos:**
 - Criar: `supabase/migrations/0009_etapa3_finance.sql`
@@ -696,7 +696,7 @@ git commit -m "feat: criar schema financeiro com escrita restrita"
 
 ---
 
-### Tarefa 3: Implementar contratos adicionais, parcelas e ajuste de total
+### Task 3: Implementar contratos adicionais, parcelas e ajuste de total
 
 **Arquivos:**
 - Criar: `supabase/tests/etapa3_finance.sql`
@@ -1245,7 +1245,7 @@ git add supabase/migrations/0009_etapa3_finance.sql supabase/tests/etapa3_financ
 git commit -m "feat: adicionar contratos e parcelas financeiras"
 ```
 
-### Tarefa 4: Substituir `update_client` e liberar o total antes de dependências financeiras
+### Task 4: Substituir `update_client` e liberar o total antes de dependências financeiras
 
 **Arquivos:**
 - Modificar: `supabase/migrations/0009_etapa3_finance.sql`
@@ -1770,7 +1770,7 @@ git commit -m "feat: liberar ajuste inicial de contrato pelo cliente"
 
 ---
 
-### Tarefa 5: Implementar recebimentos, alocações e estornos idempotentes
+### Task 5: Implementar recebimentos, alocações e estornos idempotentes
 
 **Arquivos:**
 - Modificar: `supabase/migrations/0009_etapa3_finance.sql`
@@ -2878,7 +2878,7 @@ git commit -m "feat: adicionar recebimentos e estornos idempotentes"
 
 ---
 
-### Tarefa 6: Implementar despesas e categorias
+### Task 6: Implementar despesas e categorias
 
 **Arquivos:**
 - Modificar: `supabase/migrations/0009_etapa3_finance.sql`
@@ -3729,7 +3729,7 @@ git add supabase/migrations/0009_etapa3_finance.sql supabase/tests/etapa3_financ
 git commit -m "feat: adicionar despesas e categorias"
 ```
 
-### Tarefa 7: Implementar resumo e fluxo de caixa
+### Task 7: Implementar resumo e fluxo de caixa
 
 **Arquivos:**
 - Modificar: `supabase/migrations/0009_etapa3_finance.sql`
@@ -4476,7 +4476,7 @@ git add supabase/migrations/0009_etapa3_finance.sql supabase/tests/etapa3_financ
 git commit -m "feat: adicionar resumo e fluxo de caixa"
 ```
 
-### Tarefa 8: Criar serviços financeiros e testes de contrato
+### Task 8: Criar serviços financeiros e testes de contrato
 
 **Arquivos:**
 - Criar: `src/services/contractService.ts`
@@ -5407,7 +5407,7 @@ git add src/services/contractService.ts src/services/contractService.test.ts src
 git commit -m "feat: adicionar servicos financeiros"
 ```
 
-### Tarefa 9: Criar painel de contratos, parcelas e pagamento/estorno
+### Task 9: Criar painel de contratos, parcelas e pagamento/estorno
 
 **Arquivos:**
 - Criar: `src/components/finance/PaymentDialog.tsx`
@@ -6383,7 +6383,7 @@ git commit -m "feat: adicionar painel de contratos e pagamentos"
 
 ---
 
-### Tarefa 10: Despesas, categorias e ações de baixa
+### Task 10: Despesas, categorias e ações de baixa
 
 **Arquivos:**
 - Criar: `src/components/finance/ExpenseForm.tsx`
@@ -7059,7 +7059,7 @@ git commit -m "feat: adicionar despesas e categorias financeiras"
 
 ---
 
-### Tarefa 11: Dashboard financeiro, gráficos e snapshot válido
+### Task 11: Dashboard financeiro, gráficos e snapshot válido
 
 **Arquivos:**
 - Criar: `src/components/finance/FinancialCharts.tsx`
@@ -7456,7 +7456,7 @@ git commit -m "feat: adicionar dashboard financeiro com snapshot valido"
 
 ---
 
-### Tarefa 12: Integrar financeiro ao cliente, rota e verificações finais
+### Task 12: Integrar financeiro ao cliente, rota e verificações finais
 
 **Arquivos:**
 - Criar: `src/components/clients/ClientFinancePanel.tsx`
