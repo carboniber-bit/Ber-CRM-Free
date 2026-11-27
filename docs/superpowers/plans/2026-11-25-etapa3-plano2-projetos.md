@@ -836,6 +836,42 @@ begin
   end if;
 
   begin
+    perform public.update_project(v_project_id, jsonb_build_object(
+      'client_id', v_client_id,
+      'contract_id', v_contract_id, 'name', 'Projeto principal',
+      'service', 'Site', 'contracted_value', '600.01',
+      'start_date', v_today, 'due_date', v_today + 15,
+      'responsible_name', 'Responsável', 'priority', 'high', 'description', 'Teste'
+    ));
+    raise exception 'update_project aceitou projeto ativo acima da capacidade.';
+  exception when check_violation then
+    if sqlerrm <> 'A soma dos projetos excede o valor do contrato.' then raise; end if;
+  end;
+  if (select contracted_value from public.projects where id = v_project_id) <> 600.00
+    or (select count(*) from public.projects where contract_id = v_contract_id) <> 2 then
+    raise exception 'Falha por capacidade alterou projetos ativos.';
+  end if;
+
+  perform public.update_project(v_project_id, jsonb_build_object(
+    'client_id', v_client_id,
+    'contract_id', v_contract_id, 'name', 'Projeto principal',
+    'service', 'Site', 'contracted_value', '600.00',
+    'start_date', v_today, 'due_date', v_today + 15,
+    'responsible_name', 'Responsável', 'priority', 'high',
+    'description', 'Edição ativa dentro da capacidade'
+  ));
+  if (select description from public.projects where id = v_project_id)
+      is distinct from 'Edição ativa dentro da capacidade' then
+    raise exception 'Edição ativa dentro da capacidade não persistiu.';
+  end if;
+  select count(*) into v_events from public.client_activities
+    where project_id = v_project_id and type = 'note'
+      and metadata ->> 'contracted_value_preserved' = 'false';
+  if v_events <> 1 then
+    raise exception 'Edição ativa não gerou exatamente um evento de atualização.';
+  end if;
+
+  begin
     perform public.update_client(
       v_client_id,
       (v_client ->> 'client')::jsonb || (v_client ->> 'contract')::jsonb || jsonb_build_object(
@@ -929,6 +965,15 @@ begin
     raise exception 'Entrega sem confirmação explícita foi aceita.';
   exception when invalid_parameter_value then
     if sqlerrm <> 'Confirme explicitamente a entrega.' then raise; end if;
+  end;
+
+  begin
+    perform public.deliver_project(v_project_id, jsonb_build_object(
+      'delivery_url', 'https://example.test/entrega-confirmacao-textual', 'confirmed', 'yes'
+    ));
+    raise exception 'Entrega aceitou confirmação textual como booleana.';
+  exception when invalid_parameter_value then
+    if sqlstate <> '22023' or sqlerrm <> 'Confirme explicitamente a entrega.' then raise; end if;
   end;
 
   v_delivered := public.deliver_project(v_project_id, jsonb_build_object(
@@ -1588,6 +1633,9 @@ begin
 
   v_delivery_url := p_payload ->> 'delivery_url';
   v_files_url := p_payload ->> 'files_url';
+  if pg_catalog.jsonb_typeof(p_payload -> 'confirmed') is distinct from 'boolean' then
+    raise exception 'Confirme explicitamente a entrega.' using errcode = '22023';
+  end if;
   v_confirmed := (p_payload ->> 'confirmed')::boolean;
   if nullif(pg_catalog.btrim(v_delivery_url), '') is null then
     raise exception 'Informe o link de entrega.' using errcode = '22023';

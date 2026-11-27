@@ -660,6 +660,9 @@ begin
 
   v_delivery_url := p_payload ->> 'delivery_url';
   v_files_url := p_payload ->> 'files_url';
+  if pg_catalog.jsonb_typeof(p_payload -> 'confirmed') is distinct from 'boolean' then
+    raise exception 'Confirme explicitamente a entrega.' using errcode = '22023';
+  end if;
   v_confirmed := (p_payload ->> 'confirmed')::boolean;
   if nullif(pg_catalog.btrim(v_delivery_url), '') is null then
     raise exception 'Informe o link de entrega.' using errcode = '22023';
