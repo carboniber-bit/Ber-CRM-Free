@@ -130,7 +130,13 @@ declare
   v_description text;
 begin
   if tg_op = 'DELETE' then
-    select * into v_project from public.projects where id = old.project_id and owner_id = old.owner_id;
+    select p.* into v_project
+      from public.projects p
+      join public.clients c on c.owner_id = p.owner_id and c.id = p.client_id
+      where p.id = old.project_id and p.owner_id = old.owner_id;
+    if not found then
+      return old;
+    end if;
     v_description := 'Tarefa excluída: ' || old.title || '.';
   elsif old.status is distinct from new.status and new.status in ('completed','cancelled') then
     select * into v_project from public.projects where id = new.project_id and owner_id = new.owner_id;
@@ -175,7 +181,10 @@ begin
       if new.status is distinct from old.status then
         raise exception 'Uma revisão aprovada não pode voltar para outro status.' using errcode = '23514';
       end if;
-      if new.description is distinct from old.description
+      if new.id is distinct from old.id
+        or new.requested_at is distinct from old.requested_at
+        or new.created_at is distinct from old.created_at
+        or new.description is distinct from old.description
         or new.responsible_name is distinct from old.responsible_name
         or new.notes is distinct from old.notes
         or new.project_id is distinct from old.project_id
