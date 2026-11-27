@@ -5,5 +5,6 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.test.{ts,tsx}'],
     passWithNoTests: true,
+    maxWorkers: 2,
   },
 })
