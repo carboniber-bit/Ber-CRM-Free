@@ -3016,7 +3016,7 @@ function deferred<T>() {
 afterEach(cleanup)
 
 describe('useProjectStatusQueue', () => {
-  beforeEach(() => setProjectStatus.mockReset())
+  beforeEach(() => { setProjectStatus.mockReset() })
 
   it('serializa movimentos do mesmo projeto e preserva a última resposta', async () => {
     const first = deferred<Project>()
@@ -3110,6 +3110,64 @@ describe('useProjectStatusQueue', () => {
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1))
   })
 
+  it('isola rejeição do refresh adiado após RPC bem-sucedida', async () => {
+    const refreshError = new Error('Falha no refresh')
+    const refresh = vi.fn().mockRejectedValue(refreshError)
+    setProjectStatus.mockResolvedValue({ ...project, status: 'planning' })
+    const { result } = renderHook(() => useProjectStatusQueue({
+      projects: [project], onChange: vi.fn(), onRefresh: refresh,
+    }))
+
+    let move!: Promise<void>
+    act(() => {
+      move = result.current.moveProject('p1', 'planning')
+      void result.current.requestRefresh()
+    })
+    await act(async () => {
+      await expect(move).resolves.toBeUndefined()
+    })
+    expect(result.current.projects[0].status).toBe('planning')
+    expect(result.current.pendingIds.size).toBe(0)
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserva o erro da RPC quando o refresh adiado também rejeita', async () => {
+    const pending = deferred<Project>()
+    const rpcError = new Error('Falha na movimentação')
+    const refreshError = new Error('Falha no refresh')
+    const refresh = vi.fn().mockRejectedValue(refreshError)
+    setProjectStatus.mockReturnValue(pending.promise)
+    const { result } = renderHook(() => useProjectStatusQueue({
+      projects: [project], onChange: vi.fn(), onRefresh: refresh,
+    }))
+
+    let move!: Promise<void>
+    act(() => {
+      move = result.current.moveProject('p1', 'planning')
+      void result.current.requestRefresh()
+    })
+    await act(async () => {
+      pending.reject(rpcError)
+      await expect(move).rejects.toBe(rpcError)
+    })
+    expect(result.current.projects[0].status).toBe('not_started')
+    expect(result.current.pendingIds.size).toBe(0)
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('propaga rejeição de refresh imediato sem mutações pendentes', async () => {
+    const refreshError = new Error('Falha no refresh')
+    const refresh = vi.fn().mockRejectedValue(refreshError)
+    const { result } = renderHook(() => useProjectStatusQueue({
+      projects: [project], onChange: vi.fn(), onRefresh: refresh,
+    }))
+
+    await act(async () => {
+      await expect(result.current.requestRefresh()).rejects.toBe(refreshError)
+    })
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
   it('preserva métricas e client_name ao mesclar o Project retornado pelo RPC sem relação', async () => {
     const { client_name: _clientName, progressPercent: _progressPercent, activeTasks: _activeTasks, completedTasks: _completedTasks, ...projectWithoutBoardFields } = project
     setProjectStatus.mockResolvedValue({ ...projectWithoutBoardFields, status: 'planning' })
@@ -3179,6 +3237,101 @@ describe('useProjectStatusQueue', () => {
     })
     expect(refresh).toHaveBeenCalledTimes(1)
     expect(result.current.pendingIds.size).toBe(0)
+  })
+
+  it('reconcilia snapshots externos por projeto sem novo rerender nem onChange', async () => {
+    const pending = deferred<Project>()
+    const other: ProjectListItem = { ...project, id: 'p2', name: 'Outro projeto' }
+    const onChange = vi.fn()
+    setProjectStatus.mockReturnValue(pending.promise)
+    const { result, rerender } = renderHook(
+      ({ projects }) => useProjectStatusQueue({ projects, onChange, onRefresh: vi.fn() }),
+      { initialProps: { projects: [project, other] } },
+    )
+
+    let move!: Promise<void>
+    act(() => { move = result.current.moveProject('p1', 'planning') })
+    expect(onChange).toHaveBeenCalledTimes(1)
+
+    const external: ProjectListItem = {
+      ...project,
+      name: 'Nome externo',
+      description: 'Descrição externa',
+      updated_at: '2026-11-26T10:00:00Z',
+    }
+    const externalOther: ProjectListItem = {
+      ...other,
+      name: 'Outro externo',
+      status: 'in_development',
+    }
+    rerender({ projects: [external, externalOther] })
+    expect(result.current.projects).toEqual([
+      expect.objectContaining({ id: 'p1', name: 'Projeto', description: null, status: 'planning' }),
+      expect.objectContaining({ id: 'p2', name: 'Outro externo', status: 'in_development' }),
+    ])
+    expect(onChange).toHaveBeenCalledTimes(1)
+
+    const latestExternal = { ...external, name: 'Nome mais recente' }
+    const latestExternalOther = { ...externalOther, name: 'Outro mais recente' }
+    rerender({ projects: [latestExternal, latestExternalOther] })
+    expect(result.current.projects[0]).toEqual(expect.objectContaining({
+      id: 'p1', name: 'Projeto', status: 'planning',
+    }))
+    expect(result.current.projects[1]).toEqual(expect.objectContaining({
+      id: 'p2', name: 'Outro mais recente', status: 'in_development',
+    }))
+    expect(onChange).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      pending.resolve({ ...project, status: 'planning' })
+      await move
+    })
+    expect(result.current.projects).toEqual([
+      expect.objectContaining({
+        id: 'p1', name: 'Nome mais recente', description: 'Descrição externa',
+        updated_at: '2026-11-26T10:00:00Z', status: 'planning',
+      }),
+      expect.objectContaining({ id: 'p2', name: 'Outro mais recente', status: 'in_development' }),
+    ])
+    expect(result.current.pendingIds.size).toBe(0)
+    expect(onChange).toHaveBeenCalledTimes(2)
+  })
+
+  it('reconcilia campos externos preservando o rollback quando a mutação falha', async () => {
+    const pending = deferred<Project>()
+    const onChange = vi.fn()
+    setProjectStatus.mockReturnValue(pending.promise)
+    const { result, rerender } = renderHook(
+      ({ projects }) => useProjectStatusQueue({ projects, onChange, onRefresh: vi.fn() }),
+      { initialProps: { projects: [project] } },
+    )
+
+    let move!: Promise<void>
+    act(() => { move = result.current.moveProject('p1', 'planning') })
+    const external: ProjectListItem = {
+      ...project,
+      name: 'Nome externo',
+      description: 'Descrição externa',
+      status: 'delivered',
+      updated_at: '2026-11-26T10:00:00Z',
+    }
+    rerender({ projects: [external] })
+    expect(result.current.projects[0]).toEqual(expect.objectContaining({
+      id: 'p1', name: 'Projeto', description: null, status: 'planning',
+    }))
+    expect(onChange).toHaveBeenCalledTimes(1)
+
+    const rpcError = new Error('Falha na movimentação')
+    await act(async () => {
+      pending.reject(rpcError)
+      await expect(move).rejects.toBe(rpcError)
+    })
+    expect(result.current.projects[0]).toEqual(expect.objectContaining({
+      id: 'p1', name: 'Nome externo', description: 'Descrição externa',
+      updated_at: '2026-11-26T10:00:00Z', status: 'not_started',
+    }))
+    expect(result.current.pendingIds.size).toBe(0)
+    expect(onChange).toHaveBeenCalledTimes(2)
   })
 
   it('sincroniza dados externos sem pendências e não sobrescreve uma intenção pendente', async () => {
@@ -3277,11 +3430,9 @@ export function useProjectStatusQueue(
   const confirmedStatusRef = useRef(new Map<string, ProjectListItem['status']>())
   const queuesRef = useRef(new Map<string, Promise<void>>())
   const refreshAfterMovesRef = useRef(false)
+  const pendingExternalProjectsRef = useRef(new Map<string, ProjectListItem>())
   const mountedRef = useRef(true)
   const lastExternalProjectsRef = useRef(options.projects)
-
-  onChangeRef.current = options.onChange
-  onRefreshRef.current = options.onRefresh
 
   const updateProjects = useCallback((updater: (current: ProjectListItem[]) => ProjectListItem[]) => {
     const next = updater(projectsRef.current)
@@ -3296,6 +3447,22 @@ export function useProjectStatusQueue(
     setPendingIds(new Set(pendingCountsRef.current.keys()))
   }, [])
 
+  const reconcileExternalProject = useCallback((id: string) => {
+    const external = pendingExternalProjectsRef.current.get(id)
+    if (!external) return
+    pendingExternalProjectsRef.current.delete(id)
+
+    const current = projectsRef.current.find((project) => project.id === id)
+    if (!current) return
+    const status = confirmedStatusRef.current.get(id) ?? current.status
+    const next = projectsRef.current.map((project) => (
+      project.id === id ? { ...external, status } : project
+    ))
+    projectsRef.current = next
+    if (!mountedRef.current) return
+    setProjects(next)
+  }, [])
+
   useEffect(() => {
     mountedRef.current = true
     for (const project of projectsRef.current) {
@@ -3307,21 +3474,30 @@ export function useProjectStatusQueue(
   }, [])
 
   useEffect(() => {
+    onChangeRef.current = options.onChange
+    onRefreshRef.current = options.onRefresh
+
     const incoming = options.projects
     if (sameProjectReferences(lastExternalProjectsRef.current, incoming)) {
       lastExternalProjectsRef.current = incoming
       return
     }
     lastExternalProjectsRef.current = incoming
-    if (pendingMovesRef.current > 0) return
 
-    projectsRef.current = incoming
+    const next = incoming.map((incomingProject) => {
+      if (!pendingCountsRef.current.has(incomingProject.id)) {
+        confirmedStatusRef.current.set(incomingProject.id, incomingProject.status)
+        return incomingProject
+      }
+
+      pendingExternalProjectsRef.current.set(incomingProject.id, incomingProject)
+      return projectsRef.current.find((project) => project.id === incomingProject.id)
+        ?? incomingProject
+    })
+    projectsRef.current = next
     if (!mountedRef.current) return
-    setProjects(incoming)
-    for (const project of incoming) {
-      confirmedStatusRef.current.set(project.id, project.status)
-    }
-  }, [options.projects])
+    setProjects(next)
+  }, [options.projects, options.onChange, options.onRefresh])
 
   const moveProject = useCallback((id: string, status: ProjectMoveStatus): Promise<void> => {
     const current = projectsRef.current.find((project) => project.id === id)
@@ -3365,12 +3541,16 @@ export function useProjectStatusQueue(
       } finally {
         pendingMovesRef.current -= 1
         const remaining = pendingCountsRef.current.get(id) ?? 1
-        if (remaining <= 1) pendingCountsRef.current.delete(id)
-        else pendingCountsRef.current.set(id, remaining - 1)
+        if (remaining <= 1) {
+          pendingCountsRef.current.delete(id)
+          reconcileExternalProject(id)
+        } else {
+          pendingCountsRef.current.set(id, remaining - 1)
+        }
         syncPendingIds()
         if (pendingMovesRef.current === 0 && refreshAfterMovesRef.current) {
           refreshAfterMovesRef.current = false
-          await onRefreshRef.current()
+          void onRefreshRef.current().catch(() => undefined)
         }
       }
     }
@@ -3383,7 +3563,7 @@ export function useProjectStatusQueue(
     }
     void task.then(cleanup, cleanup)
     return task
-  }, [syncPendingIds, updateProjects])
+  }, [reconcileExternalProject, syncPendingIds, updateProjects])
 
   const requestRefresh = useCallback(async (): Promise<void> => {
     if (pendingMovesRef.current > 0) {
@@ -3397,7 +3577,7 @@ export function useProjectStatusQueue(
 }
 ```
 
-A sincronização externa compara as referências dos itens: um array novo contendo os mesmos objetos não desfaz uma atualização local, enquanto uma resposta real com novos objetos só é aceita sem pendências. `moveProject` executa toda a intenção antes de chamar a RPC; somente `run` entra na fila por ID.
+A sincronização externa compara as referências dos itens: um array novo contendo os mesmos objetos não desfaz uma atualização local. Projetos sem intenção pendente são atualizados imediatamente; para cada projeto pendente, o snapshot externo mais recente é retido e reconciliado ao terminar sua última mutação, preservando o status confirmado ou de rollback e aplicando os demais campos sem chamar `onChange`. `moveProject` executa toda a intenção antes de chamar a RPC; somente `run` entra na fila por ID. O refresh adiado é disparado uma vez após todas as mutações e tem sua rejeição isolada, enquanto `requestRefresh()` imediato continua propagando a rejeição.
 
 - [ ] **Step 4: Run tests and build**
 
