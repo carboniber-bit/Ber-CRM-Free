@@ -293,4 +293,409 @@ revoke all on function public.set_project_revision_timestamps() from public, ano
 revoke all on function public.log_project_revision_event() from public, anon, authenticated;
 revoke all on function public.enforce_contract_project_allocation() from public, anon, authenticated;
 
+create or replace function public.update_client(p_client_id uuid, p_payload jsonb)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_owner uuid := auth.uid();
+  v_client public.clients;
+  v_contract public.contracts;
+  v_old_status text;
+  v_contract_id uuid;
+  v_cnpj text;
+  v_service text;
+  v_total numeric(14,2);
+  v_total_text text;
+  v_contracted_at date;
+  v_due_date date;
+begin
+  if v_owner is null then
+    raise exception 'Sessão autenticada necessária.' using errcode = '42501';
+  end if;
+
+  v_contract_id := nullif(p_payload ->> 'contract_id', '')::uuid;
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_owner::text || ':clients', 0)
+  );
+  if v_contract_id is not null then
+    perform pg_catalog.pg_advisory_xact_lock(
+      pg_catalog.hashtextextended(v_owner::text || ':contract:' || v_contract_id::text, 0)
+    );
+  end if;
+
+  select * into v_client from public.clients
+    where id = p_client_id and owner_id = v_owner for update;
+  if not found then
+    raise exception 'Cliente não encontrado ou acesso negado.' using errcode = '42501';
+  end if;
+
+  v_old_status := v_client.status;
+  select * into v_contract from public.contracts
+    where owner_id = v_owner and client_id = p_client_id and id = v_contract_id
+    for update;
+  if not found then
+    raise exception 'Contrato do cliente não encontrado ou acesso negado.' using errcode = '42501';
+  end if;
+
+  v_service := nullif(pg_catalog.btrim(p_payload ->> 'service'), '');
+  v_total_text := nullif(pg_catalog.btrim(p_payload ->> 'total_value'), '');
+  v_contracted_at := (p_payload ->> 'contracted_at')::date;
+  v_due_date := nullif(p_payload ->> 'due_date', '')::date;
+  if nullif(pg_catalog.btrim(p_payload ->> 'name'), '') is null
+    or v_service is null or v_total_text is null
+    or v_total_text !~ '^[0-9]{1,12}(\.[0-9]{1,2})?$' or v_contracted_at is null then
+    raise exception 'Informe nome, serviço, valor e data da contratação.' using errcode = '22023';
+  end if;
+  v_total := v_total_text::numeric(14,2);
+  if v_due_date is not null and v_due_date < v_contracted_at then
+    raise exception 'O vencimento não pode anteceder a contratação.' using errcode = '22023';
+  end if;
+
+  v_cnpj := nullif(pg_catalog.regexp_replace(p_payload ->> 'cnpj', '[^0-9]', '', 'g'), '');
+  if v_cnpj is not null and exists (
+    select 1 from public.clients where owner_id = v_owner and cnpj_digits = v_cnpj and id <> p_client_id
+  ) then
+    select name into v_service from public.clients where owner_id = v_owner and cnpj_digits = v_cnpj limit 1;
+    raise exception 'CLIENT_CNPJ_DUPLICATE:%', v_service using errcode = '23505';
+  end if;
+
+  update public.clients set
+    name = pg_catalog.btrim(p_payload ->> 'name'),
+    responsible_name = nullif(pg_catalog.btrim(p_payload ->> 'responsible_name'), ''),
+    phone = nullif(pg_catalog.btrim(p_payload ->> 'phone'), ''),
+    whatsapp = nullif(pg_catalog.btrim(p_payload ->> 'whatsapp'), ''),
+    email = nullif(pg_catalog.btrim(p_payload ->> 'email'), ''),
+    cnpj = nullif(pg_catalog.btrim(p_payload ->> 'cnpj'), ''),
+    website = nullif(pg_catalog.btrim(p_payload ->> 'website'), ''),
+    instagram = nullif(pg_catalog.btrim(p_payload ->> 'instagram'), ''),
+    address = nullif(pg_catalog.btrim(p_payload ->> 'address'), ''),
+    city = nullif(pg_catalog.btrim(p_payload ->> 'city'), ''),
+    district = nullif(pg_catalog.btrim(p_payload ->> 'district'), ''),
+    zip_code = nullif(pg_catalog.btrim(p_payload ->> 'zip_code'), ''),
+    state = nullif(pg_catalog.btrim(p_payload ->> 'state'), ''),
+    niche = nullif(pg_catalog.btrim(p_payload ->> 'niche'), ''),
+    status = coalesce(nullif(p_payload ->> 'status', ''), v_client.status),
+    notes = nullif(p_payload ->> 'notes', ''),
+    archived_at = case
+      when coalesce(nullif(p_payload ->> 'status', ''), v_client.status) = 'inactive'
+        then coalesce(v_client.archived_at, now())
+      else null
+    end
+  where id = p_client_id and owner_id = v_owner
+  returning * into v_client;
+
+  if v_total is distinct from v_contract.total_value then
+    raise exception 'CONTRACT_ADJUST_REQUIRED: use o ajuste financeiro do contrato.' using errcode = '23514';
+  end if;
+
+  update public.contracts set
+    service = v_service,
+    total_value = v_total,
+    contracted_at = v_contracted_at,
+    due_date = v_due_date,
+    payment_method = nullif(pg_catalog.btrim(p_payload ->> 'payment_method'), ''),
+    payment_terms = nullif(pg_catalog.btrim(p_payload ->> 'payment_terms'), ''),
+    notes = nullif(p_payload ->> 'contract_notes', '')
+  where id = v_contract.id and owner_id = v_owner
+  returning * into v_contract;
+
+  if v_old_status is distinct from v_client.status then
+    insert into public.client_activities (owner_id, client_id, type, description, metadata)
+    values (
+      v_owner, v_client.id, 'status_change',
+      'Status alterado de ' || v_old_status || ' para ' || v_client.status || '.',
+      jsonb_build_object('previous_status', v_old_status, 'new_status', v_client.status)
+    );
+  end if;
+
+  return jsonb_build_object('client', to_jsonb(v_client), 'contract', to_jsonb(v_contract));
+end;
+$$;
+
+create or replace function public.create_project(p_payload jsonb)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_owner uuid := auth.uid();
+  v_client_id uuid;
+  v_contract_id uuid;
+  v_contract public.contracts;
+  v_project public.projects;
+  v_value numeric(14,2);
+  v_value_text text;
+  v_allocated numeric;
+  v_start date;
+  v_due date;
+begin
+  if v_owner is null then raise exception 'Sessão autenticada necessária.' using errcode = '42501'; end if;
+  v_client_id := (p_payload ->> 'client_id')::uuid;
+  v_contract_id := (p_payload ->> 'contract_id')::uuid;
+  v_value_text := nullif(pg_catalog.btrim(p_payload ->> 'contracted_value'), '');
+  if v_value_text is null or v_value_text !~ '^[0-9]{1,12}(\.[0-9]{1,2})?$' then
+    raise exception 'Valor alocado inválido.' using errcode = '22023';
+  end if;
+  v_value := v_value_text::numeric(14,2);
+  v_start := nullif(p_payload ->> 'start_date', '')::date;
+  v_due := nullif(p_payload ->> 'due_date', '')::date;
+  if nullif(pg_catalog.btrim(p_payload ->> 'name'), '') is null
+    or nullif(pg_catalog.btrim(p_payload ->> 'service'), '') is null then
+    raise exception 'Informe nome e serviço do projeto.' using errcode = '22023';
+  end if;
+  if v_start is not null and v_due is not null and v_due < v_start then
+    raise exception 'O prazo não pode anteceder o início.' using errcode = '22023';
+  end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_owner::text || ':contract:' || v_contract_id::text, 0)
+  );
+  select * into v_contract from public.contracts
+    where id = v_contract_id and client_id = v_client_id and owner_id = v_owner and status = 'active'
+    for update;
+  if not found then raise exception 'Contrato ativo não encontrado para este cliente.' using errcode = '42501'; end if;
+
+  select coalesce(sum(contracted_value), 0) into v_allocated from public.projects
+    where owner_id = v_owner and contract_id = v_contract_id and status <> 'cancelled';
+  if v_allocated + v_value > v_contract.total_value then
+    raise exception 'A soma dos projetos excede o valor do contrato.' using errcode = '23514';
+  end if;
+
+  insert into public.projects (
+    owner_id, client_id, contract_id, name, service, contracted_value,
+    description, start_date, due_date, responsible_name, priority
+  ) values (
+    v_owner, v_client_id, v_contract_id, pg_catalog.btrim(p_payload ->> 'name'),
+    pg_catalog.btrim(p_payload ->> 'service'), v_value,
+    nullif(p_payload ->> 'description', ''), v_start, v_due,
+    nullif(pg_catalog.btrim(p_payload ->> 'responsible_name'), ''),
+    coalesce(nullif(p_payload ->> 'priority', ''), 'medium')
+  ) returning * into v_project;
+
+  insert into public.client_activities (owner_id, client_id, project_id, contract_id, type, description, metadata)
+  values (v_owner, v_client_id, v_project.id, v_contract_id, 'note', 'Projeto criado: ' || v_project.name || '.',
+    jsonb_build_object('contracted_value', v_value));
+  return to_jsonb(v_project);
+end;
+$$;
+
+create or replace function public.update_project(p_project_id uuid, p_payload jsonb)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_owner uuid := auth.uid();
+  v_project public.projects;
+  v_contract public.contracts;
+  v_contract_id uuid;
+  v_value numeric(14,2);
+  v_value_text text;
+  v_allocated numeric;
+  v_preserve_value boolean;
+  v_start date;
+  v_due date;
+begin
+  if v_owner is null then raise exception 'Sessão autenticada necessária.' using errcode = '42501'; end if;
+  select contract_id into v_contract_id from public.projects
+    where id = p_project_id and owner_id = v_owner;
+  if not found then raise exception 'Projeto não encontrado ou acesso negado.' using errcode = '42501'; end if;
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_owner::text || ':contract:' || v_contract_id::text, 0)
+  );
+  select * into v_project from public.projects where id = p_project_id and owner_id = v_owner for update;
+  if not found then raise exception 'Projeto não encontrado ou acesso negado.' using errcode = '42501'; end if;
+  select * into v_contract from public.contracts where id = v_project.contract_id and owner_id = v_owner for update;
+  if not found or v_contract.status <> 'active' then
+    raise exception 'Contrato cancelado ou inativo não permite edição do projeto.' using errcode = '42501';
+  end if;
+
+  v_value_text := nullif(pg_catalog.btrim(p_payload ->> 'contracted_value'), '');
+  if v_value_text is null or v_value_text !~ '^[0-9]{1,12}(\.[0-9]{1,2})?$' then
+    raise exception 'Valor alocado inválido.' using errcode = '22023';
+  end if;
+  v_value := v_value_text::numeric(14,2);
+  v_start := nullif(p_payload ->> 'start_date', '')::date;
+  v_due := nullif(p_payload ->> 'due_date', '')::date;
+  if nullif(pg_catalog.btrim(p_payload ->> 'name'), '') is null
+    or nullif(pg_catalog.btrim(p_payload ->> 'service'), '') is null then
+    raise exception 'Informe nome e serviço do projeto.' using errcode = '22023';
+  end if;
+  if v_start is not null and v_due is not null and v_due < v_start then
+    raise exception 'O prazo não pode anteceder o início.' using errcode = '22023';
+  end if;
+
+  v_preserve_value := v_project.status = 'cancelled';
+  if v_preserve_value then
+    -- Projeto cancelado não consome capacidade: preserva o valor atual sem somar o payload.
+    v_value := v_project.contracted_value;
+  else
+    select coalesce(sum(contracted_value), 0) into v_allocated from public.projects
+      where owner_id = v_owner and contract_id = v_project.contract_id
+        and status <> 'cancelled' and id <> v_project.id;
+    if v_allocated + v_value > v_contract.total_value then
+      raise exception 'A soma dos projetos excede o valor do contrato.' using errcode = '23514';
+    end if;
+  end if;
+
+  update public.projects set
+    name = pg_catalog.btrim(p_payload ->> 'name'),
+    service = pg_catalog.btrim(p_payload ->> 'service'),
+    contracted_value = v_value,
+    description = nullif(p_payload ->> 'description', ''),
+    start_date = v_start,
+    due_date = v_due,
+    responsible_name = nullif(pg_catalog.btrim(p_payload ->> 'responsible_name'), ''),
+    priority = coalesce(nullif(p_payload ->> 'priority', ''), v_project.priority)
+  where id = p_project_id and owner_id = v_owner returning * into v_project;
+
+  insert into public.client_activities (owner_id, client_id, project_id, contract_id, type, description, metadata)
+  values (
+    v_owner, v_project.client_id, v_project.id, v_project.contract_id, 'note',
+    case when v_preserve_value
+      then 'Projeto cancelado atualizado: ' || v_project.name || '. Valor preservado sem realocação.'
+      else 'Projeto atualizado: ' || v_project.name || '.'
+    end,
+    jsonb_build_object('contracted_value_preserved', v_preserve_value)
+  );
+  return to_jsonb(v_project);
+end;
+$$;
+
+create or replace function public.set_project_status(p_project_id uuid, p_status text)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_owner uuid := auth.uid();
+  v_project public.projects;
+  v_contract public.contracts;
+  v_contract_id uuid;
+  v_allocated numeric;
+  v_old text;
+begin
+  if v_owner is null then raise exception 'Sessão autenticada necessária.' using errcode = '42501'; end if;
+  select contract_id into v_contract_id from public.projects
+    where id = p_project_id and owner_id = v_owner;
+  if not found then raise exception 'Projeto não encontrado ou acesso negado.' using errcode = '42501'; end if;
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_owner::text || ':contract:' || v_contract_id::text, 0)
+  );
+  select * into v_project from public.projects where id = p_project_id and owner_id = v_owner for update;
+  if not found then raise exception 'Projeto não encontrado ou acesso negado.' using errcode = '42501'; end if;
+  if p_status = 'delivered' then
+    raise exception 'Use o fluxo de entrega para marcar o projeto como entregue.' using errcode = '23514';
+  end if;
+  if v_project.status = 'delivered' then
+    raise exception 'Projeto entregue não pode voltar para outro status.' using errcode = '23514';
+  end if;
+  if p_status is null or p_status not in (
+    'not_started','planning','in_development','awaiting_client_info',
+    'in_review','awaiting_approval','changes_requested','completed','cancelled'
+  ) then
+    raise exception 'Status de projeto inválido.' using errcode = '22023';
+  end if;
+  v_old := v_project.status;
+  if v_old = 'cancelled' or p_status = 'cancelled' then
+    select * into v_contract from public.contracts
+      where id = v_project.contract_id and owner_id = v_owner for update;
+    if not found then raise exception 'Contrato não encontrado ou acesso negado.' using errcode = '42501'; end if;
+    if p_status <> 'cancelled' then
+      if v_contract.status <> 'active' then raise exception 'Contrato ativo não encontrado.' using errcode = '42501'; end if;
+      select coalesce(sum(contracted_value), 0) into v_allocated from public.projects
+        where owner_id = v_owner and contract_id = v_contract.id
+          and status <> 'cancelled' and id <> v_project.id;
+      if v_allocated + v_project.contracted_value > v_contract.total_value then
+        raise exception 'A soma dos projetos excede o valor do contrato.' using errcode = '23514';
+      end if;
+    end if;
+  end if;
+  update public.projects set
+    status = p_status,
+    completed_at = case when p_status = 'completed' then coalesce(completed_at, now()) else completed_at end,
+    archived_at = case when p_status = 'cancelled' then coalesce(archived_at, now()) else null end
+  where id = p_project_id and owner_id = v_owner returning * into v_project;
+  if v_old is distinct from p_status then
+    insert into public.client_activities (owner_id, client_id, project_id, contract_id, type, description, metadata)
+    values (v_owner, v_project.client_id, v_project.id, v_project.contract_id, 'status_change',
+      'Status do projeto alterado de ' || v_old || ' para ' || p_status || '.',
+      jsonb_build_object('previous_status', v_old, 'new_status', p_status));
+  end if;
+  return to_jsonb(v_project);
+end;
+$$;
+
+create or replace function public.deliver_project(p_project_id uuid, p_payload jsonb)
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_owner uuid := auth.uid();
+  v_project public.projects;
+  v_delivery_url text;
+  v_files_url text;
+  v_confirmed boolean;
+begin
+  if v_owner is null then raise exception 'Sessão autenticada necessária.' using errcode = '42501'; end if;
+  select * into v_project from public.projects where id = p_project_id and owner_id = v_owner for update;
+  if not found then raise exception 'Projeto não encontrado ou acesso negado.' using errcode = '42501'; end if;
+  if v_project.status = 'delivered' then
+    return to_jsonb(v_project);
+  end if;
+  if v_project.status = 'cancelled' then raise exception 'Projeto cancelado não pode ser entregue.' using errcode = '23514'; end if;
+
+  v_delivery_url := p_payload ->> 'delivery_url';
+  v_files_url := p_payload ->> 'files_url';
+  v_confirmed := (p_payload ->> 'confirmed')::boolean;
+  if nullif(pg_catalog.btrim(v_delivery_url), '') is null then
+    raise exception 'Informe o link de entrega.' using errcode = '22023';
+  end if;
+  if v_delivery_url !~* '^https?://[^/?#[:space:]]+([/?#][^[:space:]]*)?$' then
+    raise exception 'Informe uma URL HTTP(S) válida.' using errcode = '22023';
+  end if;
+  if v_files_url is not null and v_files_url <> ''
+    and v_files_url !~* '^https?://[^/?#[:space:]]+([/?#][^[:space:]]*)?$' then
+    raise exception 'Informe uma URL HTTP(S) válida.' using errcode = '22023';
+  end if;
+  if v_confirmed is distinct from true then raise exception 'Confirme explicitamente a entrega.' using errcode = '22023'; end if;
+
+  update public.projects set
+    status = 'delivered', delivery_url = v_delivery_url,
+    files_url = nullif(v_files_url, ''),
+    final_notes = nullif(p_payload ->> 'final_notes', ''),
+    delivered_at = now(), completed_at = coalesce(completed_at, now()),
+    delivery_confirmed_at = case when v_confirmed then now() else null end,
+    archived_at = null
+  where id = p_project_id and owner_id = v_owner returning * into v_project;
+  insert into public.client_activities (owner_id, client_id, project_id, contract_id, type, description, metadata)
+  values (v_owner, v_project.client_id, v_project.id, v_project.contract_id, 'delivery',
+    'Projeto entregue: ' || v_project.name || '.',
+    jsonb_build_object('delivery_url', v_delivery_url, 'confirmed', v_confirmed));
+  return to_jsonb(v_project);
+end;
+$$;
+
+revoke all on function public.create_project(jsonb) from public, anon, authenticated;
+revoke all on function public.update_project(uuid, jsonb) from public, anon, authenticated;
+revoke all on function public.set_project_status(uuid, text) from public, anon, authenticated;
+revoke all on function public.deliver_project(uuid, jsonb) from public, anon, authenticated;
+grant execute on function public.create_project(jsonb) to authenticated;
+grant execute on function public.update_project(uuid, jsonb) to authenticated;
+grant execute on function public.set_project_status(uuid, text) to authenticated;
+grant execute on function public.deliver_project(uuid, jsonb) to authenticated;
+
 commit;
