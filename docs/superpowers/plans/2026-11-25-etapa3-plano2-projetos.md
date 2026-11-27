@@ -1180,7 +1180,7 @@ begin
     raise exception 'create_project permitiu uso de contrato de outro proprietário.';
   exception when insufficient_privilege then
     if sqlstate <> '42501' or sqlerrm <> 'Contrato ativo não encontrado para este cliente.' then raise; end if;
-  end if;
+  end;
 
   reset role;
 
