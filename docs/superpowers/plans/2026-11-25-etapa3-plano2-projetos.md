@@ -25,7 +25,7 @@
 - Progresso é derivado de tarefas; canceladas e excluídas não entram no denominador; sem tarefas ativas o resultado é `null`.
 - Concluir, aprovar ou entregar projeto não cria receita nem altera contrato/pagamento.
 - A soma dos valores alocados a projetos não cancelados nunca pode exceder o contrato.
-- Toda RPC que altera contrato ou alocação adquire a advisory `:contract:<id>` antes de `FOR UPDATE`; `deliver_project` não disputa contrato e trava somente o projeto. Mutações diretas de tarefas e `reorder_project_tasks` usam a advisory por proprietário `:project_tasks:<owner_id>` antes de qualquer linha; a reordenação também bloqueia projeto e tarefas por `id` antes dos updates.
+- Toda RPC que altera contrato ou alocação adquire a advisory `:contract:<id>` antes de `FOR UPDATE`; `deliver_project` não disputa contrato e trava somente o projeto. Mutações diretas de tarefas e `reorder_project_tasks` usam a advisory por proprietário `owner_id::text || ':project_tasks'` antes de qualquer linha; a reordenação também bloqueia projeto e tarefas por `id` antes dos updates.
 - Registros com dependências são cancelados/arquivados, não excluídos definitivamente; tarefas podem ser excluídas com confirmação.
 - TDD RED/GREEN em cada comportamento novo; commits pequenos e frequentes.
 - Não afirmar que migration, RLS entre dois usuários ou validação autenticada foi executada sem evidência real.
