@@ -38,6 +38,7 @@ export function useProjectStatusQueue(
   const confirmedStatusRef = useRef(new Map<string, ProjectListItem['status']>())
   const queuesRef = useRef(new Map<string, Promise<void>>())
   const refreshAfterMovesRef = useRef(false)
+  const pendingExternalProjectsRef = useRef(new Map<string, ProjectListItem>())
   const mountedRef = useRef(true)
   const lastExternalProjectsRef = useRef(options.projects)
 
@@ -52,6 +53,22 @@ export function useProjectStatusQueue(
   const syncPendingIds = useCallback(() => {
     if (!mountedRef.current) return
     setPendingIds(new Set(pendingCountsRef.current.keys()))
+  }, [])
+
+  const reconcileExternalProject = useCallback((id: string) => {
+    const external = pendingExternalProjectsRef.current.get(id)
+    if (!external) return
+    pendingExternalProjectsRef.current.delete(id)
+
+    const current = projectsRef.current.find((project) => project.id === id)
+    if (!current) return
+    const status = confirmedStatusRef.current.get(id) ?? current.status
+    const next = projectsRef.current.map((project) => (
+      project.id === id ? { ...external, status } : project
+    ))
+    projectsRef.current = next
+    if (!mountedRef.current) return
+    setProjects(next)
   }, [])
 
   useEffect(() => {
@@ -74,14 +91,20 @@ export function useProjectStatusQueue(
       return
     }
     lastExternalProjectsRef.current = incoming
-    if (pendingMovesRef.current > 0) return
 
-    projectsRef.current = incoming
+    const next = incoming.map((incomingProject) => {
+      if (!pendingCountsRef.current.has(incomingProject.id)) {
+        confirmedStatusRef.current.set(incomingProject.id, incomingProject.status)
+        return incomingProject
+      }
+
+      pendingExternalProjectsRef.current.set(incomingProject.id, incomingProject)
+      return projectsRef.current.find((project) => project.id === incomingProject.id)
+        ?? incomingProject
+    })
+    projectsRef.current = next
     if (!mountedRef.current) return
-    setProjects(incoming)
-    for (const project of incoming) {
-      confirmedStatusRef.current.set(project.id, project.status)
-    }
+    setProjects(next)
   }, [options.projects, options.onChange, options.onRefresh])
 
   const moveProject = useCallback((id: string, status: ProjectMoveStatus): Promise<void> => {
@@ -126,12 +149,16 @@ export function useProjectStatusQueue(
       } finally {
         pendingMovesRef.current -= 1
         const remaining = pendingCountsRef.current.get(id) ?? 1
-        if (remaining <= 1) pendingCountsRef.current.delete(id)
-        else pendingCountsRef.current.set(id, remaining - 1)
+        if (remaining <= 1) {
+          pendingCountsRef.current.delete(id)
+          reconcileExternalProject(id)
+        } else {
+          pendingCountsRef.current.set(id, remaining - 1)
+        }
         syncPendingIds()
         if (pendingMovesRef.current === 0 && refreshAfterMovesRef.current) {
           refreshAfterMovesRef.current = false
-          await onRefreshRef.current()
+          void onRefreshRef.current().catch(() => undefined)
         }
       }
     }
@@ -144,7 +171,7 @@ export function useProjectStatusQueue(
     }
     void task.then(cleanup, cleanup)
     return task
-  }, [syncPendingIds, updateProjects])
+  }, [reconcileExternalProject, syncPendingIds, updateProjects])
 
   const requestRefresh = useCallback(async (): Promise<void> => {
     if (pendingMovesRef.current > 0) {
