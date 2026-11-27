@@ -344,6 +344,7 @@ begin
       raise exception 'Trigger não bloqueou alteração de descrição de revisão aprovada.';
     end if;
   end;
+  $$;
 
   do $$
   declare
@@ -546,6 +547,88 @@ begin
   end if;
 
   raise notice 'Contrato SQL de projetos aprovado.';
+end
+$$;
+
+do $$
+declare
+  v_owner uuid := gen_random_uuid();
+  v_today date := DATE '2026-02-01';
+  v_client jsonb;
+  v_contract_id uuid;
+  v_project_id uuid;
+  v_ids uuid[];
+  v_expected uuid[];
+  v_actual uuid[];
+  v_positions integer[];
+begin
+  insert into auth.users (id, email)
+  values (v_owner, 'etapa3-projects-order-' || v_owner::text || '@example.test');
+  perform set_config('request.jwt.claim.sub', v_owner::text, true);
+
+  v_client := public.create_client(jsonb_build_object(
+    'creation_key', gen_random_uuid(), 'name', 'Cliente de ordenação',
+    'service', 'Site', 'total_value', '0.00', 'contracted_at', v_today
+  ));
+  v_contract_id := ((v_client ->> 'contract')::jsonb ->> 'id')::uuid;
+  v_project_id := (public.create_project(jsonb_build_object(
+    'client_id', (v_client ->> 'client')::jsonb ->> 'id',
+    'contract_id', v_contract_id, 'name', 'Projeto de ordenação',
+    'service', 'Site', 'contracted_value', '0.00'
+  )) ->> 'id')::uuid;
+
+  select array_agg(id order by title) into v_ids
+  from (
+    insert into public.project_tasks (owner_id, project_id, title)
+    values
+      (v_owner, v_project_id, 'A'),
+      (v_owner, v_project_id, 'B'),
+      (v_owner, v_project_id, 'C')
+    returning id, title
+  ) as inserted;
+  v_expected := array[v_ids[3], v_ids[1], v_ids[2]];
+
+  perform public.reorder_project_tasks(v_project_id, v_expected);
+  select array_agg(id order by position), array_agg(position order by position)
+    into v_actual, v_positions
+  from public.project_tasks where project_id = v_project_id and owner_id = v_owner;
+  if v_actual is distinct from v_expected or v_positions is distinct from array[0,1,2] then
+    raise exception 'Reordenação não persistiu a ordem completa e contígua.';
+  end if;
+
+  begin
+    perform public.reorder_project_tasks(v_project_id, array[]::uuid[]);
+    raise exception 'Reordenação aceitou lista vazia.';
+  exception when invalid_parameter_value then
+    if sqlerrm <> 'A ordem deve conter todas as tarefas do projeto.' then raise; end if;
+  end;
+
+  begin
+    perform public.reorder_project_tasks(v_project_id, v_ids[1:2]);
+    raise exception 'Reordenação aceitou conjunto incompleto.';
+  exception when invalid_parameter_value then
+    if sqlerrm <> 'A ordem deve conter todas as tarefas do projeto.' then raise; end if;
+  end;
+
+  begin
+    perform public.reorder_project_tasks(v_project_id, array[v_ids[1], v_ids[1], v_ids[2]]);
+    raise exception 'Reordenação aceitou ID duplicado.';
+  exception when invalid_parameter_value then
+    if sqlerrm <> 'A ordem contém tarefas inválidas ou duplicadas.' then raise; end if;
+  end;
+
+  begin
+    perform public.reorder_project_tasks(v_project_id, array[v_ids[1], v_ids[2], gen_random_uuid()]);
+    raise exception 'Reordenação aceitou tarefa de outro projeto.';
+  exception when invalid_parameter_value then
+    if sqlerrm <> 'A ordem contém tarefas inválidas ou duplicadas.' then raise; end if;
+  end;
+
+  select array_agg(id order by position) into v_actual
+  from public.project_tasks where project_id = v_project_id and owner_id = v_owner;
+  if v_actual is distinct from v_expected then
+    raise exception 'Reordenação inválida alterou a última ordem válida.';
+  end if;
 end
 $$;
 

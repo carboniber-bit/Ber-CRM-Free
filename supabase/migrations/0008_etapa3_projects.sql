@@ -701,4 +701,72 @@ grant execute on function public.update_project(uuid, jsonb) to authenticated;
 grant execute on function public.set_project_status(uuid, text) to authenticated;
 grant execute on function public.deliver_project(uuid, jsonb) to authenticated;
 
+create or replace function public.lock_project_task_mutations()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_owner uuid := auth.uid();
+begin
+  if v_owner is null then raise exception 'Sessão autenticada necessária.' using errcode = '42501'; end if;
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_owner::text || ':project_tasks', 0)
+  );
+  return null;
+end;
+$$;
+
+create trigger project_tasks_lock_mutations before insert or update or delete on public.project_tasks
+  for each statement execute function public.lock_project_task_mutations();
+
+revoke all on function public.lock_project_task_mutations() from public, anon, authenticated;
+
+create or replace function public.reorder_project_tasks(p_project_id uuid, p_ordered_ids uuid[])
+returns jsonb
+language plpgsql
+volatile
+security definer
+set search_path = ''
+as $$
+declare
+  v_owner uuid := auth.uid();
+  v_project public.projects;
+  v_position int;
+  v_task_id uuid;
+begin
+  if v_owner is null then raise exception 'Sessão autenticada necessária.' using errcode = '42501'; end if;
+  if coalesce(cardinality(p_ordered_ids), 0) = 0 then
+    raise exception 'A ordem deve conter todas as tarefas do projeto.' using errcode = '22023';
+  end if;
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(v_owner::text || ':project_tasks', 0)
+  );
+  select * into v_project from public.projects
+    where id = p_project_id and owner_id = v_owner for update;
+  if not found then raise exception 'Projeto não encontrado ou acesso negado.' using errcode = '42501'; end if;
+  perform id from public.project_tasks
+    where project_id = p_project_id and owner_id = v_owner
+    order by id for update;
+  if (select count(*) from public.project_tasks where project_id = p_project_id and owner_id = v_owner)
+      <> coalesce(cardinality(p_ordered_ids), 0) then
+    raise exception 'A ordem deve conter todas as tarefas do projeto.' using errcode = '22023';
+  end if;
+  if (select count(distinct id) from public.project_tasks where project_id = p_project_id and owner_id = v_owner and id = any(p_ordered_ids))
+      <> coalesce(cardinality(p_ordered_ids), 0) then
+    raise exception 'A ordem contém tarefas inválidas ou duplicadas.' using errcode = '22023';
+  end if;
+
+  for v_position, v_task_id in select ordinality, value from unnest(p_ordered_ids) with ordinality loop
+    update public.project_tasks set position = v_position - 1
+      where id = v_task_id and project_id = p_project_id and owner_id = v_owner;
+  end loop;
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+revoke all on function public.reorder_project_tasks(uuid, uuid[]) from public, anon, authenticated;
+grant execute on function public.reorder_project_tasks(uuid, uuid[]) to authenticated;
+
 commit;
