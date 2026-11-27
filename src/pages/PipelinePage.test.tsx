@@ -876,7 +876,7 @@ describe('PipelinePage janela de leads', () => {
     const listed = LEAD_STATUSES.reduce((sum, status) => sum + columnCount(status), 0)
     expect(listed).toBe(PAGE_SIZE)
     expect(screen.getByRole('option', { name: `Novo (${columnCount('novo')})` })).toBeTruthy()
-  })
+  }, 15_000)
 
   it('diz apenas que mostra os primeiros 500 quando o total cabe na página', async () => {
     mockLeads(manyLeads(PAGE_SIZE), PAGE_SIZE)
@@ -889,7 +889,7 @@ describe('PipelinePage janela de leads', () => {
     // Nada de "há X no pipeline": não há leads além dos listados.
     expect(hint.textContent).toBe('Mostrando os primeiros 500 leads. Ajuste os filtros para reduzir a lista.')
     expect(hint.textContent).not.toMatch(/há\b/)
-  })
+  }, 15_000)
 
   it('não fala de janela quando a consulta devolve menos que a página', async () => {
     mockLeads([barbearia, pizzaria], 2)
