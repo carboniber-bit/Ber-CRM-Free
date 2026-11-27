@@ -4,7 +4,7 @@
 
 **Goal:** Entregar a Etapa 3 existente com autenticação recuperável, RLS/grants mínimos, `profiles.role` não autoeditável, `search_path` seguro, integridade relacional e financeira verificável, auditoria append-only transacional, diagnóstico read-only, consultas limitadas/cursorizadas, jornada integrada responsiva, CI Node 24, documentação e relatório final classificado, sem afirmar validação runtime que não tenha evidência.
 
-**Architecture:** React 19/TypeScript/Vite 8/Tailwind v4/React Router 7 continuam sendo a interface. Supabase Auth e o cliente browser com chave pública continuam sendo a única identidade e acesso. PostgreSQL/RLS é a autoridade final; leituras são `security invoker`, escritas sensíveis são RPCs/triggers `security definer` com `search_path = ''`. A migration aditiva `0013_etapa3_security_audit.sql` endurece privilégios e integridade, cria `audit_events`, diagnóstico e funções de performance. O frontend consome apenas RPCs/consultas dono-escopadas; Relatórios, Backup e Recharts são chunks sob demanda.
+**Architecture:** React 19/TypeScript/Vite 8/Tailwind v4/React Router 7 continuam sendo a interface. Supabase Auth e o cliente browser com chave pública continuam sendo a única identidade e acesso. PostgreSQL/RLS é a autoridade final; leituras são `security invoker`, escritas sensíveis são RPCs/triggers `security definer` com `search_path = ''`. A migration aditiva `0013_etapa3_security_audit.sql` endurece privilégios e integridade, cria `audit_events`, o adaptador `diagnose_data_integrity()` e funções de performance; a matriz completa de diagnóstico permanece com `0012`/`get_backup_diagnostics()`. O frontend consome apenas RPCs/consultas dono-escopadas; Relatórios, Backup e Recharts são chunks sob demanda.
 
 **Tech Stack:** React 19, TypeScript, Vite 8, Tailwind CSS v4, React Router 7, Supabase Free/PostgreSQL/Auth, Recharts, Vitest 5, Testing Library/jsdom, Playwright para smoke browser local, GitHub Actions Node 24 e Vercel Hobby. Nenhuma service role key, backend novo, Edge Function, API paga ou upgrade.
 
@@ -12,7 +12,7 @@
 
 **Global Constraints:**
 
-- Não implemente código, não execute testes/build/lint/SQL, não commite, não despache subagentes e não altere SQL remoto durante a autoria ou revisão deste plano. Os comandos abaixo são instruções para a execução futura autorizada.
+- Durante a autoria ou revisão documental, não implemente código, não execute testes/build/lint/SQL, não commite, não despache subagentes e não altere SQL remoto. Os comandos abaixo são instruções para a execução futura autorizada.
 - Preserve os Planos 1–3 e os planos paralelos de Relatórios (`0010`) e Configurações/Backup (`0011`–`0012`); declare dependências sem editar esses arquivos. A ordem integral é `0010` → `0011` → `0012` → `0013`; o recorte de settings/backup/auditoria é `0011` → `0012` → `0013`. WP5/`0013` é o único dono de `audit_events`, `public.write_audit_event` e dos triggers de auditoria.
 - Não crie Etapa 4. Não recrie o projeto nem troque a stack.
 - Migrations novas são aditivas após `0009`; nunca edite migrations históricas.
@@ -29,23 +29,23 @@
 
 | Work package | Owner | Required before this plan | Exact paths and interfaces |
 |---|---|---|---|
-| WP0 | Plano 1 — Clientes | Pipeline, KPI global, clientes e rotas | `docs/superpowers/plans/2026-11-25-etapa3-plano1-clientes.md`; `supabase/migrations/0006_etapa3_clients.sql`; `supabase/migrations/0007_lead_maps_url.sql`; `src/services/clientService.ts`; `src/types/client.ts`; `src/types/contract.ts` |
+| WP0 | Plano 1 — Clientes | Pipeline, KPI global, clientes e rotas | `docs/superpowers/plans/2026-11-25-etapa3-plano1-clientes.md`; `supabase/migrations/0006_etapa3_clients.sql`; `supabase/migrations/0007_lead_maps_url.sql`; `src/services/clientService.ts`; `src/types/client.ts`; `src/types/contract.ts`; `src/pages/ClientsPage.tsx`; `src/pages/ClientDetailPage.tsx` |
 | WP1 | Plano 2 — Projetos | Tarefas, revisões e RPCs | `docs/superpowers/plans/2026-11-25-etapa3-plano2-projetos.md`; `supabase/migrations/0008_etapa3_projects.sql`; `src/types/project.ts` (`ProjectTask`, `ProjectTaskWrite`, `ProjectRevision`); `src/services/projectService.ts` (`listTasks`, `createTask`, `updateTask`, `reorderTasks`, `listRevisions`); `src/pages/ProjectsPage.tsx` |
 | WP2 | Plano 3 — Financeiro | Ledger, RPCs, estornos e saldos | `docs/superpowers/plans/2026-11-25-etapa3-plano3-financeiro.md`; `supabase/migrations/0009_etapa3_finance.sql`; `src/types/finance.ts` (`PaymentInput`, `FinancialPayment`, `PaymentAllocation`, `FinancialExpense`); `src/services/contractService.ts` (`recordPayment`); `src/services/expenseService.ts` (`createExpense`, `payExpense`); `src/services/financialService.ts` (`getFinancialSummary`); `src/pages/FinancePage.tsx` |
-| WP3 | Plano paralelo de Relatórios | Agregações canônicas e export cursorizada | `docs/superpowers/plans/2026-11-26-etapa3-relatorios.md`; `supabase/migrations/0010_etapa3_reports.sql`; `src/services/reportService.ts` (`loadReportData`, `getReportFilterOptions`, `exportReport`); `src/pages/ReportsPage.tsx`; `src/components/reports/ReportCharts.tsx` |
-| WP4 | Plano paralelo de Configurações/Backup | Preferências, manifesto, prévia e restore transacional | `docs/superpowers/plans/2026-11-26-etapa3-configuracoes-backup.md`; `supabase/migrations/0011_etapa3_settings.sql`; `supabase/migrations/0012_etapa3_backup.sql`; `src/services/settingsService.ts`; `src/services/backupService.ts`; `src/pages/SettingsPage.tsx`; `src/pages/BackupPage.tsx` |
-| WP5 | Este plano | Segurança, auditoria, integridade, RLS runtime e performance | `supabase/migrations/0013_etapa3_security_audit.sql`; `supabase/tests/etapa3_security.sql`; `src/services/integrityService.ts`; limites de auth/UI/consulta |
+| WP3 | Plano paralelo de Relatórios | Agregações canônicas e export cursorizada | `docs/superpowers/plans/2026-11-26-etapa3-relatorios.md`; `supabase/migrations/0010_etapa3_reports.sql`; `src/types/report.ts`; `src/services/reportService.ts` (`loadReportData`, `getReportFilterOptions`, `exportReport`); `src/pages/ReportsPage.tsx`; `src/components/reports/ReportCharts.tsx` |
+| WP4 | Plano paralelo de Configurações/Backup | Preferências, manifesto, prévia e restore transacional | `docs/superpowers/plans/2026-11-26-etapa3-configuracoes-backup.md`; `supabase/migrations/0011_etapa3_settings.sql`; `supabase/migrations/0012_etapa3_backup.sql`; `src/types/settings.ts`; `src/types/backup.ts`; `src/services/settingsService.ts`; `src/services/backupService.ts`; `src/pages/SettingsPage.tsx`; `src/pages/BackupPage.tsx` |
+| WP5 | Este plano | Segurança, auditoria, integridade, RLS runtime e performance | `supabase/migrations/0013_etapa3_security_audit.sql`; `supabase/tests/etapa3_security.sql`; `src/services/backupService.ts`; `src/types/backup.ts`; `src/pages/BackupPage.tsx`; limites de auth/UI/consulta |
 | WP6 | Este plano após WP5 | Jornada, responsividade, CI, docs e relatório | `src/pages/IntegratedJourney.test.tsx`; `playwright.config.ts`; `e2e/journey.spec.ts`; `.github/workflows/ci.yml`; `README.md`; `docs/supabase-schema.md`; `docs/vercel-deploy.md` |
 
 Os proprietários da tabela são os caminhos exatos acima. Leia e reconcilie os arquivos, mas nunca os edite a partir deste plano. Aplique as migrations na ordem integral `0010` → `0011` → `0012` → `0013`. WP4 possui settings, backup, a página `BackupPage` e a única RPC `public.restore_backup(p_package jsonb, p_preview_hash text, p_confirmation text) returns jsonb`; WP5/`0013` cria exclusivamente o schema, a writer e os triggers de auditoria. A função PL/pgSQL de `0012` pode referenciar `public.write_audit_event` antes de `0013` porque a resolução interna ocorre em execução; nenhum restore ou teste de auditoria é executado antes de `0013`.
 
 **Dependency status at authoring:** `0008`–`0012` ainda não existem no working tree atual. O plano WP4 já declara o contrato canônico abaixo; isso não substitui o gate do Task 0. A execução para quando qualquer migration, página, tipo ou serviço exacto estiver ausente ou com assinatura divergente, sem criar implementação substituta.
 
-**Canonical audit contract:** `public.audit_events(id uuid, owner_id uuid, actor_id uuid, action text, entity_type text, entity_id text, metadata jsonb, created_at timestamptz)` e `public.write_audit_event(uuid,uuid,text,text,text,jsonb) returns uuid`. `entity_id` aceita UUID textual e hash de backup; `actor_id = owner_id`; `metadata` é JSON object. A writer nega EXECUTE direto a `anon`/`authenticated` e aceita exatamente as chaves/tipos da Task 3. `0011` e `0012` não criam tabela, função ou trigger de auditoria. O restore de `0012` invoca a writer canônica e pode retornar `audit_event_id` no payload; a auditoria genérica é suprimida durante `ber.restore = 'on'`, e uma falha de auditoria reverte o restore inteiro.
+**Canonical audit contract:** `public.audit_events(id uuid, owner_id uuid, actor_id uuid, action text, entity_type text, entity_id text, metadata jsonb, created_at timestamptz)` e `public.write_audit_event(uuid,uuid,text,text,text,jsonb) returns uuid`. `entity_id` aceita UUID textual e hash SHA-256; `actor_id = owner_id`; `metadata` é JSON object de no máximo 2048 bytes. A writer nega EXECUTE direto a `anon`/`authenticated` e aceita exatamente as chaves/tipos da Task 3. `0011` e `0012` não criam tabela, função ou trigger de auditoria. O restore de `0012` invoca uma única vez a writer canônica com ação `backup.restore`, entidade textual `backup`, hash do pacote e metadados `backup_id`, `restore_id` e `count`; não cria evento por tabela. O serviço de Backup não exige `audit_event_id`. A auditoria genérica é suprimida durante `ber.restore = 'on'`, e uma falha de auditoria reverte o restore inteiro.
 
 ---
 
-## Task 0: Establish the baseline, dependency gate and security inventory
+### Task 0: Establish the baseline, dependency gate and security inventory
 
 **Files:**
 
@@ -75,7 +75,7 @@ ls docs/superpowers/plans
 
 Expected: `0008`, `0009`, `0010`, `0011` and `0012` exist in numeric order; Planos 1–3 and both parallel frontends are merged in the working branch. Record `BASELINE` for later `git diff "$BASELINE"..HEAD`; do not compare only against `main`, because execution may occur on `main`. Record and preserve every pre-existing user change. Stop at Task 0 if any migration/page/RPC is absent, if WP3 has only a service or plan but no literal merged `ReportsPage`, or if the WP4/WP5 ownership and audit-contract conflict described above remains unresolved. Classify the missing dependency as `pendente`; do not create substitute implementations in this plan.
 
-- [ ] **Step 1b: Verify the WP4/WP5 boundary against the actual files.**
+- [ ] **Step 2: Verify the WP4/WP5 boundary against the actual files.**
 
 Read the full WP4 plan and `0012_etapa3_backup.sql`; then run:
 
@@ -83,9 +83,9 @@ Read the full WP4 plan and `0012_etapa3_backup.sql`; then run:
 git grep -nE '0013_etapa3_security_audit|write_audit_event|audit_events|restore_backup|audit_event_id' -- docs/superpowers/plans/2026-11-26-etapa3-configuracoes-backup.md supabase/migrations/0012_etapa3_backup.sql src/services/backupService.ts src/components/backup 2>/dev/null || true
 ```
 
-Pass only if WP4 does not own/create `0013`; `0012` remains its sole `public.restore_backup(p_package jsonb, p_preview_hash text, p_confirmation text) returns jsonb`; restore calls `public.write_audit_event(v_owner,v_owner,'backup.restore','backup',p_restore_id,jsonb_build_object('restore_id',p_restore_id))` or obtains that UUID from its validated manifest without adding disallowed metadata; and `backupService.ts` does not require an `audit_event_id`. Otherwise stop. WP4's owner must reconcile WP4/`0012`; this plan must not edit either file.
+Pass only if WP4 does not own/create `0013`; `0012` remains the sole owner of `public.restore_backup(p_package jsonb, p_preview_hash text, p_confirmation text) returns jsonb`; restore calls `public.write_audit_event(v_owner,v_owner,'backup.restore','backup',v_hash,jsonb_build_object('backup_id',v_hash,'restore_id',v_restore_id::text,'count',(v_classification -> 'totals' ->> 'new')::int))` exactly once and emits no `backup.table_restored` event. If `0012` differs, stop and return the issue to WP4's owner; this plan must not edit it. If only `backupService.ts` still requires `audit_event_id`, record that as the Task 5 client reconciliation and continue: Task 5 owns the shared service/type boundary, not the WP4 migration or plan.
 
-- [ ] **Step 2: Re-read the current integration points.**
+- [ ] **Step 3: Re-read the current integration points.**
 
 Read at minimum:
 
@@ -127,7 +127,7 @@ supabase/migrations/0012_etapa3_backup.sql
 
 Expected: use the actual current code, not the snapshot in this plan. The dashboard already has a global converted count and six parallel sources; preserve that behavior when replacing client aggregation with the server snapshot. Plan 2 currently permits direct task writes and Plan 3 permits only SELECT on financial tables; do not broaden either contract.
 
-- [ ] **Step 3: Produce the static audit evidence.**
+- [ ] **Step 4: Produce the static audit evidence.**
 
 Run:
 
@@ -141,7 +141,7 @@ git grep -nE 'href=\{(lead|client|project)\.' -- src/components src/pages
 
 Expected: no private key, service-role client or untrusted HTML sink. Every stored external URL rendered as `href` is listed for Task 2. Every direct mutation is matched to a table privilege and RLS policy. Every unbounded timeline/export is listed for Task 7 or the owning Reports plan. A clean pattern scan is static evidence only, not a comprehensive secret audit.
 
-- [ ] **Step 4: Record the current static findings and owners.**
+- [ ] **Step 5: Record the current static findings and owners.**
 
 The inventory must contain at least these rows, with `file:line`, severity, owner and planned resolution:
 
@@ -160,13 +160,13 @@ The inventory must contain at least these rows, with `file:line`, severity, owne
 | Recharts and module routes are eager | Moderate | Task 7 lazy chunks |
 | CI/security headers/docs absent | Important | Tasks 9–11 |
 
-- [ ] **Step 5: Commit the execution baseline evidence without changing source.**
+- [ ] **Step 6: Record the execution baseline without an empty commit.**
 
 Record `BASELINE`, dependency paths and the go/no-go decision in the final-report evidence section specified by Task 11. Do not create a report Markdown file or commit an empty task solely for this inventory; continue to Task 1 only after the gate passes.
 
 ---
 
-## Task 1: Harden authentication, recovery, expiry and private-draft cleanup
+### Task 1: Harden authentication, recovery, expiry and private-draft cleanup
 
 **Files:**
 
@@ -179,6 +179,7 @@ Record `BASELINE`, dependency paths and the go/no-go decision in the final-repor
 - Modify: `src/services/authService.ts`
 - Modify: `src/pages/LoginPage.tsx`
 - Create: `src/pages/LoginPage.test.tsx`
+- Test: `src/routes/ProtectedRoute.test.tsx`
 
 **Interfaces:**
 
@@ -1032,7 +1033,7 @@ describe('LoginPage password recovery boundary', () => {
     fireEvent.change(screen.getByLabelText('E-mail'), { target: { value: 'pessoa@example.com' } })
     fireEvent.click(screen.getByRole('button', { name: 'Enviar link' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Não foi possível concluir. Tente novamente.')
+    expect((await screen.findByRole('alert')).textContent).toContain('Não foi possível concluir. Tente novamente.')
     expect(screen.queryByText(/JWT|secret|SELECT/i)).toBeNull()
   })
 
@@ -1041,11 +1042,11 @@ describe('LoginPage password recovery boundary', () => {
     fillPasswords()
     fireEvent.change(screen.getByLabelText('Confirmar nova senha'), { target: { value: 'diferente' } })
     fireEvent.click(screen.getByRole('button', { name: 'Salvar nova senha' }))
-    expect(screen.getByRole('alert')).toHaveTextContent('A confirmação não coincide')
+    expect(screen.getByRole('alert').textContent).toContain('A confirmação não coincide')
     fireEvent.change(screen.getByLabelText('Senha atual'), { target: { value: '' } })
     fireEvent.change(screen.getByLabelText('Confirmar nova senha'), { target: { value: 'senha-segura-456' } })
     fireEvent.click(screen.getByRole('button', { name: 'Salvar nova senha' }))
-    expect(screen.getByRole('alert')).toHaveTextContent('Informe sua senha atual.')
+    expect(screen.getByRole('alert').textContent).toContain('Informe sua senha atual.')
     expect(mocks.updatePassword).not.toHaveBeenCalled()
   })
 
@@ -1059,7 +1060,7 @@ describe('LoginPage password recovery boundary', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Salvar nova senha' }))
 
     await waitFor(() => expect(mocks.updatePassword).toHaveBeenCalledWith('senha-atual-123', 'senha-segura-456'))
-    expect(screen.getByRole('button', { name: 'Salvar nova senha' })).toBeDisabled()
+    expect((screen.getByRole('button', { name: 'Salvar nova senha' }) as HTMLButtonElement).disabled).toBe(true)
     expect(mocks.clearRecovery).not.toHaveBeenCalled()
     finish()
     await waitFor(() => expect(mocks.clearRecovery).toHaveBeenCalledTimes(1))
@@ -1078,7 +1079,7 @@ describe('LoginPage password recovery boundary', () => {
     fillPasswords()
     fireEvent.click(screen.getByRole('button', { name: 'Salvar nova senha' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Não foi possível atualizar a senha. Tente novamente.')
+    expect((await screen.findByRole('alert')).textContent).toContain('Não foi possível atualizar a senha. Tente novamente.')
     expect(screen.queryByText(/JWT|secret|SELECT/i)).toBeNull()
     expect(mocks.clearRecovery).not.toHaveBeenCalled()
     expect((screen.getByLabelText('Senha atual') as HTMLInputElement).value).toBe('senha-atual-123')
@@ -1102,22 +1103,20 @@ Run:
 
 ```bash
 npm test -- --maxWorkers=2 src/lib/privateDrafts.test.ts src/services/authService.test.ts src/components/auth/AuthProvider.test.tsx src/pages/LoginPage.test.tsx src/routes/ProtectedRoute.test.tsx
-npm run build
-npm run lint
 ```
 
-Expected GREEN: focused tests, TypeScript build and lint pass. Browser persistence and real recovery-link delivery remain external until Task 6.
+Expected GREEN: focused tests pass. Browser persistence and real recovery-link delivery remain external until Task 6; build and lint belong to the final Task 11 gate.
 
 - [ ] **Step 9: Commit.**
 
 ```bash
-git add src/lib/privateDrafts.ts src/lib/privateDrafts.test.ts src/services/authService.ts src/services/authService.test.ts src/components/auth/authContext.ts src/components/auth/AuthProvider.tsx src/components/auth/AuthProvider.test.tsx src/pages/LoginPage.tsx src/pages/LoginPage.test.tsx
+git add src/lib/privateDrafts.ts src/lib/privateDrafts.test.ts src/services/authService.ts src/services/authService.test.ts src/components/auth/authContext.ts src/components/auth/AuthProvider.tsx src/components/auth/AuthProvider.test.tsx src/pages/LoginPage.tsx src/pages/LoginPage.test.tsx src/routes/ProtectedRoute.test.tsx
 git commit -m "fix: endurecer autenticacao e recuperacao de acesso"
 ```
 
 ---
 
-## Task 2: Close frontend error, URL, XSS, CSV and diagnostic boundaries
+### Task 2: Close frontend error, URL, XSS, CSV and diagnostic boundaries
 
 **Files:**
 
@@ -1135,6 +1134,7 @@ git commit -m "fix: endurecer autenticacao e recuperacao de acesso"
 - Modify: `src/pages/DashboardPage.tsx`
 - Modify: `src/services/clientService.ts`
 - Modify: `src/components/ErrorBoundary.tsx`
+- Test: `src/pages/StatusPage.test.tsx`, `src/pages/SettingsPage.test.tsx`, `src/pages/DashboardPage.test.tsx`, `src/components/ErrorBoundary.test.tsx`
 
 **Interfaces:**
 
@@ -1396,9 +1396,7 @@ Keep the legacy lead export comma/LF contract. The Reports plan owns UTF-8/BOM/`
 ```bash
 git grep -nE 'dangerouslySetInnerHTML|innerHTML\s*=|eval\(|new Function' -- src
 npm test -- --maxWorkers=2 src/lib/publicError.test.ts src/lib/safeExternalUrl.test.tsx src/lib/csv.test.ts src/pages/StatusPage.test.tsx src/pages/SettingsPage.test.tsx src/components/opportunities/OpportunityCard.test.tsx src/pages/LeadDetailPage.test.tsx
-npm run build
-npm run lint
-git add src/lib/publicError.ts src/lib/publicError.test.ts src/lib/safeExternalUrl.ts src/lib/safeExternalUrl.test.tsx src/lib/csv.ts src/lib/csv.test.ts src/components/opportunities/OpportunityCard.tsx src/pages/LeadDetailPage.tsx src/pages/StatusPage.tsx src/pages/SettingsPage.tsx src/pages/DashboardPage.tsx src/services/clientService.ts src/components/ErrorBoundary.tsx
+git add src/lib/publicError.ts src/lib/publicError.test.ts src/lib/safeExternalUrl.ts src/lib/safeExternalUrl.test.tsx src/lib/csv.ts src/lib/csv.test.ts src/components/opportunities/OpportunityCard.tsx src/pages/LeadDetailPage.tsx src/pages/StatusPage.tsx src/pages/StatusPage.test.tsx src/pages/SettingsPage.tsx src/pages/SettingsPage.test.tsx src/pages/DashboardPage.tsx src/pages/DashboardPage.test.tsx src/services/clientService.ts src/components/ErrorBoundary.tsx src/components/ErrorBoundary.test.tsx
 git commit -m "fix: limitar erros expostos e URLs renderizadas"
 ```
 
@@ -1406,7 +1404,7 @@ Expected: no untrusted HTML sink, no unsafe anchor, no raw backend detail in UI 
 
 ---
 
-## Task 3: Create the additive 0013 hardening, audit, diagnostics and performance migration
+### Task 3: Create the additive 0013 hardening, audit, diagnostics and performance migration
 
 **Files:**
 
@@ -1418,10 +1416,8 @@ Expected: no untrusted HTML sink, no unsafe anchor, no raw backend detail in UI 
 ```text
 audit_events(id, owner_id, actor_id, action, entity_type, entity_id text, metadata, created_at)
 public.write_audit_event(uuid,uuid,text,text,text,jsonb) returns uuid  -- trigger/RPC-only, no client EXECUTE
-public.diagnose_data_integrity() returns table(
-  generated_at timestamptz, code text, severity text,
-  entity_type text, entity_id uuid, affected_count bigint, message text
-)
+public.diagnose_data_integrity() returns jsonb  -- security invoker adapter; delegates to WP4 get_backup_diagnostics()
+-- { generated_at, schema_version, checks: [{ code, severity, count, sample_ids }], limits }
 public.list_followups_cursor(text,timestamptz,uuid,integer) returns jsonb
 public.list_lead_followups_cursor(uuid,timestamptz,uuid,integer) returns jsonb
 public.list_lead_activities_cursor(uuid,timestamptz,uuid,integer) returns jsonb
@@ -1430,7 +1426,7 @@ public.get_dashboard_snapshot(timestamptz) returns jsonb
 
 - [ ] **Step 1: Inspect the actual `0012` restore function before writing the migration.**
 
-Record the exact signature `public.restore_backup(p_package jsonb, p_preview_hash text, p_confirmation text) returns jsonb`, owner validation, transaction-local `ber.restore` scope and explicit audit calls, but do not edit `0012`. Pass only if WP4 already calls the canonical writer with `actor_id = owner_id`, uses the package SHA-256 hash as textual `entity_id` for `backup.restore`, emits one `backup.table_restored` event with `count` per restored nonempty table, and accepts/returns `audit_event_id` in its JSON result. The function may reference the writer before `0013` exists; restore execution and audit tests wait until `0013`. If incompatible, stop and return the issue to WP4's owner; never duplicate, rename or patch restore here.
+Record the exact signature `public.restore_backup(p_package jsonb, p_preview_hash text, p_confirmation text) returns jsonb`, owner validation, transaction-local `ber.restore` scope and explicit audit call, but do not edit `0012`. Pass only if WP4 already calls the canonical writer exactly once with `actor_id = owner_id`, action `backup.restore`, entity type `backup`, package SHA-256 hash as textual `entity_id`, and metadata `backup_id`, `restore_id` and `count`; emits no `backup.table_restored`; and its service does not require `audit_event_id`. The function may reference the writer before `0013` exists; restore execution and audit tests wait until `0013`. If incompatible, stop and return the issue to WP4's owner; never duplicate, rename or patch restore here.
 
 - [ ] **Step 2: Write the complete migration.**
 
@@ -1949,327 +1945,18 @@ create index if not exists projects_owner_service_idx
 create index if not exists contracts_owner_service_idx
   on public.contracts (owner_id, service);
 
--- ============ READ-ONLY DIAGNOSTICS ============
+-- ============ READ-ONLY DIAGNOSTICS ADAPTER ============
+-- WP4/0012 owns the complete get_backup_diagnostics() matrix.
 create or replace function public.diagnose_data_integrity()
-returns table (
-  generated_at timestamptz,
-  code text,
-  severity text,
-  entity_type text,
-  entity_id uuid,
-  affected_count bigint,
-  message text
-)
-language plpgsql
+returns jsonb
+language sql
+stable
 security invoker
 set search_path = ''
 as $$
-begin
-  -- Read-only and RLS-scoped: every source table is queried as the caller.
-  -- Orphans include missing parents and parents belonging to another owner.
-  return query
-  select statement_timestamp(), 'LEGACY_ORPHAN', 'critical', 'lead_activities', min(a.id), count(*),
-         'Atividade sem lead dono compativel; nenhuma correcao automatica.'
-  from public.lead_activities a
-  left join public.leads l on l.id = a.lead_id and l.owner_id = a.owner_id
-  where l.id is null group by a.owner_id
-  union all
-  select statement_timestamp(), 'LEGACY_ORPHAN', 'critical', 'lead_followups', min(f.id), count(*),
-         'Follow-up sem lead dono compativel; nenhuma correcao automatica.'
-  from public.lead_followups f
-  left join public.leads l on l.id = f.lead_id and l.owner_id = f.owner_id
-  where l.id is null group by f.owner_id
-  union all
-  select statement_timestamp(), 'LEGACY_ORPHAN', 'critical', 'lead_digital_checks', min(c.id), count(*),
-         'Verificacao digital sem lead dono compativel; nenhuma correcao automatica.'
-  from public.lead_digital_checks c
-  left join public.leads l on l.id = c.lead_id and l.owner_id = c.owner_id
-  where l.id is null group by c.owner_id
-  union all
-  select statement_timestamp(), 'LEGACY_ORPHAN', 'critical', 'lead_client_links', min(x.id), count(*),
-         'Vinculo lead/cliente orfao ou com dono incompativel.'
-  from public.lead_client_links x
-  left join public.leads l on l.id = x.lead_id and l.owner_id = x.owner_id
-  left join public.clients c on c.id = x.client_id and c.owner_id = x.owner_id
-  where l.id is null or c.id is null group by x.owner_id
-  union all
-  select statement_timestamp(), 'LEGACY_ORPHAN', 'critical', 'contracts', min(k.id), count(*),
-         'Contrato sem cliente ou vinculo de origem compativel.'
-  from public.contracts k
-  left join public.clients c on c.id = k.client_id and c.owner_id = k.owner_id
-  left join public.lead_client_links x on x.id = k.source_link_id and x.owner_id = k.owner_id
-  where c.id is null or (k.source_link_id is not null and x.id is null) group by k.owner_id
-  union all
-  select statement_timestamp(), 'LEGACY_ORPHAN', 'critical', 'projects', min(p.id), count(*),
-         'Projeto sem cliente, contrato ou origem compativel.'
-  from public.projects p
-  left join public.clients c on c.id = p.client_id and c.owner_id = p.owner_id
-  left join public.contracts k on k.id = p.contract_id and k.owner_id = p.owner_id and k.client_id = p.client_id
-  left join public.lead_client_links x on x.id = p.source_link_id and x.owner_id = p.owner_id
-  where c.id is null or k.id is null or (p.source_link_id is not null and x.id is null) group by p.owner_id
-  union all
-  select statement_timestamp(), 'LEGACY_ORPHAN', 'critical', 'client_activities', min(a.id), count(*),
-         'Atividade de cliente sem cliente/projeto/contrato compativel.'
-  from public.client_activities a
-  left join public.clients c on c.id = a.client_id and c.owner_id = a.owner_id
-  left join public.projects p on p.id = a.project_id and p.owner_id = a.owner_id and p.client_id = a.client_id
-  left join public.contracts k on k.id = a.contract_id and k.owner_id = a.owner_id and k.client_id = a.client_id
-  where c.id is null or (a.project_id is not null and p.id is null)
-     or (a.contract_id is not null and k.id is null) group by a.owner_id
-  union all
-  select statement_timestamp(), 'LEGACY_ORPHAN', 'critical', 'project_tasks', min(t.id), count(*),
-         'Tarefa sem projeto do mesmo dono.'
-  from public.project_tasks t
-  left join public.projects p on p.id = t.project_id and p.owner_id = t.owner_id
-  where p.id is null group by t.owner_id
-  union all
-  select statement_timestamp(), 'LEGACY_ORPHAN', 'critical', 'project_revisions', min(r.id), count(*),
-         'Revisao sem projeto do mesmo dono.'
-  from public.project_revisions r
-  left join public.projects p on p.id = r.project_id and p.owner_id = r.owner_id
-  where p.id is null group by r.owner_id
-  union all
-  select statement_timestamp(), 'LEGACY_ORPHAN', 'critical', 'contract_installments', min(i.id), count(*),
-         'Parcela sem contrato do mesmo dono.'
-  from public.contract_installments i
-  left join public.contracts k on k.id = i.contract_id and k.owner_id = i.owner_id
-  where k.id is null group by i.owner_id
-  union all
-  select statement_timestamp(), 'LEGACY_ORPHAN', 'critical', 'financial_payments', min(p.id), count(*),
-         'Pagamento sem contrato ou recebimento relacionado compativel.'
-  from public.financial_payments p
-  left join public.contracts k on k.id = p.contract_id and k.owner_id = p.owner_id
-  left join public.financial_payments related on related.id = p.related_payment_id
-    and related.owner_id = p.owner_id and related.contract_id = p.contract_id
-  where k.id is null or (p.related_payment_id is not null and related.id is null) group by p.owner_id
-  union all
-  select statement_timestamp(), 'LEGACY_ORPHAN', 'critical', 'financial_payment_allocations', min(a.id), count(*),
-         'Alocacao sem pagamento/parcela compativel ou com contratos divergentes.'
-  from public.financial_payment_allocations a
-  left join public.financial_payments p on p.id = a.payment_id and p.owner_id = a.owner_id
-  left join public.contract_installments i on i.id = a.installment_id and i.owner_id = a.owner_id
-  where p.id is null or i.id is null or p.contract_id <> i.contract_id
-     or a.contract_id <> p.contract_id group by a.owner_id
-  union all
-  select statement_timestamp(), 'LEGACY_ORPHAN', 'critical', 'financial_expenses', min(e.id), count(*),
-         'Despesa sem categoria/projeto/contrato compativel.'
-  from public.financial_expenses e
-  left join public.expense_categories c on c.id = e.category_id and c.owner_id = e.owner_id
-  left join public.projects p on p.id = e.project_id and p.owner_id = e.owner_id
-  left join public.contracts k on k.id = e.contract_id and k.owner_id = e.owner_id
-  where (e.category_id is not null and c.id is null)
-     or (e.project_id is not null and p.id is null)
-     or (e.contract_id is not null and k.id is null)
-     or (p.id is not null and k.id is not null and p.client_id <> k.client_id) group by e.owner_id
-  union all
-  select statement_timestamp(), 'LEGACY_ORPHAN', 'critical', 'user_settings', s.owner_id, count(*),
-         'Configuracao sem perfil do mesmo dono.'
-  from public.user_settings s
-  left join public.profiles p on p.id = s.owner_id
-  where p.id is null group by s.owner_id
-
-  -- Duplicate business keys remain diagnostics even when a newer unique index exists.
-  union all
-  select statement_timestamp(), 'DUPLICATE_PHONE', 'important', 'leads', min(id), count(*),
-         'Telefone canonico duplicado no mesmo proprietario.'
-  from public.leads where phone_canonical is not null
-  group by owner_id, phone_canonical having count(*) > 1
-  union all
-  select statement_timestamp(), 'DUPLICATE_CNPJ', 'important', 'clients', min(id), count(*),
-         'CNPJ duplicado no mesmo proprietario.'
-  from public.clients where cnpj_digits is not null
-  group by owner_id, cnpj_digits having count(*) > 1
-  union all
-  select statement_timestamp(), 'DUPLICATE_CLIENT_PHONE', 'important', 'clients', min(id), count(*),
-         'Telefone de cliente duplicado no mesmo proprietario.'
-  from public.clients where phone_canonical is not null
-  group by owner_id, phone_canonical having count(*) > 1
-  union all
-  select statement_timestamp(), 'DUPLICATE_CLIENT_WHATSAPP', 'important', 'clients', min(id), count(*),
-         'WhatsApp de cliente duplicado no mesmo proprietario.'
-  from public.clients where whatsapp_canonical is not null
-  group by owner_id, whatsapp_canonical having count(*) > 1
-  union all
-  select statement_timestamp(), 'DUPLICATE_CATEGORY', 'important', 'expense_categories', min(id), count(*),
-         'Nome de categoria duplicado no mesmo proprietario.'
-  from public.expense_categories group by owner_id, lower(name) having count(*) > 1
-  union all
-  select statement_timestamp(), 'DUPLICATE_TASK_POSITION', 'important', 'project_tasks', min(id), count(*),
-         'Posicao de tarefa duplicada no mesmo projeto.'
-  from public.project_tasks group by owner_id, project_id, position having count(*) > 1
-  union all
-  select statement_timestamp(), 'DUPLICATE_PAYMENT_KEY', 'critical', 'financial_payments', min(id), count(*),
-         'Chave de idempotencia duplicada.'
-  from public.financial_payments group by idempotency_key having count(*) > 1
-
-  -- Values and dates across legacy, project and financial domains.
-  union all
-  select statement_timestamp(), 'INVALID_MONEY', 'critical', 'leads', id, 1,
-         'Lead contem valor monetario negativo.'
-  from public.leads
-  where estimated_value < 0 or negotiated_value < 0 or contracted_value < 0 or received_value < 0
-  union all
-  select statement_timestamp(), 'INVALID_MONEY', 'critical', 'contracts', id, 1, 'Contrato contem total negativo.'
-  from public.contracts where total_value < 0
-  union all
-  select statement_timestamp(), 'INVALID_MONEY', 'critical', 'projects', id, 1, 'Projeto contem valor contratado negativo.'
-  from public.projects where contracted_value < 0
-  union all
-  select statement_timestamp(), 'INVALID_MONEY', 'critical', 'contract_installments', id, 1, 'Parcela contem valor nao positivo.'
-  from public.contract_installments where amount <= 0
-  union all
-  select statement_timestamp(), 'INVALID_MONEY', 'critical', 'financial_payments', id, 1, 'Pagamento/estorno contem valor nao positivo.'
-  from public.financial_payments where amount <= 0
-  union all
-  select statement_timestamp(), 'INVALID_MONEY', 'critical', 'financial_payment_allocations', id, 1, 'Alocacao contem valor nao positivo.'
-  from public.financial_payment_allocations where amount <= 0
-  union all
-  select statement_timestamp(), 'INVALID_MONEY', 'critical', 'financial_expenses', id, 1, 'Despesa contem valor negativo.'
-  from public.financial_expenses where amount < 0
-  union all
-  select statement_timestamp(), 'INVALID_DATE', 'important', 'projects', id, 1, 'Prazo anterior ao inicio do projeto.'
-  from public.projects where start_date is not null and due_date is not null and due_date < start_date
-  union all
-  select statement_timestamp(), 'INVALID_DATE', 'important', 'project_tasks', id, 1, 'Prazo anterior ao inicio da tarefa.'
-  from public.project_tasks where start_date is not null and due_date is not null and due_date < start_date
-  union all
-  select statement_timestamp(), 'INVALID_DATE', 'important', 'project_revisions', id, 1, 'Conclusao anterior ao pedido da revisao.'
-  from public.project_revisions where completed_at is not null and completed_at < requested_at
-  union all
-  select statement_timestamp(), 'INVALID_DATE', 'important', 'contracts', id, 1, 'Vencimento anterior a contratacao.'
-  from public.contracts where due_date is not null and due_date < contracted_at
-  union all
-  select statement_timestamp(), 'INVALID_DATE', 'important', 'financial_expenses', id, 1, 'Vencimento anterior a data da despesa.'
-  from public.financial_expenses where due_date is not null and due_date < expense_date
-
-  -- Canonical status domains and timestamp/state agreement.
-  union all
-  select statement_timestamp(), 'INVALID_STATUS', 'important', 'leads', id, 1, 'Status de lead fora do dominio canonico.'
-  from public.leads where status not in (
-    'novo','contato_realizado','aguardando_resposta','pediu_informacoes','interessado',
-    'negociando','aceitou','ignorou','nao_interessado','follow_up','perdido')
-  union all
-  select statement_timestamp(), 'INVALID_STATUS', 'important', 'clients', id, 1, 'Status de cliente fora do dominio canonico.'
-  from public.clients where status not in (
-    'active','in_project','awaiting_payment','awaiting_approval','project_completed','inactive')
-  union all
-  select statement_timestamp(), 'INVALID_STATUS', 'important', 'projects', id, 1, 'Status de projeto fora do dominio canonico.'
-  from public.projects where status not in (
-    'not_started','planning','in_development','awaiting_client_info','in_review',
-    'awaiting_approval','changes_requested','completed','delivered','cancelled')
-  union all
-  select statement_timestamp(), 'INVALID_STATUS', 'important', 'project_tasks', id, 1, 'Status de tarefa fora do dominio canonico.'
-  from public.project_tasks where status not in ('pending','in_progress','completed','cancelled')
-  union all
-  select statement_timestamp(), 'INVALID_STATUS', 'important', 'project_revisions', id, 1, 'Status de revisao fora do dominio canonico.'
-  from public.project_revisions where status not in ('requested','in_progress','completed','approved')
-  union all
-  select statement_timestamp(), 'INVALID_STATUS', 'important', 'contracts', id, 1, 'Status de contrato fora do dominio canonico.'
-  from public.contracts where status not in ('active','cancelled')
-  union all
-  select statement_timestamp(), 'INVALID_STATUS', 'important', 'lead_followups', id, 1, 'Status de follow-up fora do dominio canonico.'
-  from public.lead_followups where status not in ('pendente','concluido','cancelado')
-  union all
-  select statement_timestamp(), 'INVALID_STATUS', 'important', 'financial_payments', id, 1, 'Tipo de pagamento fora do dominio canonico.'
-  from public.financial_payments where type not in ('receipt','refund')
-  union all
-  select statement_timestamp(), 'INVALID_STATUS', 'important', 'financial_expenses', id, 1, 'Status de despesa fora do dominio canonico.'
-  from public.financial_expenses where status not in ('pending','paid','cancelled')
-  union all
-  select statement_timestamp(), 'INVALID_STATUS', 'important', 'lead_digital_checks', id, 1, 'Status de verificacao digital fora do dominio canonico.'
-  from public.lead_digital_checks
-  where has_website not in ('yes','no','unverified') or has_instagram not in ('yes','no','unverified')
-     or has_facebook not in ('yes','no','unverified') or has_digital_menu not in ('yes','no','unverified')
-     or has_digital_catalog not in ('yes','no','unverified') or has_landing_page not in ('yes','no','unverified')
-     or has_business_whatsapp not in ('yes','no','unverified')
-  union all
-  select statement_timestamp(), 'INVALID_FOLLOWUP_STATE', 'important', 'lead_followups', id, 1, 'Estado do follow-up diverge de completed_at.'
-  from public.lead_followups
-  where (status = 'concluido' and completed_at is null) or (status <> 'concluido' and completed_at is not null)
-  union all
-  select statement_timestamp(), 'INVALID_TASK_STATE', 'important', 'project_tasks', id, 1, 'Timestamps de tarefa divergem do status.'
-  from public.project_tasks
-  where (status = 'completed' and completed_at is null) or (status <> 'completed' and completed_at is not null)
-     or (status = 'cancelled' and cancelled_at is null) or (status <> 'cancelled' and cancelled_at is not null)
-  union all
-  select statement_timestamp(), 'INVALID_REVISION_STATE', 'important', 'project_revisions', id, 1, 'Timestamps de revisao divergem do status.'
-  from public.project_revisions
-  where (status = 'completed' and completed_at is null) or (status not in ('completed','approved') and completed_at is not null)
-     or (status = 'approved' and (approved_at is null or completed_at is null))
-     or (status <> 'approved' and approved_at is not null)
-  union all
-  select statement_timestamp(), 'INVALID_CONTRACT_STATE', 'important', 'contracts', id, 1, 'Cancelamento e cancelled_at divergentes.'
-  from public.contracts where (status = 'cancelled' and cancelled_at is null)
-     or (status <> 'cancelled' and cancelled_at is not null)
-  union all
-  select statement_timestamp(), 'INVALID_EXPENSE_STATE', 'important', 'financial_expenses', id, 1, 'Pagamento/cancelamento e timestamps divergentes.'
-  from public.financial_expenses
-  where (status = 'paid' and paid_at is null) or (status <> 'paid' and paid_at is not null)
-     or (status = 'cancelled' and cancelled_at is null) or (status <> 'cancelled' and cancelled_at is not null)
-  union all
-  select statement_timestamp(), 'INVALID_DIGITAL_CHECK', 'important', 'lead_digital_checks', id, 1, 'Verified e verified_at divergentes.'
-  from public.lead_digital_checks where (verified and verified_at is null) or (not verified and verified_at is not null)
-  union all
-  select statement_timestamp(), 'INVALID_SETTINGS', 'important', 'user_settings', owner_id, 1, 'service_prices nao e um objeto de valores nao negativos.'
-  from public.user_settings where not public.validate_service_prices(service_prices)
-
-  -- Owner fields written by trusted code must still identify the row owner.
-  union all
-  select statement_timestamp(), 'OWNER_INCOMPATIBLE', 'critical', 'client_activities', id, 1, 'created_by difere do owner_id.'
-  from public.client_activities where created_by is not null and created_by <> owner_id
-  union all
-  select statement_timestamp(), 'OWNER_INCOMPATIBLE', 'critical', 'financial_payments', id, 1, 'created_by difere do owner_id.'
-  from public.financial_payments where created_by is not null and created_by <> owner_id
-
-  -- Payment, allocation, installment, project and refund balances. Under-allocation
-  -- of an installment is a valid pending balance; over-allocation is not.
-  union all
-  select statement_timestamp(), 'PAYMENT_ALLOCATION_DIVERGENCE', 'critical', 'financial_payments', p.id, 1, 'Soma das alocacoes difere do valor do pagamento.'
-  from public.financial_payments p
-  left join public.financial_payment_allocations a on a.payment_id = p.id and a.owner_id = p.owner_id
-  group by p.owner_id, p.id, p.amount having coalesce(sum(a.amount), 0) <> p.amount
-  union all
-  select statement_timestamp(), 'INSTALLMENT_OVERALLOCATED', 'critical', 'contract_installments', i.id, 1, 'Alocacoes liquidas excedem a parcela.'
-  from public.contract_installments i
-  left join public.financial_payment_allocations a on a.installment_id = i.id and a.owner_id = i.owner_id
-  left join public.financial_payments p on p.id = a.payment_id and p.owner_id = i.owner_id
-  group by i.owner_id, i.id, i.amount
-  having coalesce(sum(case when p.type = 'refund' then -a.amount else a.amount end), 0) > i.amount
-  union all
-  select statement_timestamp(), 'INSTALLMENT_TOTAL_DIVERGENCE', 'critical', 'contracts', c.id, 1, 'Soma das parcelas difere do total ativo do contrato.'
-  from public.contracts c
-  left join public.contract_installments i on i.contract_id = c.id and i.owner_id = c.owner_id
-  where c.status = 'active' group by c.owner_id, c.id, c.total_value
-  having count(i.id) > 0 and coalesce(sum(i.amount), 0) <> c.total_value
-  union all
-  select statement_timestamp(), 'CONTRACT_OVERPAID', 'critical', 'contracts', c.id, 1, 'Recebimentos liquidos excedem o total do contrato.'
-  from public.contracts c
-  left join public.financial_payments p on p.contract_id = c.id and p.owner_id = c.owner_id
-  where c.status = 'active' group by c.owner_id, c.id, c.total_value
-  having coalesce(sum(case when p.type = 'refund' then -p.amount else p.amount end), 0) > c.total_value
-  union all
-  select statement_timestamp(), 'PROJECT_OVERALLOCATED', 'critical', 'contracts', c.id, 1, 'Projetos ativos excedem o valor do contrato.'
-  from public.contracts c
-  left join public.projects p on p.contract_id = c.id and p.owner_id = c.owner_id and p.status <> 'cancelled'
-  where c.status = 'active' group by c.owner_id, c.id, c.total_value
-  having coalesce(sum(p.contracted_value), 0) > c.total_value
-  union all
-  select statement_timestamp(), 'REFUND_EXCEEDS_RECEIPT', 'critical', 'financial_payments', receipt.id, 1, 'Estornos excedem o recebimento original.'
-  from public.financial_payments receipt
-  join public.financial_payments refund on refund.related_payment_id = receipt.id
-    and refund.owner_id = receipt.owner_id and refund.type = 'refund'
-  where receipt.type = 'receipt' group by receipt.owner_id, receipt.id, receipt.amount
-  having sum(refund.amount) > receipt.amount
-  union all
-  select statement_timestamp(), 'INVALID_REFUND_RELATION', 'critical', 'financial_payments', p.id, 1, 'Estorno nao referencia um recebimento valido.'
-  from public.financial_payments p
-  left join public.financial_payments related on related.id = p.related_payment_id
-    and related.owner_id = p.owner_id and related.contract_id = p.contract_id
-  where (p.type = 'receipt' and p.related_payment_id is not null)
-     or (p.type = 'refund' and (related.id is null or related.type <> 'receipt'));
-end;
+  select public.get_backup_diagnostics();
 $$;
-revoke all on function public.diagnose_data_integrity() from public, anon;
+revoke all on function public.diagnose_data_integrity() from public, anon, authenticated;
 grant execute on function public.diagnose_data_integrity() to authenticated;
 
 -- ============ STABLE CURSOR PAGINATION ============
@@ -2624,19 +2311,19 @@ Expected: every `security definer` function has an explicit empty `search_path`;
 Read the final `0012` restore body and its service result type. The accepted explicit calls are exactly the canonical owner/actor pair and textual entity IDs:
 
 ```sql
-perform public.write_audit_event(
-  v_owner, v_owner, 'backup.table_restored', v_def.table_name,
-  v_def.table_name, jsonb_build_object('count', v_count)
-);
--- ...after set_config('ber.restore', 'off', true):
+-- 0012 already owns this call; 0013 must not recreate or edit it.
 v_audit_id := public.write_audit_event(
   v_owner, v_owner, 'backup.restore', 'backup', v_hash,
-  jsonb_build_object('count', (v_classification -> 'totals' ->> 'new')::int)
+  jsonb_build_object(
+    'backup_id', v_hash,
+    'restore_id', v_restore_id::text,
+    'count', (v_classification -> 'totals' ->> 'new')::int
+  )
 );
 return jsonb_build_object('inserted', v_inserted, 'audit_event_id', v_audit_id);
 ```
 
-`v_hash` is the validated 64-character SHA-256 package hash. `ber.restore = 'on'` must surround only the trusted insert loop, and the generic trigger must not duplicate those explicit events. The RPC may return `audit_event_id`; `src/services/backupService.ts` and `src/types/backup.ts` must accept it without weakening validation. The writer raises on failure, so restore and audit commit or roll back together. If any detail differs, stop and have WP4's owner correct WP4/`0012`; this task creates only `0013` and never edits `0012`.
+`v_hash` is the validated 64-character SHA-256 package hash and `v_restore_id` is the UUID generated by the validated restore transaction. `ber.restore = 'on'` must surround only the trusted insert loop, and the generic trigger must suppress duplicate events while that setting is on. The RPC may return `audit_event_id` as an optional extra; `src/services/backupService.ts` and `src/types/backup.ts` must accept success without requiring it. The writer raises on failure, so restore and audit commit or roll back together. If any detail differs, stop and have WP4's owner correct WP4/`0012`; this task creates only `0013` and never edits `0012`.
 
 - [ ] **Step 6: Commit the migration only after SQL review.**
 
@@ -2649,17 +2336,18 @@ Do not apply this migration remotely as part of this commit. Database execution 
 
 ---
 
-## Task 4: Prove append-only auditing, rollback, grants and owner isolation in SQL
+### Task 4: Prove append-only auditing, rollback, grants and owner isolation in SQL
 
 **Files:**
 
 - Create: `supabase/tests/etapa3_security.sql`.
+- Read/run but do not edit: `supabase/tests/etapa3_backup.sql` (canonical WP4 diagnostic matrix).
 - Do not edit `0010`–`0012`, the WP4 audit test or the two-owner manual checklist owned by Task 6.
 
 **Interfaces:**
 
 - Input: a disposable/local PostgreSQL database with `0001`–`0013` applied and permission to create synthetic auth users.
-- Output: transactional assertions for role protection, direct-write denial, typed audit metadata, rollback, cursor stability, diagnostics and two-owner SELECT isolation.
+- Output: transactional assertions for role protection, direct-write denial, typed audit metadata, rollback, cursor stability, diagnostic adapter equivalence/read-only behavior and two-owner SELECT isolation; the complete diagnostic category matrix is verified by the canonical WP4 suite.
 - The test uses `set local role authenticated` and `request.jwt.claim.sub`; it is synthetic SQL evidence, not a substitute for the real two-user browser checklist.
 
 - [ ] **Step 1: Write the complete transactional SQL test.**
@@ -2705,6 +2393,7 @@ declare
   v_exact_page jsonb;
   v_cursor jsonb;
   v_snapshot jsonb;
+  v_diagnostics jsonb;
   v_count bigint;
   v_audit_count bigint;
   v_original_action text;
@@ -2726,9 +2415,10 @@ begin
     into v_restore_definition;
   if strpos(v_restore_definition, 'write_audit_event') = 0
      or strpos(v_restore_definition, 'backup.restore') = 0
-     or strpos(v_restore_definition, 'backup.table_restored') = 0
+     or strpos(v_restore_definition, 'backup_id') = 0
+     or strpos(v_restore_definition, 'restore_id') = 0
      or strpos(v_restore_definition, 'ber.restore') = 0
-     or strpos(v_restore_definition, 'audit_event_id') = 0 then
+     or strpos(v_restore_definition, 'backup.table_restored') > 0 then
     raise exception '0012 nao contem o contrato canonico de auditoria de restore.';
   end if;
 
@@ -2778,12 +2468,12 @@ begin
   ) then
     raise exception 'audit_events.owner_id nao usa ON DELETE RESTRICT.';
   end if;
-  select pg_catalog.pg_get_triggerdef(oid) into v_status from pg_catalog.pg_trigger
+  select pg_catalog.pg_get_triggerdef(oid) into strict v_status from pg_catalog.pg_trigger
   where tgrelid = 'public.audit_events'::regclass and tgname = 'audit_events_reject_row_mutation';
   if strpos(upper(v_status), 'FOR EACH ROW') = 0 or strpos(upper(v_status), 'UPDATE OR DELETE') = 0 then
     raise exception 'trigger de auditoria UPDATE/DELETE nao e de linha.';
   end if;
-  select pg_catalog.pg_get_triggerdef(oid) into v_status from pg_catalog.pg_trigger
+  select pg_catalog.pg_get_triggerdef(oid) into strict v_status from pg_catalog.pg_trigger
   where tgrelid = 'public.audit_events'::regclass and tgname = 'audit_events_reject_truncate';
   if strpos(upper(v_status), 'FOR EACH STATEMENT') = 0 or strpos(upper(v_status), 'TRUNCATE') = 0 then
     raise exception 'trigger de auditoria TRUNCATE nao e de statement separado.';
@@ -2839,7 +2529,11 @@ begin
 
   v_event := public.write_audit_event(
     v_owner_a, v_owner_a, 'backup.restore', 'backup', repeat('b', 64),
-    jsonb_build_object('backup_id', repeat('b', 64), 'count', 1)
+    jsonb_build_object(
+      'backup_id', repeat('b', 64),
+      'restore_id', gen_random_uuid()::text,
+      'count', 1
+    )
   );
   if v_event is null then raise exception 'entity_id textual de backup nao foi aceito.'; end if;
 
@@ -3038,8 +2732,16 @@ begin
      or (v_snapshot #>> '{indicators,convertidos}') <> '0' then
     raise exception 'snapshot do dashboard nao respeitou RLS ou conversoes.';
   end if;
-  select count(*) into v_count from public.diagnose_data_integrity();
-  if v_count <> 0 then raise exception 'diagnostico encontrou problema nos dados validos de teste.'; end if;
+  v_diagnostics := public.diagnose_data_integrity();
+  if v_diagnostics ->> 'schema_version' <> '3'
+     or jsonb_typeof(v_diagnostics -> 'checks') <> 'array'
+     or jsonb_typeof(v_diagnostics -> 'limits') <> 'object'
+     or exists (
+       select 1 from pg_catalog.jsonb_array_elements(v_diagnostics -> 'checks') as check_item(value)
+       where (check_item.value ->> 'count')::bigint <> 0
+     ) then
+    raise exception 'diagnostico encontrou problema nos dados validos de teste.';
+  end if;
 
   reset role;
 
@@ -3096,8 +2798,9 @@ $$;
 drop trigger if exists etapa3_test_reject_audit_insert on public.audit_events;
 drop function if exists public.etapa3_test_reject_audit_insert();
 
--- Synthetic corruption fixtures for every diagnostic category. Constraint/index
--- changes and all rows are inside this transaction and disappear at rollback.
+-- Representative adapter/isolation fixture. The complete diagnostic matrix,
+-- including financial refund/allocation corruption, belongs to the canonical
+-- WP4 test supabase/tests/etapa3_backup.sql and runs before this file.
 do $$
 declare
   v_owner_a uuid;
@@ -3105,23 +2808,11 @@ declare
   v_lead_a1 uuid;
   v_lead_a2 uuid;
   v_lead_b uuid;
-  v_client_a uuid;
-  v_client_b uuid;
-  v_contract_a uuid;
-  v_contract_b uuid;
-  v_project_a uuid;
-  v_project_b uuid;
-  v_task_a uuid;
-  v_revision_a uuid;
-  v_category_a uuid;
-  v_installment_a1 uuid;
-  v_installment_a2 uuid;
-  v_installment_b uuid;
-  v_payment_a1 uuid;
-  v_payment_a2 uuid;
-  v_payment_a3 uuid;
-  v_refund_a uuid;
+  v_orphan_activity uuid;
   v_required_code text;
+  v_diagnostics jsonb;
+  v_canonical jsonb;
+  v_other_diagnostics jsonb;
   v_count bigint;
 begin
   insert into auth.users (id, email) values (gen_random_uuid(), 'etapa3-diag-a@example.test') returning id into v_owner_a;
@@ -3135,120 +2826,87 @@ begin
   select id into v_lead_a2 from public.leads where owner_id = v_owner_a and name = 'Diag A2';
   select id into v_lead_b from public.leads where owner_id = v_owner_b and name = 'Diag B';
 
-  insert into public.clients (owner_id, creation_key, name, status) values
-    (v_owner_a, gen_random_uuid(), 'Cliente A', 'active'),
-    (v_owner_b, gen_random_uuid(), 'Cliente B', 'active');
-  select id into v_client_a from public.clients where owner_id = v_owner_a;
-  select id into v_client_b from public.clients where owner_id = v_owner_b;
-  insert into public.contracts (owner_id, client_id, service, total_value, contracted_at) values
-    (v_owner_a, v_client_a, 'Site', 100, current_date),
-    (v_owner_b, v_client_b, 'Site', 200, current_date);
-  select id into v_contract_a from public.contracts where owner_id = v_owner_a;
-  select id into v_contract_b from public.contracts where owner_id = v_owner_b;
-  insert into public.projects (owner_id, client_id, contract_id, name, service, contracted_value) values
-    (v_owner_a, v_client_a, v_contract_a, 'Projeto A', 'Site', 100),
-    (v_owner_b, v_client_b, v_contract_b, 'Projeto B', 'Site', 200);
-  select id into v_project_a from public.projects where owner_id = v_owner_a;
-  select id into v_project_b from public.projects where owner_id = v_owner_b;
-  insert into public.project_tasks (owner_id, project_id, title, position) values
-    (v_owner_a, v_project_a, 'Tarefa A1', 0), (v_owner_a, v_project_a, 'Tarefa A2', 0);
-  select id into v_task_a from public.project_tasks where title = 'Tarefa A1';
-  insert into public.project_revisions (owner_id, project_id, description) values
-    (v_owner_a, v_project_a, 'Revisao A') returning id into v_revision_a;
-
-  insert into public.contract_installments (owner_id, contract_id, position, amount, due_date) values
-    (v_owner_a, v_contract_a, 0, 60, current_date + 10),
-    (v_owner_a, v_contract_a, 1, 40, current_date + 20),
-    (v_owner_b, v_contract_b, 0, 200, current_date + 10);
-  select id into v_installment_a1 from public.contract_installments where owner_id = v_owner_a and position = 0;
-  select id into v_installment_a2 from public.contract_installments where owner_id = v_owner_a and position = 1;
-  select id into v_installment_b from public.contract_installments where owner_id = v_owner_b;
-  insert into public.financial_payments (owner_id, contract_id, idempotency_key, type, amount, received_at) values
-    (v_owner_a, v_contract_a, gen_random_uuid(), 'receipt', 80, now()),
-    (v_owner_a, v_contract_a, gen_random_uuid(), 'receipt', 70, now()),
-    (v_owner_a, v_contract_a, gen_random_uuid(), 'receipt', 40, now());
-  select id into v_payment_a1 from public.financial_payments where owner_id = v_owner_a and amount = 80;
-  select id into v_payment_a2 from public.financial_payments where owner_id = v_owner_a and amount = 70;
-  select id into v_payment_a3 from public.financial_payments where owner_id = v_owner_a and amount = 40;
-  insert into public.financial_payments (owner_id, contract_id, idempotency_key, related_payment_id, type, amount, received_at)
-  values (v_owner_a, v_contract_a, gen_random_uuid(), v_payment_a3, 'refund', 50, now()) returning id into v_refund_a;
-  insert into public.financial_payment_allocations (owner_id, contract_id, payment_id, installment_id, amount) values
-    (v_owner_a, v_contract_a, v_payment_a1, v_installment_a1, 50),
-    (v_owner_a, v_contract_a, v_payment_a2, v_installment_a1, 70),
-    (v_owner_a, v_contract_a, v_payment_a3, v_installment_a2, 40),
-    (v_owner_a, v_contract_a, v_refund_a, v_installment_a2, 50);
-
-  alter table public.leads drop constraint if exists leads_money_nonnegative;
   alter table public.leads drop constraint if exists leads_status_check;
-  alter table public.projects drop constraint if exists projects_dates_check;
-  alter table public.project_tasks drop constraint if exists project_tasks_status_check;
-  alter table public.project_tasks drop constraint if exists project_tasks_dates_check;
-  alter table public.project_revisions drop constraint if exists project_revisions_status_check;
-  alter table public.lead_followups drop constraint if exists lead_followups_state_check;
-  alter table public.lead_digital_checks drop constraint if exists lead_digital_checks_verified_check;
-  alter table public.financial_payments drop constraint if exists financial_payments_type_check;
-  alter table public.financial_payments drop constraint if exists financial_payments_type_relation_check;
-  alter table public.financial_payments drop constraint if exists financial_payments_created_by_check;
-  alter table public.financial_expenses drop constraint if exists financial_expenses_paid_check;
-  alter table public.financial_expenses drop constraint if exists financial_expenses_cancelled_check;
-  alter table public.client_activities drop constraint if exists client_activities_created_by_check;
   alter table public.user_settings drop constraint if exists user_settings_prices_check;
   alter table public.user_settings drop constraint if exists user_settings_service_prices_check;
-  drop index if exists public.expense_categories_owner_name_key;
+  update public.leads set estimated_value = -1, status = 'invalid', maps_url = 'javascript:alert(1)'
+    where id = v_lead_a1;
+  update public.user_settings set service_prices = '{"site":-1}' where owner_id = v_owner_a;
+  if not found then
+    insert into public.user_settings (owner_id, service_prices) values (v_owner_a, '{"site":-1}');
+  end if;
 
   set local session_replication_role = replica;
-  update public.leads set estimated_value = -1, status = 'invalid' where id = v_lead_a1;
-  update public.projects set contracted_value = 120, start_date = current_date + 2, due_date = current_date + 1 where id = v_project_a;
-  update public.project_tasks set status = 'invalid', start_date = current_date + 2, due_date = current_date + 1,
-    completed_at = now() where id = v_task_a;
-  update public.project_revisions set status = 'invalid', completed_at = now() where id = v_revision_a;
-  update public.financial_payments set type = 'invalid' where id = v_payment_a1;
-  update public.financial_payments set created_by = v_owner_b where id = v_payment_a3;
-  insert into public.financial_payments (owner_id, contract_id, idempotency_key, related_payment_id, type, amount, received_at)
-  values (v_owner_a, v_contract_a, gen_random_uuid(), gen_random_uuid(), 'refund', 1, now());
-  insert into public.lead_followups (owner_id, lead_id, due_at, status, completed_at)
-  values (v_owner_a, v_lead_a1, now(), 'pendente', now());
-  insert into public.lead_digital_checks (owner_id, lead_id, verified) values (v_owner_a, v_lead_a1, true);
-  insert into public.financial_expenses (owner_id, description, amount, expense_date, status)
-  values (v_owner_a, 'Despesa invalida', 10, current_date, 'paid');
-  insert into public.expense_categories (owner_id, name) values
-    (v_owner_a, 'Categoria duplicada'), (v_owner_a, 'Categoria duplicada');
-  insert into public.user_settings (owner_id, service_prices) values (v_owner_a, '{"site":-1}');
-  insert into public.lead_activities (owner_id, lead_id, type, description, user_id)
-  values (v_owner_a, v_lead_b, 'observacao', 'Owner incompativel', v_owner_a);
-  insert into public.lead_activities (owner_id, lead_id, type, description, user_id)
-  values (v_owner_a, gen_random_uuid(), 'observacao', 'Orfa', v_owner_a);
-  insert into public.project_tasks (owner_id, project_id, title) values (v_owner_a, v_project_b, 'Tarefa cross-owner');
-  insert into public.client_activities (owner_id, client_id, project_id, type, description, created_by)
-  values (v_owner_a, v_client_a, v_project_b, 'note', 'Atividade cross-owner', v_owner_b);
-  insert into public.financial_payment_allocations (owner_id, contract_id, payment_id, installment_id, amount)
-  values (v_owner_a, v_contract_a, v_payment_a1, v_installment_b, 1);
-  insert into public.financial_expenses (owner_id, description, amount, expense_date, project_id, contract_id)
-  values (v_owner_a, 'Despesa cross-owner', 1, current_date, v_project_b, v_contract_a);
+  insert into public.lead_activities (id, owner_id, lead_id, type, description, user_id)
+  values (gen_random_uuid(), v_owner_a, gen_random_uuid(), 'observacao', 'Orfa', v_owner_a)
+  returning id into v_orphan_activity;
   set local session_replication_role = origin;
+  alter table public.leads disable row level security;
 
   perform set_config('request.jwt.claim.sub', v_owner_a::text, true);
   set local role authenticated;
-  select count(*) into v_count from public.diagnose_data_integrity();
-  if v_count = 0 then raise exception 'diagnostico nao encontrou nenhuma corrupcao sintetica.'; end if;
+  v_diagnostics := public.diagnose_data_integrity();
+  v_canonical := public.get_backup_diagnostics();
+  if v_diagnostics ->> 'schema_version' <> '3'
+     or jsonb_typeof(v_diagnostics -> 'checks') <> 'array'
+     or jsonb_typeof(v_diagnostics -> 'limits') <> 'object'
+     or v_diagnostics - 'generated_at' is distinct from v_canonical - 'generated_at'
+     or not exists (
+       select 1 from pg_catalog.jsonb_array_elements(v_diagnostics -> 'checks') as check_item(value)
+       where (check_item.value ->> 'count')::bigint > 0
+     ) then
+    raise exception 'adaptador de diagnostico divergiu do dono canonico ou quebrou o contrato JSON.';
+  end if;
+
   foreach v_required_code in array array[
-    'LEGACY_ORPHAN', 'OWNER_INCOMPATIBLE', 'DUPLICATE_PHONE', 'DUPLICATE_CATEGORY',
-    'DUPLICATE_TASK_POSITION', 'INVALID_MONEY', 'INVALID_DATE', 'INVALID_STATUS',
-    'INVALID_FOLLOWUP_STATE', 'INVALID_TASK_STATE', 'INVALID_REVISION_STATE',
-    'INVALID_DIGITAL_CHECK', 'INVALID_EXPENSE_STATE', 'INVALID_SETTINGS',
-    'PAYMENT_ALLOCATION_DIVERGENCE', 'INSTALLMENT_OVERALLOCATED',
-    'PROJECT_OVERALLOCATED', 'CONTRACT_OVERPAID', 'REFUND_EXCEEDS_RECEIPT',
-    'INVALID_REFUND_RELATION'
+    'rls.disabled',
+    'orphan.lead_activities.lead_id',
+    'duplicate.leads.contact',
+    'invalid.service_prices',
+    'invalid.maps_url',
+    'invalid.lead_values',
+    'invalid.statuses'
   ] loop
-    if not exists (select 1 from public.diagnose_data_integrity() where code = v_required_code) then
-      raise exception 'diagnostico nao cobriu a categoria %.', v_required_code;
+    if not exists (
+      select 1 from pg_catalog.jsonb_array_elements(v_diagnostics -> 'checks') as check_item(value)
+      where check_item.value ->> 'code' = v_required_code
+        and (check_item.value ->> 'count')::bigint > 0
+    ) then
+      raise exception 'fixture nao acionou o check canonico %.', v_required_code;
     end if;
   end loop;
+
+  if not exists (
+    select 1 from pg_catalog.jsonb_array_elements(v_diagnostics -> 'checks') as check_item(value)
+    where check_item.value ->> 'code' = 'orphan.lead_activities.lead_id'
+      and check_item.value -> 'sample_ids' @> jsonb_build_array(v_orphan_activity::text)
+  ) then
+    raise exception 'diagnostico nao incluiu a atividade orfa sintetica.';
+  end if;
   if exists (
-    select 1 from public.diagnose_data_integrity()
-    where entity_id in (v_lead_b, v_client_b, v_contract_b, v_project_b, v_installment_b)
-  ) then raise exception 'diagnostico vazou IDs do proprietario B.'; end if;
+    select 1
+    from pg_catalog.jsonb_array_elements(v_diagnostics -> 'checks') as check_item(value)
+    cross join lateral pg_catalog.jsonb_array_elements_text(check_item.value -> 'sample_ids') as sample(value)
+    where (check_item.value ->> 'count')::bigint > 0
+      and sample.value = v_lead_b::text
+  ) then
+    raise exception 'diagnostico vazou a lead do proprietario B em sample_ids.';
+  end if;
+
+  perform set_config('request.jwt.claim.sub', v_owner_b::text, true);
+  v_other_diagnostics := public.diagnose_data_integrity();
+  if exists (
+    select 1
+    from pg_catalog.jsonb_array_elements(v_other_diagnostics -> 'checks') as check_item(value)
+    cross join lateral pg_catalog.jsonb_array_elements_text(check_item.value -> 'sample_ids') as sample(value)
+    where sample.value in (v_lead_a1::text, v_lead_a2::text, v_orphan_activity::text)
+  ) then
+    raise exception 'diagnostico do proprietario B vazou dados do proprietario A.';
+  end if;
+
   reset role;
+  select count(*) into v_count from public.leads where owner_id = v_owner_a;
+  if v_count <> 2 then raise exception 'diagnostico alterou ou removeu leads do proprietario A.'; end if;
 end;
 $$;
 
@@ -3259,19 +2917,22 @@ rollback;
 
 ```bash
 git diff --check
-git grep -n '00000000-0000-0000-0000-0000000000b01' -- supabase/tests/etapa3_security.sql && exit 1 || true
-git grep -n '^rollback;' -- supabase/tests/etapa3_security.sql
+if grep -nE '00000000-0000-0000-0000-0000000000(b01|c0)' supabase/tests/etapa3_security.sql; then
+  exit 1
+fi
+test "$(grep -c '^rollback;' supabase/tests/etapa3_security.sql)" -eq 1
 ```
 
-Expected: no nonexistent fixture UUID, exactly one terminal `rollback;`, generated synthetic users/IDs, dynamic São Paulo date arithmetic, the exact 16-key metadata fixture, textual backup entity ID, separate row/statement trigger definitions, three cursor pages plus exact/limit+1/tie/invalid-cursor cases, restore timestamp and duplicate-audit guards, owner-level UPDATE/DELETE/TRUNCATE probes preserving the original row, forced audit rollback, and synthetic corruption fixtures for every diagnostic category. Constraint/index changes exist only inside the rolled-back diagnostic transaction. This is a static check only.
+Expected: no nonexistent fixture UUID, exactly one terminal `rollback;`, generated synthetic users/IDs, dynamic São Paulo date arithmetic, the exact 16-key metadata fixture, textual backup entity ID, separate row/statement trigger definitions, three cursor pages plus exact/limit+1/tie/invalid-cursor cases, restore timestamp and duplicate-audit guards, owner-level UPDATE/DELETE/TRUNCATE probes preserving the original row, forced audit rollback, and a representative diagnostic fixture that proves adapter equivalence plus two-owner isolation. The complete diagnostic category matrix remains owned by `supabase/tests/etapa3_backup.sql`; this file does not duplicate or claim that matrix. Constraint changes exist only inside the rolled-back diagnostic transaction. This is a static check only.
 
 - [ ] **Step 3: Run locally only when a disposable database is available.**
 
 ```bash
+psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/tests/etapa3_backup.sql
 psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/tests/etapa3_security.sql
 ```
 
-Expected: every assertion passes and the final `rollback;` leaves no test data. This synthetic transaction does not prove real Supabase Auth/RLS runtime behavior; Task 6 requires two actual authenticated owners for that classification. Never put `TEST_DATABASE_URL` in CI or a public workflow.
+Expected: the canonical WP4 suite passes first and proves the complete diagnostic matrix, including `invalid.refund_allocation`; the security suite then passes its audit, cursor, adapter-equivalence and two-owner assertions. Each file ends with `rollback;` and leaves no test data. These synthetic transactions do not prove real Supabase Auth/RLS runtime behavior; Task 6 requires two actual authenticated owners for that classification. Never put `TEST_DATABASE_URL` in CI or a public workflow.
 
 - [ ] **Step 4: Commit the test.**
 
@@ -3282,271 +2943,249 @@ git commit -m "test: provar auditoria append-only e isolamento sintetico"
 
 ---
 
-## Task 5: Expose read-only integrity diagnostics in the Backup integration
+### Task 5: Reconcile Backup diagnostics and optional restore audit result
 
 **Files:**
 
-- Create: `src/services/integrityService.ts`
-- Create: `src/services/integrityService.test.ts`
-- Create: `src/components/backup/IntegrityDiagnostics.tsx`
-- Create: `src/components/backup/IntegrityDiagnostics.test.tsx`
-- Modify: `src/pages/BackupPage.tsx` — owned by WP4; add only the integration import and component.
+- Modify: `src/services/backupService.ts`
+- Modify: `src/services/backupService.test.ts`
+- Modify: `src/types/backup.ts`
+- Modify: `src/pages/BackupPage.tsx` only to filter zero-count checks from the problem list.
+- Test: `src/pages/BackupPage.test.tsx`
+- Do not create `integrityService.ts`, `IntegrityDiagnostics.tsx` or a second diagnostics UI.
 
-**Interfaces:**
+**Interfaces consumed and preserved:**
 
 ```ts
-type IntegritySeverity = 'critical' | 'important' | 'warning'
-interface IntegrityIssue {
-  generated_at: string
+export interface BackupDiagnosticCheck {
   code: string
-  severity: IntegritySeverity
-  entity_type: string
-  entity_id: string | null
-  affected_count: number
-  message: string
+  severity: 'info' | 'warning' | 'critical'
+  count: number
+  sampleIds: string[]
 }
-diagnoseDataIntegrity(): Promise<IntegrityIssue[]>
+
+export interface BackupDiagnostics {
+  generatedAt: string
+  schemaVersion: number
+  checks: BackupDiagnosticCheck[]
+  limits: {
+    rows: number
+    zipBytes: number
+    uncompressedBytes: number
+    rpcBytes: number
+    fieldBytes: number
+    files: number
+    columns: number
+  }
+}
+
+export interface RestoreResult {
+  inserted: Record<string, number>
+  auditEventId?: string
+}
+
+getDiagnostics(): Promise<BackupDiagnostics>
+restoreBackup(pkg: BackupPackage, previewHash: string): Promise<RestoreResult>
 ```
 
-- [ ] **Step 1: Write the failing service test.**
+`getDiagnostics()` calls `diagnose_data_integrity`, not `get_backup_diagnostics`; both return the same canonical JSON contract. Zero-count checks remain available to the service, but `BackupPage` must render only `count > 0` as problems. `restoreBackup()` requires a valid `inserted` map and accepts an absent, null or valid UUID `audit_event_id`; when present and valid it exposes optional `auditEventId`.
 
-Create `src/services/integrityService.test.ts`:
+- [ ] **Step 1: Add failing contract tests to the existing Backup service suite.**
+
+Append these tests inside the existing `describe('backupService', ...)` in `src/services/backupService.test.ts`. Keep the existing `getUser`, `rpc`, `canonicalPackage()` and `BACKUP_LIMITS` fixtures.
 
 ```ts
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+it('usa o adaptador canonico de diagnostico e preserva o contrato do Backup', async () => {
+  const limits = { rows: 50_000, zipBytes: 26_214_400, uncompressedBytes: 52_428_800,
+    rpcBytes: 4_194_304, fieldBytes: 1_048_576, files: 32, columns: 64 }
+  rpc.mockResolvedValueOnce({ data: {
+    generated_at: '2026-11-27T12:00:00Z', schema_version: 3,
+    checks: [
+      { code: 'rls.disabled', severity: 'info', count: 0, sample_ids: [] },
+      { code: 'orphan.lead_activities.lead_id', severity: 'critical', count: 1,
+        sample_ids: ['lead_activities:22222222-2222-4222-8222-222222222222'] },
+    ],
+    limits,
+  }, error: null })
 
-const rpc = vi.hoisted(() => vi.fn())
-vi.mock('../lib/db', () => ({
-  requireSupabase: () => ({ rpc }),
-  throwDbError: (error: { message: string } | null) => {
-    if (error) throw new Error(error.message)
-  },
-}))
-
-import { diagnoseDataIntegrity } from './integrityService'
-
-describe('diagnoseDataIntegrity', () => {
-  beforeEach(() => rpc.mockReset())
-
-  it('reads the named RPC and returns only diagnostic rows', async () => {
-    const issue = {
-      generated_at: '2026-11-26T12:00:00Z', code: 'INVALID_MONEY', severity: 'critical',
-      entity_type: 'leads', entity_id: 'lead-A', affected_count: 1, message: 'Valor inválido.',
-    }
-    rpc.mockResolvedValue({ data: [issue], error: null })
-
-    await expect(diagnoseDataIntegrity()).resolves.toEqual([issue])
-    expect(rpc).toHaveBeenCalledWith('diagnose_data_integrity')
+  await expect(getDiagnostics()).resolves.toEqual({
+    generatedAt: '2026-11-27T12:00:00Z', schemaVersion: 3,
+    checks: [
+      { code: 'rls.disabled', severity: 'info', count: 0, sampleIds: [] },
+      { code: 'orphan.lead_activities.lead_id', severity: 'critical', count: 1,
+        sampleIds: ['lead_activities:22222222-2222-4222-8222-222222222222'] },
+    ],
+    limits,
   })
+  expect(rpc).toHaveBeenCalledWith('diagnose_data_integrity')
+})
 
-  it('rejects malformed data instead of showing a false clean diagnosis', async () => {
-    rpc.mockResolvedValue({ data: { issues: [] }, error: null })
-    await expect(diagnoseDataIntegrity()).rejects.toThrow('Resposta inválida do diagnóstico.')
-  })
+it('rejeita diagnostico malformado e sessao ausente sem fingir resultado limpo', async () => {
+  rpc.mockResolvedValueOnce({ data: { generated_at: 'now', schema_version: 3,
+    checks: [{ code: 'orphan.leads', severity: 'important', count: 1, sample_ids: [] }],
+    limits: {} }, error: null })
+  await expect(getDiagnostics()).rejects.toThrow('Diagnóstico inválido.')
 
-  it('propagates database failure through the shared error boundary', async () => {
-    rpc.mockResolvedValue({ data: null, error: { message: 'permission denied for table internal' } })
-    await expect(diagnoseDataIntegrity()).rejects.toThrow()
-  })
+  getUser.mockResolvedValueOnce({ data: { user: null }, error: null })
+  await expect(getDiagnostics()).rejects.toThrow('Sua sessão expirou')
+  expect(rpc).toHaveBeenCalledTimes(1)
+})
+
+it('aceita restore sem audit_event_id e preserva um UUID opcional valido', async () => {
+  const pkg = await canonicalPackage()
+  rpc.mockResolvedValueOnce({ data: { inserted: { leads: 1 } }, error: null })
+  await expect(restoreBackup(pkg, previewHash)).resolves.toEqual({ inserted: { leads: 1 } })
+
+  const auditId = '33333333-3333-4333-8333-333333333333'
+  rpc.mockResolvedValueOnce({ data: { inserted: { leads: 1 }, audit_event_id: auditId }, error: null })
+  await expect(restoreBackup(pkg, previewHash)).resolves.toEqual({ inserted: { leads: 1 }, auditEventId: auditId })
+
+  rpc.mockResolvedValueOnce({ data: { inserted: { leads: 1 }, audit_event_id: null }, error: null })
+  await expect(restoreBackup(pkg, previewHash)).resolves.toEqual({ inserted: { leads: 1 } })
+})
+
+it('rejeita inserted invalido e audit_event_id divergente no restore', async () => {
+  const pkg = await canonicalPackage()
+  rpc.mockResolvedValueOnce({ data: { inserted: { leads: -1 } }, error: null })
+  await expect(restoreBackup(pkg, previewHash)).rejects.toThrow('Resposta de restore inválida.')
+
+  rpc.mockResolvedValueOnce({ data: { inserted: { leads: 1 }, audit_event_id: 'not-a-uuid' }, error: null })
+  await expect(restoreBackup(pkg, previewHash)).rejects.toThrow('Resposta de restore inválida.')
 })
 ```
 
 Run:
 
 ```bash
-npm test -- --maxWorkers=2 src/services/integrityService.test.ts
+npm test -- --maxWorkers=2 src/services/backupService.test.ts
 ```
 
-Expected RED: service does not exist.
+Expected RED: `getDiagnostics()` still calls `get_backup_diagnostics`, and `restoreBackup()` still rejects an absent `audit_event_id`.
 
-- [ ] **Step 2: Implement the read-only service.**
+- [ ] **Step 2: Update the shared result type.**
 
-Create `src/services/integrityService.ts`:
+In `src/types/backup.ts`, replace the required audit field with the optional contract:
 
 ```ts
-import { requireSupabase, throwDbError } from '../lib/db'
-
-export type IntegritySeverity = 'critical' | 'important' | 'warning'
-
-export interface IntegrityIssue {
-  generated_at: string
-  code: string
-  severity: IntegritySeverity
-  entity_type: string
-  entity_id: string | null
-  affected_count: number
-  message: string
+export interface RestoreResult {
+  inserted: Record<string, number>
+  auditEventId?: string
 }
+```
 
-function isIssue(value: unknown): value is IntegrityIssue {
-  if (!value || typeof value !== 'object') return false
-  const row = value as Record<string, unknown>
-  return typeof row.generated_at === 'string'
-    && typeof row.code === 'string'
-    && (row.severity === 'critical' || row.severity === 'important' || row.severity === 'warning')
-    && typeof row.entity_type === 'string'
-    && (row.entity_id === null || typeof row.entity_id === 'string')
-    && typeof row.affected_count === 'number'
-    && typeof row.message === 'string'
-}
+Do not weaken `BackupDiagnostics`, `BackupDiagnosticCheck` or package validation.
 
-export async function diagnoseDataIntegrity(): Promise<IntegrityIssue[]> {
-  const client = requireSupabase()
-  const { data, error } = await client.rpc('diagnose_data_integrity')
+- [ ] **Step 3: Reconcile the existing Backup service.**
+
+In `src/services/backupService.ts`, replace only `restoreBackup()` and `getDiagnostics()` with:
+
+```ts
+export async function restoreBackup(pkg: BackupPackage, previewHash: string): Promise<RestoreResult> {
+  checkPackageSize(pkg)
+  if (!/^[0-9a-f]{64}$/.test(previewHash)) throw new Error('Hash de prévia inválido.')
+  const { data, error } = await requireSupabase().rpc('restore_backup', {
+    p_package: pkg, p_preview_hash: previewHash, p_confirmation: 'RESTAURAR',
+  })
   throwDbError(error)
-  if (!Array.isArray(data) || !data.every(isIssue)) {
-    throw new Error('Resposta inválida do diagnóstico.')
+  const row = objectData<{ inserted: unknown; audit_event_id?: unknown }>(data, 'Resposta de restore inválida.')
+  const inserted = row.inserted
+  const validInserted = inserted !== null && typeof inserted === 'object' && !Array.isArray(inserted)
+    && Object.values(inserted).every((count) => Number.isSafeInteger(count) && Number(count) >= 0)
+  const auditId = row.audit_event_id
+  const validAuditId = auditId === undefined || auditId === null
+    || (typeof auditId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(auditId))
+  if (!validInserted || !validAuditId) throw new Error('Resposta de restore inválida.')
+  return {
+    inserted: inserted as Record<string, number>,
+    ...(typeof auditId === 'string' ? { auditEventId: auditId } : {}),
   }
-  return data
+}
+
+export async function getDiagnostics(): Promise<BackupDiagnostics> {
+  await ownerId()
+  const { data, error } = await requireSupabase().rpc('diagnose_data_integrity')
+  throwDbError(error)
+  const row = objectData<{
+    generated_at: string; schema_version: number;
+    checks: Array<{ code: string; severity: 'info' | 'warning' | 'critical'; count: number; sample_ids: string[] }>;
+    limits: BackupDiagnostics['limits'];
+  }>(data, 'Diagnóstico inválido.')
+  if (typeof row.generated_at !== 'string' || row.schema_version !== 3
+    || !Array.isArray(row.checks) || !row.limits || typeof row.limits !== 'object'
+    || Object.keys(row.limits).sort().join(',') !== ['columns', 'fieldBytes', 'files', 'rows', 'rpcBytes', 'uncompressedBytes', 'zipBytes'].sort().join(',')
+    || !Object.values(row.limits).every((limit) => Number.isSafeInteger(limit) && limit > 0)
+    || row.checks.some((check) => !check || typeof check.code !== 'string'
+      || !['info', 'warning', 'critical'].includes(check.severity)
+      || !Number.isSafeInteger(check.count) || check.count < 0 || !Array.isArray(check.sample_ids)
+      || check.sample_ids.some((id) => typeof id !== 'string'))) {
+    throw new Error('Diagnóstico inválido.')
+  }
+  return {
+    generatedAt: row.generated_at, schemaVersion: row.schema_version,
+    checks: row.checks.map((check) => ({ code: check.code, severity: check.severity,
+      count: check.count, sampleIds: check.sample_ids })),
+    limits: row.limits,
+  }
 }
 ```
 
-Run the focused test. Expected GREEN.
+The limits key check is intentionally exact. `BackupPage` continues to own loading, errors, samples and read-only presentation; do not add another component or another diagnostics state store.
 
-- [ ] **Step 3: Write the failing diagnostics component test.**
+- [ ] **Step 4: Add the failing zero-count UI regression to the existing Backup page suite.**
 
-Create `src/components/backup/IntegrityDiagnostics.test.tsx`:
+Append this test inside the existing `describe('BackupPage', ...)` in `src/pages/BackupPage.test.tsx`. It reuses the canonical `diagnostics` fixture with positive `rls.disabled` and zero-count `invalid.maps_url`; do not create another page or component.
 
 ```tsx
-// @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { IntegrityDiagnostics } from './IntegrityDiagnostics'
-import { diagnoseDataIntegrity } from '../../services/integrityService'
+it('nao apresenta check zero como problema e preserva amostras textuais do check positivo', async () => {
+  render(<BackupPage />)
 
-vi.mock('../../services/integrityService', () => ({ diagnoseDataIntegrity: vi.fn() }))
-
-const issue = {
-  generated_at: '2026-11-26T12:00:00Z', code: 'INVALID_MONEY', severity: 'critical' as const,
-  entity_type: 'leads', entity_id: null, affected_count: 2, message: 'Dois leads com valor inválido.',
-}
-
-describe('IntegrityDiagnostics', () => {
-  beforeEach(() => vi.mocked(diagnoseDataIntegrity).mockReset())
-  afterEach(cleanup)
-
-  it('loads on demand and lists real issue codes', async () => {
-    vi.mocked(diagnoseDataIntegrity).mockResolvedValue([issue])
-    render(<IntegrityDiagnostics />)
-
-    expect(diagnoseDataIntegrity).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Executar diagnóstico' }))
-
-    expect(await screen.findByText('INVALID_MONEY')).toBeTruthy()
-    expect(screen.getByText('Dois leads com valor inválido.')).toBeTruthy()
-    expect(screen.getByText(/Somente leitura/)).toBeTruthy()
-  })
-
-  it('distinguishes a clean result from an error', async () => {
-    vi.mocked(diagnoseDataIntegrity).mockResolvedValue([])
-    render(<IntegrityDiagnostics />)
-    fireEvent.click(screen.getByRole('button', { name: 'Executar diagnóstico' }))
-    expect(await screen.findByText('Nenhum problema encontrado nos dados acessíveis.')).toBeTruthy()
-
-    vi.mocked(diagnoseDataIntegrity).mockRejectedValue(new Error('secret backend'))
-    fireEvent.click(screen.getByRole('button', { name: 'Executar diagnóstico' }))
-    expect(await screen.findByRole('alert')).toBeTruthy()
-    expect(screen.queryByText(/secret backend/)).toBeNull()
-  })
+  expect((await screen.findByText(/^rls\.disabled/)).textContent).toContain('critical')
+  expect(screen.getByText('Amostras: leads').textContent).toBe('Amostras: leads')
+  expect(screen.queryByText(/^invalid\.maps_url/)).toBeNull()
 })
 ```
 
 Run:
 
 ```bash
-npm test -- --maxWorkers=2 src/components/backup/IntegrityDiagnostics.test.tsx
+npm test -- --maxWorkers=2 src/pages/BackupPage.test.tsx
 ```
 
-Expected RED: component does not exist.
+Expected RED: the WP4 page still renders every check, including `invalid.maps_url` with count zero.
 
-- [ ] **Step 4: Implement the read-only component.**
+- [ ] **Step 5: Filter zero-count checks in the existing page and verify GREEN.**
 
-Create `src/components/backup/IntegrityDiagnostics.tsx`:
+In `src/pages/BackupPage.tsx`, replace only the diagnostic list expression:
 
 ```tsx
-import { useState } from 'react'
-import { ShieldCheck } from 'lucide-react'
-import { diagnoseDataIntegrity, type IntegrityIssue } from '../../services/integrityService'
-import { toPublicErrorMessage } from '../../lib/publicError'
-import { Button } from '../ui/Button'
-import { Card } from '../ui/Card'
-
-export function IntegrityDiagnostics() {
-  const [issues, setIssues] = useState<IntegrityIssue[] | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  async function run() {
-    setLoading(true)
-    setError(null)
-    try {
-      setIssues(await diagnoseDataIntegrity())
-    } catch (cause) {
-      setIssues(null)
-      setError(toPublicErrorMessage(cause, 'Não foi possível executar o diagnóstico.'))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <Card title="Diagnóstico de integridade" dot="accent">
-      <p className="text-sm text-muted">
-        Somente leitura. Verifica órfãos, duplicidades, valores, datas, status, saldos, alocações e donos incompatíveis.
-        Nenhuma correção ou exclusão é executada.
-      </p>
-      <Button type="button" variant="outline" className="mt-3" loading={loading} onClick={() => void run()}>
-        <ShieldCheck className="h-4 w-4" /> Executar diagnóstico
-      </Button>
-      {error && <p role="alert" className="mt-3 text-sm text-danger">{error}</p>}
-      {issues !== null && issues.length === 0 && (
-        <p role="status" className="mt-3 text-sm text-primary">Nenhum problema encontrado nos dados acessíveis.</p>
-      )}
-      {issues !== null && issues.length > 0 && (
-        <ul className="mt-3 flex flex-col gap-2" aria-label="Problemas de integridade">
-          {issues.map((issue, index) => (
-            <li key={`${issue.code}:${issue.entity_type}:${issue.entity_id}:${index}`} className="rounded-xl border border-danger/30 bg-danger/5 p-3 text-sm">
-              <p className="font-medium text-ink">{issue.code} · {issue.entity_type} · {issue.affected_count} registro(s)</p>
-              <p className="mt-1 text-muted">{issue.message}</p>
-              {issue.entity_id && <p className="mt-1 break-all text-xs text-muted">ID: {issue.entity_id}</p>}
-            </li>
-          ))}
-        </ul>
-      )}
-    </Card>
-  )
-}
+{diagnostics.checks.map((check) => (
 ```
 
-- [ ] **Step 5: Integrate into the WP4 Backup page.**
-
-In `src/pages/BackupPage.tsx`, add:
-
-```ts
-import { IntegrityDiagnostics } from '../components/backup/IntegrityDiagnostics'
-```
-
-Render one instance above the destructive restore section:
+with:
 
 ```tsx
-<IntegrityDiagnostics />
+{diagnostics.checks.filter((check) => check.count > 0).map((check) => (
 ```
 
-Do not add repair buttons, DELETE calls or automatic fixes. If a destructive correction is later required, it needs a backup, explicit confirmation and a separate reviewed procedure.
-
-- [ ] **Step 6: Verify and commit.**
+Keep the service payload unchanged: zero-count checks remain available to `BackupDiagnostics` consumers and are not deleted or rewritten. Run:
 
 ```bash
-npm test -- --maxWorkers=2 src/services/integrityService.test.ts src/components/backup/IntegrityDiagnostics.test.tsx src/pages/BackupPage.test.tsx
-npm run build
-npm run lint
-git add src/services/integrityService.ts src/services/integrityService.test.ts src/components/backup/IntegrityDiagnostics.tsx src/components/backup/IntegrityDiagnostics.test.tsx src/pages/BackupPage.tsx
-git commit -m "feat: expor diagnostico read-only de integridade"
+npm test -- --maxWorkers=2 src/services/backupService.test.ts src/pages/BackupPage.test.tsx
+```
+
+Expected GREEN: service contract tests pass, the positive check renders with its code/severity/textual sample, and the zero-count check is absent from the problem list.
+
+- [ ] **Step 6: Commit the scoped reconciliation.**
+
+```bash
+git diff --check
+git add src/services/backupService.ts src/services/backupService.test.ts src/types/backup.ts src/pages/BackupPage.tsx src/pages/BackupPage.test.tsx
+git commit -m "fix: alinhar diagnostico e resultado opcional de auditoria"
 ```
 
 ---
 
-## Task 6: Prepare real two-owner runtime evidence and classify external validation
+### Task 6: Prepare real two-owner runtime evidence and classify external validation
 
 **Files:**
 
@@ -3665,7 +3304,7 @@ git commit -m "test: preparar prova runtime com dois proprietarios"
 
 ---
 
-## Task 7: Move dashboard aggregation to the server and add bounded cursor/lazy loading
+### Task 7: Move dashboard aggregation to the server and add bounded cursor/lazy loading
 
 **Files:**
 
@@ -4077,6 +3716,7 @@ describe('readCursorPage', () => {
 
   it.each([
     { items: [], nextCursor: null, hasMore: true },
+    { items: [first], nextCursor: { at: first.due_at, id: first.id }, hasMore: true },
     { items: [first], nextCursor: null, hasMore: false },
     { items: [first, second], nextCursor: { at: first.due_at, id: first.id }, hasMore: true },
     { items: [first], nextCursor: { at: 'invalid', id: first.id }, hasMore: true },
@@ -4135,11 +3775,11 @@ describe('cursor pagination services', () => {
     rpc.mockResolvedValue({
       data: page([followup], followup.due_at, followup.id), error: null,
     })
-    await expect(listFollowupsPage('today', { at: '2026-11-26T14:00:00Z', id: followup.id }, 25)).resolves.toEqual({
+    await expect(listFollowupsPage('today', { at: '2026-11-26T14:00:00Z', id: followup.id }, 1)).resolves.toEqual({
       items: [followup], nextCursor: { at: followup.due_at, id: followup.id }, hasMore: true,
     })
     expect(rpc).toHaveBeenCalledWith('list_followups_cursor', {
-      p_list: 'today', p_after_at: '2026-11-26T14:00:00Z', p_after_id: followup.id, p_limit: 25,
+      p_list: 'today', p_after_at: '2026-11-26T14:00:00Z', p_after_id: followup.id, p_limit: 1,
     })
   })
 
@@ -4240,6 +3880,7 @@ export function readCursorPage<T extends { id: string; due_at?: string; complete
 ): CursorPage<T> {
   assertPageLimit(limit)
   if (!isRecord(value) || !Array.isArray(value.items) || value.items.length > limit
+      || (value.hasMore === true && value.items.length !== limit)
       || !value.items.every(isItem) || typeof value.hasMore !== 'boolean') throw new Error(PAGE_ERROR)
 
   const items = value.items
@@ -4724,18 +4365,17 @@ If any item fails, record an Important dependency blocker against the owning pla
 - [ ] **Step 10: Verify and commit.**
 
 ```bash
-npm test -- --maxWorkers=2 src/services/dashboardService.test.ts src/pages/DashboardPage.test.tsx src/services/cursorPagination.test.ts src/services/followupService.test.ts src/services/activityService.test.ts src/pages/FollowUpsPage.test.tsx src/routes/AppRoutes.test.tsx
-npm run build
-npm run lint
-git add src/services/dashboardService.ts src/services/dashboardService.test.ts src/pages/DashboardPage.tsx src/pages/DashboardPage.test.tsx src/components/dashboard/DashboardCharts.tsx src/services/followupService.ts src/services/followupService.test.ts src/services/cursorPagination.test.ts src/pages/FollowUpsPage.tsx src/services/activityService.ts src/services/activityService.test.ts src/pages/LeadDetailPage.tsx src/pages/PipelinePage.tsx src/routes/AppRoutes.tsx src/routes/AppRoutes.test.tsx
+npm test -- --maxWorkers=2 src/services/dashboardService.test.ts src/pages/DashboardPage.test.tsx src/lib/cursorPagination.test.ts src/services/cursorPagination.test.ts src/services/followupService.test.ts src/services/activityService.test.ts src/pages/FollowUpsPage.test.tsx src/pages/FollowUpsPage.pagination.test.tsx src/components/leads/LeadTimeline.test.tsx src/components/leads/LeadTimeline.pagination.test.tsx src/components/leads/LeadFollowups.test.tsx src/components/leads/LeadFollowups.leadName.test.tsx src/components/leads/LeadFollowups.pagination.test.tsx src/components/followups/FollowupItem.test.tsx src/pages/OpportunitiesPage.test.tsx src/pages/LeadDetailPage.conversion.test.tsx src/pages/PipelinePage.test.tsx src/routes/AppRoutes.test.tsx
+git diff --check
+git add src/services/dashboardService.ts src/services/dashboardService.test.ts src/pages/DashboardPage.tsx src/pages/DashboardPage.test.tsx src/components/dashboard/DashboardCharts.tsx src/lib/cursorPagination.ts src/lib/cursorPagination.test.ts src/services/followupService.ts src/services/followupService.test.ts src/services/cursorPagination.test.ts src/pages/FollowUpsPage.tsx src/pages/FollowUpsPage.test.tsx src/pages/FollowUpsPage.pagination.test.tsx src/services/activityService.ts src/services/activityService.test.ts src/components/leads/LeadTimeline.tsx src/components/leads/LeadTimeline.test.tsx src/components/leads/LeadTimeline.pagination.test.tsx src/components/followups/FollowupItem.tsx src/components/followups/FollowupItem.test.tsx src/components/leads/LeadFollowups.tsx src/components/leads/LeadFollowups.test.tsx src/components/leads/LeadFollowups.leadName.test.tsx src/components/leads/LeadFollowups.pagination.test.tsx src/pages/OpportunitiesPage.tsx src/pages/OpportunitiesPage.test.tsx src/pages/LeadDetailPage.conversion.test.tsx src/pages/PipelinePage.test.tsx src/routes/AppRoutes.tsx src/routes/AppRoutes.test.tsx
 git commit -m "perf: agregar dashboard no servidor e cursorizar listas"
 ```
 
-Inspect the production bundle after build and record actual chunk names/sizes. Expected static result: no `recharts` import in the initial Dashboard route and separate chunks for Reports, Backup and chart code. Do not claim a speed improvement without before/after measurements.
+Do not build in this task. Task 11 owns the fresh production build and bundle inspection after all route integrations exist.
 
 ---
 
-## Task 8: Add integrated mocked journey and real-browser responsive smoke tests
+### Task 8: Add integrated mocked journey and real-browser responsive smoke tests
 
 **Files:**
 
@@ -4753,20 +4393,555 @@ Inspect the production bundle after build and record actual chunk names/sizes. E
 
 - [ ] **Step 1: Write the integrated journey test before adding browser tooling.**
 
-Create `src/pages/IntegratedJourney.test.tsx` with real `AppRoutes`, `ProtectedRoute`, `AppLayout`, `LoginPage`, `DashboardPage`, `SettingsPage`, `ReportsPage`, `BackupPage` and the actual Clientes/Projetos/Financeiro pages. Mock service modules, not page components. Use the completed page selectors from WP0–WP4 and cover this sequence:
+Create `src/pages/IntegratedJourney.test.tsx` with the literal test below. It renders the real `AppRoutes`, layout and pages; only service/auth/database/chart boundaries are mocked. The test creates a client and project, completes a task, records and pays financial movements, changes report filters, saves settings, retries Backup diagnostics and proves stale route responses are discarded.
 
-1. Unauthenticated `/clientes` redirects to `/login`.
-2. Sign in with mocked Auth; the dashboard shows loading, then empty state.
-3. Navigate to Clientes, create a client, see its detail and return to the list.
-4. Navigate to Projetos, create a project linked to that client, advance one task and see the activity.
-5. Navigate to Financeiro, register a receipt and an expense, and assert the displayed received/paid/profit values use integer cents.
-6. Navigate to Relatórios, change a period/filter, and assert indicators, table and export request receive the same normalized range.
-7. Open Configurações, save profile/settings and assert no `role` key is sent.
-8. Open Backup, run diagnostics and assert empty/error states; do not invoke a real restore.
-9. Force one service rejection and assert a public error plus retry, never raw backend text.
-10. Unmount and assert in-flight responses cannot overwrite the current route.
+```tsx
+// @vitest-environment jsdom
+// src/pages/IntegratedJourney.test.tsx
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter, useNavigate, type NavigateFunction } from 'react-router-dom'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ReactNode } from 'react'
+import type { Project, ProjectDetail, ProjectTask } from '../types/project'
+import { DEFAULT_PREFERENCES, DEFAULT_SETTINGS } from '../types/settings'
 
-Use `vi.hoisted` for service spies, `cleanup` in `afterEach`, native DOM assertions and `findBy*` for lazy routes. The test must fail if any module route still renders an empty module placeholder. Add a second test that renders the same journey at a 390px jsdom viewport and asserts the mobile menu button, dialog focus, accessible names and absence of nested interactive controls; jsdom does not prove visual layout, so Task 8 Step 4 supplies real-browser evidence.
+const ids = vi.hoisted(() => ({
+  owner: '00000000-0000-4000-8000-0000000000d01',
+  client: '00000000-0000-4000-8000-0000000000c01',
+  contract: '00000000-0000-4000-8000-0000000000a01',
+  project: '00000000-0000-4000-8000-0000000000e01',
+  task: '00000000-0000-4000-8000-0000000000f01',
+  installment: '00000000-0000-4000-8000-00000000000101',
+  payment: '00000000-0000-4000-8000-00000000000102',
+  expense: '00000000-0000-4000-8000-00000000000103',
+}))
+
+const mocks = vi.hoisted(() => ({
+  authState: {
+    session: null as unknown,
+    user: null as { id: string; email: string } | null,
+    loading: false,
+    signOut: vi.fn(),
+  },
+  signIn: vi.fn(),
+  getDashboardData: vi.fn(),
+  countOverdue: vi.fn(),
+  listClients: vi.fn(),
+  getClient: vi.fn(),
+  createClient: vi.fn(),
+  updateClient: vi.fn(),
+  archiveClient: vi.fn(),
+  findClientDuplicateCandidates: vi.fn(),
+  countConvertedLeads: vi.fn(),
+  getLeadClientLink: vi.fn(),
+  listLeadClientLinks: vi.fn(),
+  listProjects: vi.fn(),
+  listProjectsForBoard: vi.fn(),
+  getProject: vi.fn(),
+  createProject: vi.fn(),
+  updateProject: vi.fn(),
+  setProjectStatus: vi.fn(),
+  deliverProject: vi.fn(),
+  listProjectFormOptions: vi.fn(),
+  listTasks: vi.fn(),
+  createTask: vi.fn(),
+  updateTask: vi.fn(),
+  deleteTask: vi.fn(),
+  reorderTasks: vi.fn(),
+  listRevisions: vi.fn(),
+  createRevision: vi.fn(),
+  updateRevision: vi.fn(),
+  listContracts: vi.fn(),
+  listPayments: vi.fn(),
+  getContractFinancials: vi.fn(),
+  createContract: vi.fn(),
+  replaceInstallments: vi.fn(),
+  adjustContract: vi.fn(),
+  cancelContract: vi.fn(),
+  recordPayment: vi.fn(),
+  listExpenses: vi.fn(),
+  listOverdueExpenses: vi.fn(),
+  listExpensesForClient: vi.fn(),
+  createExpense: vi.fn(),
+  updateExpense: vi.fn(),
+  updateExpenseNotes: vi.fn(),
+  payExpense: vi.fn(),
+  cancelExpense: vi.fn(),
+  listCategories: vi.fn(),
+  createCategory: vi.fn(),
+  archiveCategory: vi.fn(),
+  getFinancialSummary: vi.fn(),
+  getCashFlow: vi.fn(),
+  getExpenseCategoryTotals: vi.fn(),
+  loadReportData: vi.fn(),
+  getReportFilterOptions: vi.fn(),
+  exportReport: vi.fn(),
+  getSettings: vi.fn(),
+  getProfileName: vi.fn(),
+  updateProfileName: vi.fn(),
+  saveSettings: vi.fn(),
+  saveConfiguration: vi.fn(),
+  previewOpportunityRecalculation: vi.fn(),
+  confirmOpportunityRecalculation: vi.fn(),
+  exportBackup: vi.fn(),
+  importBackupFile: vi.fn(),
+  previewRestore: vi.fn(),
+  restoreBackup: vi.fn(),
+  getDiagnostics: vi.fn(),
+}))
+
+vi.mock('../hooks/useAuth', () => ({ useAuth: () => mocks.authState }))
+vi.mock('../lib/supabase', () => ({
+  isSupabaseConfigured: true,
+  supabase: null,
+  supabaseUrl: 'https://mock-project.supabase.co',
+  supabaseAnonKey: 'mock-public-anon-key',
+}))
+vi.mock('../lib/db', () => {
+  const query: Record<string, unknown> = {}
+  for (const method of ['select', 'neq', 'order', 'eq']) query[method] = vi.fn(() => query)
+  query.then = (resolve: (value: unknown) => unknown) => Promise.resolve({
+    data: [{ id: ids.project, name: 'Site Integrado', client_id: ids.client }],
+    error: null,
+  }).then(resolve)
+  return {
+    requireSupabase: () => ({ from: () => query }),
+    throwDbError: (error: { message: string } | null) => { if (error) throw new Error(error.message) },
+  }
+})
+vi.mock('recharts', () => {
+  const Chart = ({ children }: { children?: ReactNode }) => <div>{children}</div>
+  const Empty = () => null
+  return {
+    ResponsiveContainer: Chart, AreaChart: Chart, BarChart: Chart, LineChart: Chart,
+    ComposedChart: Chart, PieChart: Chart, Area: Empty, Bar: Empty, Line: Empty, Pie: Empty,
+    CartesianGrid: Empty, XAxis: Empty, YAxis: Empty, Tooltip: Empty, Cell: Empty, Legend: Empty,
+  }
+})
+vi.mock('../services/authService', () => ({ signIn: mocks.signIn }))
+vi.mock('../services/dashboardService', () => ({ getDashboardData: mocks.getDashboardData }))
+vi.mock('../services/followupService', () => ({
+  countOverdue: mocks.countOverdue, listFollowupsPage: vi.fn(), listByLeadPage: vi.fn(),
+  getFollowup: vi.fn(), completeFollowup: vi.fn(), cancelFollowup: vi.fn(),
+  createFollowup: vi.fn(), collectFollowupsForQueue: vi.fn(),
+}))
+vi.mock('../services/activityService', () => ({
+  listActivitiesPage: vi.fn(), listRecentActivities: vi.fn(), listRecentStatusChanges: vi.fn(),
+}))
+vi.mock('../services/clientService', () => ({
+  listClients: mocks.listClients, getClient: mocks.getClient, createClient: mocks.createClient,
+  updateClient: mocks.updateClient, archiveClient: mocks.archiveClient,
+  findClientDuplicateCandidates: mocks.findClientDuplicateCandidates,
+  countConvertedLeads: mocks.countConvertedLeads, getLeadClientLink: mocks.getLeadClientLink,
+  listLeadClientLinks: mocks.listLeadClientLinks,
+}))
+vi.mock('../services/projectService', () => ({
+  listProjects: mocks.listProjects, listProjectsForBoard: mocks.listProjectsForBoard,
+  getProject: mocks.getProject, createProject: mocks.createProject, updateProject: mocks.updateProject,
+  setProjectStatus: mocks.setProjectStatus, deliverProject: mocks.deliverProject,
+  listProjectFormOptions: mocks.listProjectFormOptions, listTasks: mocks.listTasks,
+  createTask: mocks.createTask, updateTask: mocks.updateTask, deleteTask: mocks.deleteTask,
+  reorderTasks: mocks.reorderTasks,
+}))
+vi.mock('../services/projectRevisionService', () => ({
+  listRevisions: mocks.listRevisions, createRevision: mocks.createRevision, updateRevision: mocks.updateRevision,
+}))
+vi.mock('../services/contractService', () => ({
+  listContracts: mocks.listContracts, listPayments: mocks.listPayments,
+  getContractFinancials: mocks.getContractFinancials, createContract: mocks.createContract,
+  replaceInstallments: mocks.replaceInstallments, adjustContract: mocks.adjustContract,
+  cancelContract: mocks.cancelContract, recordPayment: mocks.recordPayment,
+}))
+vi.mock('../services/expenseService', () => ({
+  listExpenses: mocks.listExpenses, listOverdueExpenses: mocks.listOverdueExpenses,
+  listExpensesForClient: mocks.listExpensesForClient, createExpense: mocks.createExpense,
+  updateExpense: mocks.updateExpense, updateExpenseNotes: mocks.updateExpenseNotes,
+  payExpense: mocks.payExpense, cancelExpense: mocks.cancelExpense,
+  listCategories: mocks.listCategories, createCategory: mocks.createCategory,
+  archiveCategory: mocks.archiveCategory,
+}))
+vi.mock('../services/financialService', () => ({
+  getFinancialSummary: mocks.getFinancialSummary, getCashFlow: mocks.getCashFlow,
+  getExpenseCategoryTotals: mocks.getExpenseCategoryTotals,
+}))
+vi.mock('../services/reportService', () => ({
+  loadReportData: mocks.loadReportData, getReportFilterOptions: mocks.getReportFilterOptions,
+  exportReport: mocks.exportReport,
+}))
+vi.mock('../services/settingsService', () => ({
+  getSettings: mocks.getSettings, getProfileName: mocks.getProfileName,
+  updateProfileName: mocks.updateProfileName, saveSettings: mocks.saveSettings,
+  saveConfiguration: mocks.saveConfiguration,
+  previewOpportunityRecalculation: mocks.previewOpportunityRecalculation,
+  confirmOpportunityRecalculation: mocks.confirmOpportunityRecalculation,
+}))
+vi.mock('../services/backupService', () => ({
+  exportBackup: mocks.exportBackup, importBackupFile: mocks.importBackupFile,
+  previewRestore: mocks.previewRestore, restoreBackup: mocks.restoreBackup,
+  getDiagnostics: mocks.getDiagnostics,
+}))
+
+import { ToastProvider } from '../components/ui/Toast'
+import { AppRoutes } from '../routes/AppRoutes'
+
+let navigate: NavigateFunction
+function Navigator() {
+  navigate = useNavigate()
+  return null
+}
+
+const emptySnapshot = {
+  generatedAt: '2026-11-27T12:00:00.000Z',
+  indicators: {
+    totalLeads: 0, novos: 0, contatados: 0, interessados: 0, negociando: 0,
+    convertidos: 0, totalOportunidades: 0, altaPrioridade: 0,
+    followupsPendentes: 0, followupsAtrasados: 0,
+  },
+  byMonth: [], byNiche: [], byStatus: [], byPriority: [], funnel: [],
+  pendingFollowups: [], recentActivities: [], recentStatusChanges: [], recentLeads: [],
+}
+
+const client = {
+  id: ids.client, owner_id: ids.owner, creation_key: '00000000-0000-4000-8000-0000000000b11',
+  name: 'Empresa Integrada', responsible_name: 'Maria', phone: '11999999999', whatsapp: '11999999999',
+  email: 'maria@example.test', cnpj: '12.345.678/0001-95', website: null, instagram: null,
+  address: null, city: 'São Paulo', district: null, zip_code: null, state: 'SP', niche: 'salao',
+  status: 'active', notes: null, cnpj_digits: '12345678000195', phone_canonical: '11999999999',
+  whatsapp_canonical: '11999999999', source: 'manual', converted_at: null, archived_at: null,
+  created_at: '2026-11-27T10:00:00.000Z', updated_at: '2026-11-27T10:00:00.000Z',
+}
+const contract = {
+  id: ids.contract, owner_id: ids.owner, client_id: ids.client, source_link_id: null,
+  creation_key: '00000000-0000-4000-8000-0000000000b12', service: 'Site', total_value_cents: 100000,
+  contracted_at: '2026-11-27', due_date: '2026-12-27', payment_method: 'pix', payment_terms: null,
+  status: 'active', notes: null, cancelled_at: null,
+  created_at: '2026-11-27T10:00:00.000Z', updated_at: '2026-11-27T10:00:00.000Z',
+}
+const project: Project = {
+  id: ids.project, owner_id: ids.owner, client_id: ids.client, contract_id: ids.contract,
+  source_link_id: null, name: 'Site Integrado', service: 'Site', contracted_value_cents: 100000,
+  description: null, start_date: '2026-11-27', due_date: '2026-12-10', responsible_name: null,
+  priority: 'medium', status: 'in_development', completed_at: null, delivered_at: null,
+  delivery_confirmed_at: null, delivery_url: null, files_url: null, final_notes: null,
+  archived_at: null, created_at: '2026-11-27T10:00:00.000Z', updated_at: '2026-11-27T10:00:00.000Z',
+}
+let task: ProjectTask = {
+  id: ids.task, owner_id: ids.owner, project_id: ids.project, title: 'Layout', description: null,
+  status: 'pending', responsible_name: null, start_date: '2026-11-27', due_date: '2026-12-01',
+  priority: 'medium', position: 0, notes: null, completed_at: null, cancelled_at: null,
+  created_at: '2026-11-27T10:00:00.000Z', updated_at: '2026-11-27T10:00:00.000Z',
+}
+let projectDetail: ProjectDetail = {
+  ...project, client_name: 'Empresa Integrada', progressPercent: 0, activeTasks: 1, completedTasks: 0,
+  tasks: [task], revisions: [], activities: [],
+}
+const clientDetail = {
+  client, contracts: [contract], projects: [], activities: [], linkedLeads: [], history: [],
+}
+const installment = {
+  id: ids.installment, owner_id: ids.owner, contract_id: ids.contract, position: 0,
+  amount_cents: 100000, due_date: '2026-12-27', notes: null,
+  created_at: '2026-11-27T10:00:00.000Z', updated_at: '2026-11-27T10:00:00.000Z',
+  allocated_cents: 0, remaining_cents: 100000, status: 'pending',
+}
+const financials = {
+  contract: { ...contract, client_name: 'Empresa Integrada' }, installments: [installment],
+  payments: [], allocations: [], receivedCents: 0, pendingCents: 100000,
+}
+const payment = {
+  id: ids.payment, owner_id: ids.owner, contract_id: ids.contract,
+  idempotency_key: '00000000-0000-4000-8000-0000000000b13', related_payment_id: null,
+  type: 'receipt', amount_cents: 10000, received_at: '2026-11-27T15:00:00.000Z',
+  payment_method: 'pix', notes: null, created_by: ids.owner,
+  created_at: '2026-11-27T15:00:00.000Z', allocations: [], already_existed: false,
+}
+const expense = {
+  id: ids.expense, owner_id: ids.owner, description: 'Hospedagem', category_id: null,
+  amount_cents: 2500, expense_date: '2026-11-27', due_date: null, paid_at: null,
+  payment_method: null, status: 'pending', project_id: ids.project, contract_id: ids.contract,
+  notes: null, cancelled_at: null, created_at: '2026-11-27T10:00:00.000Z',
+  updated_at: '2026-11-27T10:00:00.000Z',
+}
+const paidExpense = { ...expense, status: 'paid', paid_at: '2026-11-27T15:00:00.000Z', payment_method: 'pix' }
+const summary = {
+  contractedCents: 100000, receivedHistoricalCents: 10000, pendingCents: 90000,
+  periodReceiptsCents: 10000, periodExpensesCents: 2500, periodProfitCents: 7500,
+  overdueCents: 0, overdue: [], upcoming: [],
+}
+const report = {
+  meta: {
+    generatedAt: '2026-11-27T12:00:00.000Z', startDate: '2026-10-29', endDate: '2026-11-27',
+    startAt: '2026-10-29T03:00:00.000Z', endAt: '2026-11-28T02:00:00.000Z',
+    filters: { period: 'last_30_days' }, warnings: [],
+  },
+  cohort: { total: 0 },
+  events: { contacts: 0, contactedLeads: 0, responses: 0, respondedLeads: 0, conversions: 0 },
+  rates: {
+    response: { numerator: 0, denominator: 0, value: null, sufficient: false },
+    conversion: { numerator: 0, denominator: 0, value: null, sufficient: false },
+  },
+  series: [], byStatus: [], byNiche: [], byCity: [], byService: [], ranking: [],
+}
+const settings = {
+  owner_id: ids.owner, service_prices: { ...DEFAULT_SETTINGS.service_prices },
+  whatsapp_template: DEFAULT_SETTINGS.whatsapp_template,
+  preferences: structuredClone(DEFAULT_PREFERENCES),
+}
+const diagnostics = {
+  generatedAt: '2026-11-27T12:00:00.000Z', schemaVersion: 3,
+  checks: [
+    { code: 'rls.disabled', severity: 'critical', count: 1, sampleIds: ['leads'] },
+    { code: 'invalid.maps_url', severity: 'warning', count: 0, sampleIds: [] },
+  ],
+  limits: {
+    rows: 50000, zipBytes: 26214400, uncompressedBytes: 52428800,
+    rpcBytes: 4194304, fieldBytes: 1048576, files: 32, columns: 64,
+  },
+}
+
+function renderApp(path = '/') {
+  return render(
+    <MemoryRouter initialEntries={[path]}>
+      <Navigator />
+      <ToastProvider><AppRoutes /></ToastProvider>
+    </MemoryRouter>,
+  )
+}
+
+async function go(path: string) {
+  await act(async () => { navigate(path) })
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  sessionStorage.clear()
+  localStorage.clear()
+  mocks.authState.session = null
+  mocks.authState.user = null
+  mocks.authState.loading = false
+  mocks.signIn.mockImplementation(async () => {
+    mocks.authState.session = { access_token: 'mock-access-token' }
+    mocks.authState.user = { id: ids.owner, email: 'owner@example.test' }
+  })
+  mocks.getDashboardData.mockResolvedValue(emptySnapshot)
+  mocks.countOverdue.mockResolvedValue(0)
+  mocks.listClients.mockResolvedValue({ clients: [], total: 0 })
+  mocks.findClientDuplicateCandidates.mockResolvedValue([])
+  mocks.createClient.mockResolvedValue(client)
+  mocks.getClient.mockResolvedValue(clientDetail)
+  mocks.listProjectFormOptions.mockResolvedValue({
+    clients: [{ id: ids.client, name: client.name }],
+    contracts: [{ id: ids.contract, client_id: ids.client, service: 'Site', total_value_cents: 100000,
+      allocated_cents: 0, remaining_cents: 100000, due_date: '2026-12-27' }],
+  })
+  mocks.createProject.mockResolvedValue(project)
+  mocks.getProject.mockImplementation(async () => projectDetail)
+  mocks.listTasks.mockImplementation(async () => projectDetail.tasks)
+  mocks.updateTask.mockImplementation(async (_id: string, input: { status: string }) => {
+    task = { ...task, status: input.status, completed_at: input.status === 'completed' ? '2026-11-27T12:00:00.000Z' : null }
+    projectDetail = {
+      ...projectDetail, tasks: [task], progressPercent: input.status === 'completed' ? 100 : 0,
+      completedTasks: input.status === 'completed' ? 1 : 0,
+      activities: [{ id: '00000000-0000-4000-8000-0000000000f02', owner_id: ids.owner,
+        client_id: ids.client, project_id: ids.project, contract_id: ids.contract,
+        type: 'status_change', description: 'Tarefa concluída: Layout', metadata: {},
+        created_by: ids.owner, created_at: '2026-11-27T12:00:00.000Z' }],
+    }
+    return task
+  })
+  mocks.listRevisions.mockResolvedValue([])
+  mocks.listContracts.mockResolvedValue([{ ...contract, client_name: client.name }])
+  mocks.getContractFinancials.mockResolvedValue(financials)
+  mocks.recordPayment.mockResolvedValue(payment)
+  mocks.listExpenses.mockResolvedValue([])
+  mocks.listCategories.mockResolvedValue([])
+  mocks.createExpense.mockResolvedValue(expense)
+  mocks.payExpense.mockResolvedValue(paidExpense)
+  mocks.getFinancialSummary.mockResolvedValue(summary)
+  mocks.getCashFlow.mockResolvedValue([])
+  mocks.getExpenseCategoryTotals.mockResolvedValue([])
+  mocks.loadReportData.mockResolvedValue(report)
+  mocks.getReportFilterOptions.mockResolvedValue({ cities: ['São Paulo'], services: ['Site'] })
+  mocks.exportReport.mockResolvedValue({ csv: 'coluna\nvalor\n', fileName: 'relatorio.csv', total: 0 })
+  mocks.getSettings.mockResolvedValue(settings)
+  mocks.getProfileName.mockResolvedValue('Maria')
+  mocks.saveSettings.mockResolvedValue(settings)
+  mocks.saveConfiguration.mockResolvedValue(settings)
+  mocks.updateProfileName.mockResolvedValue(undefined)
+  mocks.getDiagnostics.mockResolvedValue(diagnostics)
+  vi.stubGlobal('crypto', { randomUUID: vi.fn(() => '00000000-0000-4000-8000-0000000000b14') })
+  Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:report') })
+  Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+  vi.stubGlobal('matchMedia', vi.fn((query: string) => ({
+    matches: false, media: query, onchange: null, addListener: vi.fn(), removeListener: vi.fn(),
+    addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
+  })))
+  vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue({
+    length: 1,
+    item: () => new DOMRect(0, 0, 100, 20),
+    [Symbol.iterator]: function* () { yield new DOMRect(0, 0, 100, 20) },
+  } as DOMRectList)
+})
+
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+})
+
+describe('IntegratedJourney', () => {
+  it('redireciona rota privada, autentica e mostra o dashboard vazio', async () => {
+    const view = renderApp('/clientes')
+    expect(await screen.findByRole('heading', { name: 'Entrar' })).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('E-mail'), { target: { value: 'owner@example.test' } })
+    fireEvent.change(screen.getByLabelText('Senha'), { target: { value: 'senha-ficticia' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Entrar' }))
+    await waitFor(() => expect(mocks.signIn).toHaveBeenCalledWith('owner@example.test', 'senha-ficticia'))
+
+    view.rerender(
+      <MemoryRouter initialEntries={['/login']}>
+        <Navigator /><ToastProvider><AppRoutes /></ToastProvider>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeTruthy()
+    expect(await screen.findByText('Seu CRM está pronto para começar')).toBeTruthy()
+  })
+
+  it('percorre clientes, projetos, financeiro, relatorios, configuracoes e backup com servicos mockados', async () => {
+    mocks.authState.session = { access_token: 'mock-access-token' }
+    mocks.authState.user = { id: ids.owner, email: 'owner@example.test' }
+    renderApp('/')
+    expect(await screen.findByText('Seu CRM está pronto para começar')).toBeTruthy()
+
+    await go('/clientes')
+    expect(await screen.findByRole('heading', { name: 'Clientes' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Novo cliente' }))
+    fireEvent.change(await screen.findByLabelText('Nome do cliente *'), { target: { value: client.name } })
+    fireEvent.change(screen.getByLabelText('Serviço contratado *'), { target: { value: 'Site' } })
+    fireEvent.change(screen.getByLabelText('Valor contratado *'), { target: { value: '1.000,00' } })
+    fireEvent.change(screen.getByLabelText('Data da contratação *'), { target: { value: '2026-11-27' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cadastrar cliente' }))
+    await waitFor(() => expect(mocks.createClient).toHaveBeenCalledWith(expect.objectContaining({
+      name: client.name, initialContract: expect.objectContaining({ totalValueCents: 100000 }),
+    })))
+    expect(await screen.findByRole('heading', { name: client.name })).toBeTruthy()
+
+    await go('/projetos/novo')
+    fireEvent.change(await screen.findByLabelText('Cliente *'), { target: { value: ids.client } })
+    fireEvent.change(screen.getByLabelText('Contrato *'), { target: { value: ids.contract } })
+    fireEvent.change(screen.getByLabelText('Nome do projeto *'), { target: { value: project.name } })
+    fireEvent.click(screen.getByRole('button', { name: 'Criar projeto' }))
+    await waitFor(() => expect(mocks.createProject).toHaveBeenCalledWith(expect.objectContaining({
+      clientId: ids.client, contractId: ids.contract, contractedValueCents: 100000,
+    })))
+    expect(await screen.findByRole('heading', { name: project.name })).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: 'Tarefas' }))
+    expect(await screen.findByText('Layout')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Status da tarefa Layout'), { target: { value: 'completed' } })
+    await waitFor(() => expect(mocks.updateTask).toHaveBeenCalledWith(ids.task, expect.objectContaining({ status: 'completed' })))
+    await waitFor(() => expect(screen.getByRole('progressbar', { name: 'Progresso de tarefas' }).getAttribute('aria-valuenow')).toBe('100'))
+    fireEvent.click(screen.getByRole('tab', { name: 'Histórico' }))
+    expect(await screen.findByText('Tarefa concluída: Layout')).toBeTruthy()
+
+    await go('/financeiro')
+    expect(await screen.findByRole('heading', { name: 'Visão financeira' })).toBeTruthy()
+    expect(within(screen.getByRole('group', { name: 'Recebimentos do período' })).getByText(/100,00/).textContent).toContain('100,00')
+    expect(within(screen.getByRole('group', { name: 'Despesas pagas do período' })).getByText(/25,00/).textContent).toContain('25,00')
+    expect(within(screen.getByRole('group', { name: 'Lucro do período' })).getByText(/75,00/).textContent).toContain('75,00')
+    fireEvent.click(screen.getByRole('button', { name: 'Receitas' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Receber' }))
+    fireEvent.change(screen.getByLabelText('Valor (R$) *'), { target: { value: '100,00' } })
+    fireEvent.change(screen.getByLabelText('Alocação parcela 1'), { target: { value: '100,00' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar recebimento' }))
+    await waitFor(() => expect(mocks.recordPayment).toHaveBeenCalledWith(ids.contract, expect.objectContaining({
+      amountCents: 10000, allocations: [{ installmentId: ids.installment, amountCents: 10000 }],
+    })))
+
+    mocks.listExpenses.mockResolvedValueOnce([]).mockResolvedValueOnce([expense]).mockResolvedValue([paidExpense])
+    fireEvent.click(screen.getByRole('button', { name: 'Despesas' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Nova despesa' }))
+    fireEvent.change(screen.getByLabelText('Descrição *'), { target: { value: expense.description } })
+    fireEvent.change(screen.getByLabelText('Valor (R$) *'), { target: { value: '25,00' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar despesa' }))
+    await waitFor(() => expect(mocks.createExpense).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 2500 })))
+    fireEvent.click(await screen.findByRole('button', { name: 'Pagar despesa' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar pagamento' }))
+    await waitFor(() => expect(mocks.payExpense).toHaveBeenCalledWith(ids.expense, expect.any(String), 'pix'))
+
+    await go('/relatorios')
+    expect(await screen.findByRole('heading', { name: 'Relatórios' })).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Período'), { target: { value: 'custom' } })
+    fireEvent.change(screen.getByLabelText('Data inicial'), { target: { value: '2026-11-01' } })
+    fireEvent.change(screen.getByLabelText('Data final'), { target: { value: '2026-11-27' } })
+    fireEvent.change(screen.getByLabelText('Cidade'), { target: { value: 'São Paulo' } })
+    await waitFor(() => expect(mocks.loadReportData).toHaveBeenLastCalledWith('prospecting', expect.objectContaining({
+      period: 'custom', startDate: '2026-11-01', endDate: '2026-11-27', city: 'São Paulo',
+    })))
+    fireEvent.click(screen.getByRole('button', { name: 'Exportar CSV' }))
+    await waitFor(() => expect(mocks.exportReport).toHaveBeenCalledWith('leads', expect.objectContaining({
+      period: 'custom', startDate: '2026-11-01', endDate: '2026-11-27', city: 'São Paulo',
+    }), expect.any(Function)))
+
+    await go('/configuracoes')
+    expect(await screen.findByRole('heading', { name: 'Configurações' })).toBeTruthy()
+    fireEvent.change(await screen.findByDisplayValue('Maria'), { target: { value: 'Maria Integrada' } })
+    fireEvent.change(screen.getByLabelText('Nome da empresa'), { target: { value: 'Ber Integrado' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar configurações' }))
+    await waitFor(() => expect(mocks.saveConfiguration).toHaveBeenCalledWith(
+      'Maria Integrada', expect.any(Object), expect.any(String),
+      expect.objectContaining({ company: expect.objectContaining({ name: 'Ber Integrado' }) }),
+      true,
+    ))
+    expect(mocks.saveSettings).not.toHaveBeenCalled()
+    expect(mocks.updateProfileName).not.toHaveBeenCalled()
+    expect(JSON.stringify(mocks.saveConfiguration.mock.calls[0])).not.toContain('"role"')
+
+    const publicError = Object.assign(new Error('Diagnóstico indisponível.'), {
+      cause: new Error('backend secret detail'),
+    })
+    mocks.getDiagnostics.mockRejectedValueOnce(publicError).mockResolvedValue(diagnostics)
+    await go('/backup')
+    expect((await screen.findByRole('alert')).textContent).toContain('Diagnóstico indisponível.')
+    expect(document.body.textContent).not.toContain('backend secret detail')
+    fireEvent.click(screen.getByRole('button', { name: 'Tentar diagnóstico novamente' }))
+    expect((await screen.findByText(/^rls\.disabled/)).textContent).toContain('critical')
+    expect(screen.getByText('Amostras: leads').textContent).toBe('Amostras: leads')
+    expect(screen.queryByText(/^invalid\.maps_url/)).toBeNull()
+    expect(mocks.restoreBackup).not.toHaveBeenCalled()
+  })
+
+  it('descarta resposta de dashboard que termina depois da troca de rota', async () => {
+    mocks.authState.session = { access_token: 'mock-access-token' }
+    mocks.authState.user = { id: ids.owner, email: 'owner@example.test' }
+    let resolveDashboard!: (value: typeof emptySnapshot) => void
+    mocks.getDashboardData.mockReturnValue(new Promise((resolve) => { resolveDashboard = resolve }))
+    renderApp('/')
+    await waitFor(() => expect(mocks.getDashboardData).toHaveBeenCalledTimes(1))
+    await go('/clientes')
+    expect(await screen.findByRole('heading', { name: 'Clientes' })).toBeTruthy()
+    await act(async () => { resolveDashboard(emptySnapshot) })
+    expect(screen.getByRole('heading', { name: 'Clientes' })).toBeTruthy()
+    expect(screen.queryByText('Seu CRM está pronto para começar')).toBeNull()
+  })
+
+  it('mantem foco e nomes acessiveis no menu mobile sem controles interativos aninhados', async () => {
+    mocks.authState.session = { access_token: 'mock-access-token' }
+    mocks.authState.user = { id: ids.owner, email: 'owner@example.test' }
+    vi.stubGlobal('innerWidth', 390)
+    renderApp('/')
+    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeTruthy()
+    const opener = screen.getByRole('button', { name: 'Abrir menu' })
+    fireEvent.click(opener)
+    const dialog = await screen.findByRole('dialog', { name: 'Menu de navegação' })
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Fechar menu' }))
+    expect(dialog.querySelector('a button, button a')).toBeNull()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'Menu de navegação' })).toBeNull()
+    expect(document.activeElement).toBe(opener)
+  })
+})
+```
 
 Run:
 
@@ -4774,7 +4949,7 @@ Run:
 npm test -- --maxWorkers=2 src/pages/IntegratedJourney.test.tsx
 ```
 
-Expected RED until all WP0–WP4 routes/services are integrated. Fix integration defects in their owning files; do not replace real pages with test-only stubs in production.
+Expected RED until all WP0–WP4 routes/services are integrated. Fix integration defects in their owning files; do not replace real pages with test-only stubs in production. If a selector changes in an owning page, update this literal test to the real accessible name rather than weakening the assertion.
 
 - [ ] **Step 2: Add Playwright and scripts.**
 
@@ -4838,7 +5013,11 @@ Create `e2e/journey.spec.ts`:
 import { expect, test, type Page } from '@playwright/test'
 
 const ownerId = '00000000-0000-0000-0000-0000000000d01'
-const accessToken = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwZDAxIiwiZXhwIjo5OTk5OTk5OTk5fQ.mock-signature'
+const accessToken = [
+  Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url'),
+  Buffer.from(JSON.stringify({ sub: ownerId, exp: 9_999_999_999 })).toString('base64url'),
+  'c2lnbmF0dXJl',
+].join('.')
 const emptySnapshot = {
   generatedAt: '2026-11-26T12:00:00.000Z',
   indicators: {
@@ -4873,7 +5052,17 @@ async function seedSession(page: Page) {
 }
 
 async function mockSupabase(page: Page) {
+  const calls = { dashboard: 0, diagnostics: 0, unmatched: 0 }
+  await page.route('https://mock-project.supabase.co/**', (route) => {
+    calls.unmatched += 1
+    return route.abort('blockedbyclient')
+  })
+  await page.route('**/rest/v1/**', (route) => route.fulfill({
+    json: [],
+    headers: { 'content-range': '0-0/0', 'content-type': 'application/json' },
+  }))
   await page.route('**/auth/v1/health', (route) => route.fulfill({ json: { ok: true } }))
+  await page.route('**/auth/v1/logout', (route) => route.fulfill({ status: 204 }))
   await page.route('**/auth/v1/recover', (route) => route.fulfill({ json: {} }))
   await page.route('**/auth/v1/user', (route) => route.fulfill({
     json: { id: ownerId, email: 'owner@example.test', aud: 'authenticated', role: 'authenticated' },
@@ -4888,30 +5077,43 @@ async function mockSupabase(page: Page) {
       user: { id: ownerId, email: 'owner@example.test', aud: 'authenticated', role: 'authenticated' },
     },
   }))
-  await page.route('**/rest/v1/rpc/get_dashboard_snapshot', (route) => route.fulfill({ json: emptySnapshot }))
-  await page.route('**/rest/v1/rpc/diagnose_data_integrity', (route) => route.fulfill({ json: [] }))
-  await page.route('**/rest/v1/**', (route) => route.fulfill({
-    json: [],
-    headers: { 'content-range': '0-0/0', 'content-type': 'application/json' },
-  }))
+  await page.route('**/rest/v1/rpc/get_dashboard_snapshot', (route) => {
+    calls.dashboard += 1
+    return route.fulfill({ json: emptySnapshot })
+  })
+  await page.route('**/rest/v1/rpc/diagnose_data_integrity', (route) => {
+    calls.diagnostics += 1
+    return route.fulfill({ json: {
+      generated_at: '2026-11-27T12:00:00.000Z',
+      schema_version: 3,
+      checks: [{ code: 'rls.disabled', severity: 'critical', count: 0, sample_ids: [] }],
+      limits: {
+        rows: 50000, zipBytes: 26214400, uncompressedBytes: 52428800,
+        rpcBytes: 4194304, fieldBytes: 1048576, files: 32, columns: 64,
+      },
+    } })
+  })
+  return calls
 }
 
 test('private route redirects and recovery uses a non-enumerating message', async ({ page }) => {
-  await mockSupabase(page)
+  const calls = await mockSupabase(page)
   await page.goto('/clientes')
   await expect(page).toHaveURL(/\/login$/)
   await page.getByRole('button', { name: 'Esqueci minha senha' }).click()
   await page.getByLabel('E-mail').fill('owner@example.test')
   await page.getByRole('button', { name: 'Enviar link' }).click()
   await expect(page.getByRole('status')).toContainText('Se o e-mail estiver cadastrado')
+  expect(calls.unmatched).toBe(0)
 })
 
 test('authenticated module journey stays usable without horizontal overflow', async ({ page }) => {
   await seedSession(page)
-  await mockSupabase(page)
+  const calls = await mockSupabase(page)
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
   await expect(page.getByText('Seu CRM está pronto para começar')).toBeVisible()
+  expect(calls.dashboard).toBeGreaterThan(0)
 
   for (const path of ['/clientes', '/projetos', '/financeiro', '/relatorios', '/configuracoes', '/backup']) {
     await page.goto(path)
@@ -4919,6 +5121,8 @@ test('authenticated module journey stays usable without horizontal overflow', as
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)
     expect(overflow, `overflow horizontal em ${path}`).toBe(false)
   }
+  expect(calls.diagnostics).toBeGreaterThan(0)
+  expect(calls.unmatched).toBe(0)
 
   if (await page.getByRole('button', { name: 'Abrir menu' }).isVisible()) {
     await page.getByRole('button', { name: 'Abrir menu' }).click()
@@ -4931,14 +5135,16 @@ test('authenticated module journey stays usable without horizontal overflow', as
 
 test('logout clears private client drafts', async ({ page }) => {
   await seedSession(page)
-  await mockSupabase(page)
+  const calls = await mockSupabase(page)
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
-  await page.evaluate(() => sessionStorage.setItem('ber-crm:client-draft:v1:owner-A:scope', 'PII'))
+  expect(calls.dashboard).toBeGreaterThan(0)
+  await page.evaluate((id) => sessionStorage.setItem(`ber-crm:client-draft:v1:${id}:scope`, 'PII'), ownerId)
   await page.getByRole('button', { name: 'Sair' }).click()
   await expect(page).toHaveURL(/\/login$/)
-  const draft = await page.evaluate(() => sessionStorage.getItem('ber-crm:client-draft:v1:owner-A:scope'))
+  const draft = await page.evaluate((id) => sessionStorage.getItem(`ber-crm:client-draft:v1:${id}:scope`), ownerId)
   expect(draft).toBeNull()
+  expect(calls.unmatched).toBe(0)
 })
 ```
 
@@ -4949,22 +5155,20 @@ npx playwright install chromium
 npm run test:e2e
 ```
 
-Expected: mobile and desktop projects pass; no real network call reaches Supabase; no horizontal overflow; mobile drawer traps/returns focus; logout removes drafts. A jsdom pass alone is not browser evidence.
+Expected: mobile and desktop projects pass; the dashboard and diagnostics handlers were called; `unmatched` stays zero so no Supabase request escapes interception; no horizontal overflow; mobile drawer traps/returns focus; logout removes drafts. A jsdom pass alone is not browser evidence.
 
 - [ ] **Step 5: Verify and commit.**
 
 ```bash
 npm test -- --maxWorkers=2 src/pages/IntegratedJourney.test.tsx
 npm run test:e2e
-npm run build
-npm run lint
 git add src/pages/IntegratedJourney.test.tsx playwright.config.ts e2e/journey.spec.ts package.json package-lock.json
 git commit -m "test: cobrir jornada integrada e responsividade"
 ```
 
 ---
 
-## Task 9: Add Node 24 CI and Vercel security headers
+### Task 9: Add Node 24 CI and Vercel security headers
 
 **Files:**
 
@@ -5085,7 +5289,7 @@ Expected: no secret reference in the workflow. Actual Actions execution remains 
 
 ---
 
-## Task 10: Replace outdated README and create database/deployment documentation
+### Task 10: Replace outdated README and create database/deployment documentation
 
 **Files:**
 
@@ -5138,7 +5342,7 @@ Abra o endereço informado pelo Vite. Sem configuração, rotas privadas direcio
 
 ## Banco e migrations
 
-Aplique `supabase/migrations/0001_profiles.sql` até `0013_etapa3_security_audit.sql`, em ordem, pelo processo autorizado. Não edite migrations antigas. `0010`–`0012` são dependências de Relatórios, Configurações e Backup; `0013` é segurança, auditoria, diagnóstico e performance.
+Aplique `supabase/migrations/0001_profiles.sql` até `0013_etapa3_security_audit.sql`, em ordem, pelo processo autorizado. Não edite migrations antigas. `0010`–`0012` são dependências de Relatórios, Configurações e Backup. `0012`/`get_backup_diagnostics()` é a dona da matriz completa de diagnóstico; `0013` é segurança, auditoria, performance e expõe `diagnose_data_integrity()` somente como adaptador read-only desse contrato.
 
 Detalhes de tabelas, RLS, grants, FKs compostas, auditoria e manutenção estão em [`docs/supabase-schema.md`](docs/supabase-schema.md).
 
@@ -5260,9 +5464,10 @@ Aplique `0001`–`0013` em ordem. O design autorizado é `docs/superpowers/specs
 
 ## Diagnóstico e performance
 
-- `diagnose_data_integrity()` é read-only e dono-escopada; detecta órfãos, duplicidades, valores/datas/status inválidos, saldos/alocações divergentes e donos incompatíveis.
+- `get_backup_diagnostics()` é a dona canônica do diagnóstico completo: `security definer`, `stable`, `search_path = ''`, com filtro explícito por `auth.uid()` em todas as leituras. Ela detecta órfãos, duplicidades, valores/datas/status inválidos, saldos/alocações/estornos divergentes e donos incompatíveis sem corrigir dados.
+- `diagnose_data_integrity()` é um adaptador `security invoker`, `stable`, `search_path = ''`, que delega a `get_backup_diagnostics()` e preserva o mesmo JSON (`schema_version = 3`, `checks`, `limits`). O cliente usa esse adaptador; não existe um segundo serviço/UI de diagnóstico.
 - `get_dashboard_snapshot()` agrega no servidor.
-- `list_followups_cursor()` e `list_lead_activities_cursor()` usam ordenação estável `(data,id)`.
+- `list_followups_cursor()`, `list_lead_followups_cursor()` e `list_lead_activities_cursor()` usam ordenação estável `(data,id)`.
 - Relatórios/exports usam cursor e páginas de até 1.000 registros; limite excedido aborta sem parcial como completo.
 - Índices cobrem dono, data, status, nicho, cidade, serviço, vencimento e FKs frequentes.
 
@@ -5371,7 +5576,7 @@ Expected: no outdated Node/migration/Etapa 4 claim and no credential. Phrases wa
 
 ---
 
-## Task 11: Run the fresh final gate, self-review and classified report
+### Task 11: Run the fresh final gate, self-review and classified report
 
 **Files:**
 
@@ -5395,6 +5600,14 @@ npm run test:e2e
 ```
 
 Record timestamp, Node/npm versions, command, exit code and relevant output. Do not use a stale earlier pass. If a command fails, fix it and rerun the entire gate; no `--no-verify`, skipped test or suppressed lint.
+
+After the build, inspect the emitted bundle and record actual chunk names/sizes:
+
+```bash
+find dist/assets -maxdepth 1 -type f -printf '%f %s\n' | sort
+```
+
+Expected static result: no `recharts` import in the initial Dashboard route and separate chunks for Reports, Backup and chart code. Do not claim a speed improvement without before/after measurements.
 
 - [ ] **Step 2: Review the complete diff and security invariants.**
 
@@ -5430,10 +5643,16 @@ Check each item and record `SIM`/`NÃO` with evidence:
 Run:
 
 ```bash
-git grep -nE 'TBD|TODO|TO-DO|implemente depois|semelhante a|00000000-0000-0000-0000-0000000000b01|00000000-0000-0000-0000-0000000000c0' -- docs/superpowers/plans/2026-11-26-etapa3-seguranca-finalizacao.md supabase/tests/etapa3_security.sql supabase/tests/etapa3_two_owners_manual.sql
+set -e
+placeholder_pattern='(^|[^[:alnum:]_])(TBD|TODO|TO-DO|CONTINUA|FIXME|implement later|implemente depois)([^[:alnum:]_]|$)'
+generated_uuid_pattern='00000000-0000-0000-0000-0000000000(b01|c0)'
+printf '%s\n' 'TODO: exemplo de placeholder real' | grep -Eq "$placeholder_pattern"
+if git grep --no-index -nE "$placeholder_pattern|$generated_uuid_pattern" -- src supabase e2e .github README.md docs/supabase-schema.md docs/vercel-deploy.md .env.example vercel.json playwright.config.ts package.json; then
+  exit 1
+fi
 ```
 
-Expected: no matches. In the manual probe, real user UUIDs must be supplied at execution; the static file must use named placeholders in the SQL comment only, not pretend they are real evidence.
+Expected: the positive control matches, the implementation/documentation scan returns no matches, and the plan/ledger are excluded so the scanner cannot match its own pattern. In the manual probe, real user UUIDs must be supplied at execution; the static file must use named placeholders in the SQL comment only, not pretend they are real evidence.
 
 - [ ] **Step 4: Reconcile TypeScript and SQL signatures.**
 
@@ -5441,10 +5660,11 @@ Compare every frontend `.rpc('name', args)` with `pg_proc` and the migration def
 
 ```text
 get_dashboard_snapshot(timestamptz) -> jsonb
-diagnose_data_integrity() -> setof record/table
+diagnose_data_integrity() -> jsonb
 list_followups_cursor(text,timestamptz,uuid,integer) -> jsonb
+list_lead_followups_cursor(uuid,timestamptz,uuid,integer) -> jsonb
 list_lead_activities_cursor(uuid,timestamptz,uuid,integer) -> jsonb
-write_audit_event(uuid,uuid,text,text,uuid,jsonb) -> void, trigger-only
+write_audit_event(uuid,uuid,text,text,text,jsonb) -> uuid, trigger/RPC-only
 ```
 
 Expected: exact argument names/order/defaults and no client EXECUTE on `write_audit_event`. Restore uses its actual WP4 signature and the same owner for actor/owner.
@@ -5525,4 +5745,4 @@ If no files changed, do not create an empty commit. Do not push.
 
 ## Summary
 
-Este plano finaliza a Etapa 3 existente sem recriar o projeto. Ele endurece Auth, recuperação, expiração, erros, URLs, RLS, grants, `profiles.role`, `search_path`, checks e FKs compostas por dono. A migration aditiva `0013` cria auditoria append-only com metadados mínimos e rollback transacional, diagnóstico read-only, agregação server-side, índices e cursor estável. O frontend passa a usar snapshot do dashboard, listas limitadas e chunks lazy para gráficos, Relatórios e Backup. Testes cobrem dois donos sintéticos, jornada integrada, responsividade mobile/desktop e smoke browser mockado. CI Node 24, headers Vercel, README, schema e deploy são atualizados. A execução depende de Planos 1–3 e dos planos paralelos `0010`–`0012`, sem editá-los. Migrations remotas, RLS real entre usuários, persistência autenticada e publicação permanecem dependentes de configuração externa até haver evidência. Nenhum Critical/Important aberto permite declarar finalização.
+Este plano finaliza a Etapa 3 existente sem recriar o projeto. Ele endurece Auth, recuperação, expiração, erros, URLs, RLS, grants, `profiles.role`, `search_path`, checks e FKs compostas por dono. A migration aditiva `0013` cria auditoria append-only com metadados mínimos e rollback transacional, expõe o diagnóstico read-only por um adaptador, agrega no servidor e adiciona índices/cursor estável; `0012`/`get_backup_diagnostics()` continua dona da matriz diagnóstica completa. O frontend passa a usar snapshot do dashboard, listas limitadas e chunks lazy para gráficos, Relatórios e Backup. Testes cobrem dois donos sintéticos, jornada integrada, responsividade mobile/desktop e smoke browser mockado. CI Node 24, headers Vercel, README, schema e deploy são atualizados. A execução depende de Planos 1–3 e dos planos paralelos `0010`–`0012`, sem editá-los. Migrations remotas, RLS real entre usuários, persistência autenticada e publicação permanecem dependentes de configuração externa até haver evidência. Nenhum Critical/Important aberto permite declarar finalização.
