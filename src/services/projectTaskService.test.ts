@@ -60,12 +60,13 @@ describe('projectTaskService', () => {
   })
 
   it('deleteTask usa delete e informa linha ausente', async () => {
-    const query = { delete: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), select: vi.fn().mockReturnThis(), single: vi.fn().mockResolvedValue({ data: { id: 'task-1' }, error: null }) }
+    const query = { delete: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), select: vi.fn().mockReturnThis(), maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'task-1' }, error: null }) }
     from.mockReturnValue(query)
     await expect(deleteTask('task-1')).resolves.toEqual({ id: 'task-1' })
     expect(query.delete).toHaveBeenCalledOnce()
     expect(query.eq).toHaveBeenCalledWith('id', 'task-1')
-    query.single.mockResolvedValueOnce({ data: null, error: null })
+    expect(query.maybeSingle).toHaveBeenCalled()
+    query.maybeSingle.mockResolvedValueOnce({ data: null, error: null })
     await expect(deleteTask('task-1')).rejects.toThrow('Tarefa não encontrada ou já excluída.')
   })
 

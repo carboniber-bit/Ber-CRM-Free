@@ -49,7 +49,7 @@ export async function updateTask(id: string, input: ProjectTaskWrite): Promise<P
 
 export async function deleteTask(id: string): Promise<{ id: string }> {
   const { data, error } = await requireSupabase()
-    .from('project_tasks').delete().eq('id', id).select('id').single()
+    .from('project_tasks').delete().eq('id', id).select('id').maybeSingle()
   throwDbError(error)
   if (!data) throw new Error('Tarefa não encontrada ou já excluída.')
   return data

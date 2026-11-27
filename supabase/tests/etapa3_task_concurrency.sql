@@ -19,10 +19,9 @@ declare
   v_direct_sql text;
   v_reorder_sql text;
 begin
-  perform dblink_connect(v_conn_a, format('dbname=%L user=%L', current_database(), current_user));
-  perform dblink_connect(v_conn_b, format('dbname=%L user=%L', current_database(), current_user));
-
   begin
+    perform dblink_connect(v_conn_a, format('dbname=%L user=%L', current_database(), current_user));
+    perform dblink_connect(v_conn_b, format('dbname=%L user=%L', current_database(), current_user));
     perform dblink_exec(v_conn_a, 'begin');
     perform dblink_exec(v_conn_a, format(
       'insert into auth.users (id, email) values (%L::uuid, %L)',
