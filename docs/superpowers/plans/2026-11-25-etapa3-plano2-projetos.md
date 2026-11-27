@@ -1774,12 +1774,13 @@ describe('projectTaskService', () => {
   })
 
   it('deleteTask usa delete e informa linha ausente', async () => {
-    const query = { delete: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), select: vi.fn().mockReturnThis(), single: vi.fn().mockResolvedValue({ data: { id: 'task-1' }, error: null }) }
+    const query = { delete: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), select: vi.fn().mockReturnThis(), maybeSingle: vi.fn().mockResolvedValue({ data: { id: 'task-1' }, error: null }) }
     from.mockReturnValue(query)
     await expect(deleteTask('task-1')).resolves.toEqual({ id: 'task-1' })
     expect(query.delete).toHaveBeenCalledOnce()
     expect(query.eq).toHaveBeenCalledWith('id', 'task-1')
-    query.single.mockResolvedValueOnce({ data: null, error: null })
+    expect(query.maybeSingle).toHaveBeenCalled()
+    query.maybeSingle.mockResolvedValueOnce({ data: null, error: null })
     await expect(deleteTask('task-1')).rejects.toThrow('Tarefa não encontrada ou já excluída.')
   })
 
@@ -1953,10 +1954,9 @@ declare
   v_direct_sql text;
   v_reorder_sql text;
 begin
-  perform dblink_connect(v_conn_a, format('dbname=%L user=%L', current_database(), current_user));
-  perform dblink_connect(v_conn_b, format('dbname=%L user=%L', current_database(), current_user));
-
   begin
+    perform dblink_connect(v_conn_a, format('dbname=%L user=%L', current_database(), current_user));
+    perform dblink_connect(v_conn_b, format('dbname=%L user=%L', current_database(), current_user));
     perform dblink_exec(v_conn_a, 'begin');
     perform dblink_exec(v_conn_a, format(
       'insert into auth.users (id, email) values (%L::uuid, %L)',
@@ -2233,7 +2233,7 @@ export async function updateTask(id: string, input: ProjectTaskWrite): Promise<P
 
 export async function deleteTask(id: string): Promise<{ id: string }> {
   const { data, error } = await requireSupabase()
-    .from('project_tasks').delete().eq('id', id).select('id').single()
+    .from('project_tasks').delete().eq('id', id).select('id').maybeSingle()
   throwDbError(error)
   if (!data) throw new Error('Tarefa não encontrada ou já excluída.')
   return data
