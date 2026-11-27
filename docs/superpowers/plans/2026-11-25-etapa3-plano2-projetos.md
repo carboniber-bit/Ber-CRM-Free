@@ -39,7 +39,7 @@
 - Campos de entrega/arquivos preservam o texto digitado com `type="text"` e `inputMode="url"`; a validação HTTP(S) explícita rejeita whitespace antes da RPC.
 - O merge otimista do Kanban preserva `client_name` porque a RPC não retorna essa relação derivada.
 - Cards, lista e Kanban recebem os mesmos filtros; o board mantém o limite de 500 e sinaliza resultados parciais.
-- Revisão aprovada é imutável no banco, inclusive descrição, responsável, notas, projeto e proprietário, além do status.
+- Revisão aprovada é imutável no banco, inclusive identidade, datas de solicitação/criação, descrição, responsável, notas, projeto e proprietário, além do status.
 - A sequência documentada de migrations inclui `0007_lead_maps_url.sql` entre a fundação de clientes e a migration de projetos.
 
 ## Convenções de teste
@@ -498,7 +498,13 @@ declare
   v_description text;
 begin
   if tg_op = 'DELETE' then
-    select * into v_project from public.projects where id = old.project_id and owner_id = old.owner_id;
+    select p.* into v_project
+      from public.projects p
+      join public.clients c on c.owner_id = p.owner_id and c.id = p.client_id
+      where p.id = old.project_id and p.owner_id = old.owner_id;
+    if not found then
+      return old;
+    end if;
     v_description := 'Tarefa excluída: ' || old.title || '.';
   elsif old.status is distinct from new.status and new.status in ('completed','cancelled') then
     select * into v_project from public.projects where id = new.project_id and owner_id = new.owner_id;
@@ -543,7 +549,10 @@ begin
       if new.status is distinct from old.status then
         raise exception 'Uma revisão aprovada não pode voltar para outro status.' using errcode = '23514';
       end if;
-      if new.description is distinct from old.description
+      if new.id is distinct from old.id
+        or new.requested_at is distinct from old.requested_at
+        or new.created_at is distinct from old.created_at
+        or new.description is distinct from old.description
         or new.responsible_name is distinct from old.responsible_name
         or new.notes is distinct from old.notes
         or new.project_id is distinct from old.project_id
@@ -658,7 +667,7 @@ commit;
 - [ ] **Step 2: Review RLS and trigger behavior**
 
 Run: `git diff --check && git diff -- supabase/migrations/0008_etapa3_projects.sql`
-Expected: tasks have owner CRUD policies; revisions have owner read/insert/update but no delete; both have composite owner/project FKs; direct INSERT of a completed/approved revision is normalized and logged; the allocation trigger defensively rejects contract totals below the sum of non-cancelled projects without acquiring an advisory after the row; the project RPCs added in Task 3 and the corrected `update_client` will acquire `:contract:<id>` before any `FOR UPDATE`, while `adjust_contract` belongs to Plan 3; task writes and reorders share a transactional per-owner advisory lock; tables and trigger functions explicitly revoke `public` and `anon`, leaving only the minimum grants for `authenticated`; trigger functions are `security definer` with empty `search_path` and are never granted for direct client execution.
+Expected: tasks have owner CRUD policies; revisions have owner read/insert/update but no delete; both have composite owner/project FKs; direct task deletion logs only while the project/client still exist, so cascading deletion does not create an orphan activity; direct INSERT of a completed/approved revision is normalized and logged; approved revisions also reject changes to id, requested_at and created_at; the allocation trigger defensively rejects contract totals below the sum of non-cancelled projects without acquiring an advisory after the row; the project RPCs added in Task 3 and the corrected `update_client` will acquire `:contract:<id>` before any `FOR UPDATE`, while `adjust_contract` belongs to Plan 3; task writes and reorders share a transactional per-owner advisory lock; tables and trigger functions explicitly revoke `public` and `anon`, leaving only the minimum grants for `authenticated`; trigger functions are `security definer` with empty `search_path` and are never granted for direct client execution.
 
 - [ ] **Step 3: Commit**
 
@@ -710,6 +719,9 @@ declare
   v_delivered_at timestamptz;
   v_revision_id uuid;
   v_task_id uuid;
+  v_deleted_task_id uuid;
+  v_cascade_project_id uuid;
+  v_cascade_task_id uuid;
   v_task_completed_at timestamptz;
   v_revision_approved_at timestamptz;
   v_archived_at timestamptz := '2026-02-03T04:05:06Z';
@@ -988,6 +1000,44 @@ begin
       raise exception 'Trigger não bloqueou alteração de descrição de revisão aprovada.';
     end if;
   end;
+
+  do $$
+  declare
+    v_original_id uuid;
+    v_original_requested_at timestamptz;
+    v_original_created_at timestamptz;
+  begin
+    select id, requested_at, created_at into
+      v_original_id, v_original_requested_at, v_original_created_at
+      from public.project_revisions where id = v_revision_id;
+    begin
+      update public.project_revisions set id = gen_random_uuid() where id = v_revision_id;
+      raise exception 'Revisão aprovada permitiu alteração de id.';
+    exception when check_violation then
+      if sqlerrm <> 'Uma revisão aprovada não pode ser alterada.' then raise; end if;
+    end;
+    begin
+      update public.project_revisions set requested_at = '2000-01-01T00:00:00Z' where id = v_revision_id;
+      raise exception 'Revisão aprovada permitiu alteração de requested_at.';
+    exception when check_violation then
+      if sqlerrm <> 'Uma revisão aprovada não pode ser alterada.' then raise; end if;
+    end;
+    begin
+      update public.project_revisions set created_at = '2000-01-01T00:00:00Z' where id = v_revision_id;
+      raise exception 'Revisão aprovada permitiu alteração de created_at.';
+    exception when check_violation then
+      if sqlerrm <> 'Uma revisão aprovada não pode ser alterada.' then raise; end if;
+    end;
+    if exists (
+      select 1 from public.project_revisions
+      where id = v_revision_id
+        and (id is distinct from v_original_id
+          or requested_at is distinct from v_original_requested_at
+          or created_at is distinct from v_original_created_at)
+    ) then
+      raise exception 'Trigger não preservou identidade e datas da revisão aprovada.';
+    end if;
+  end;
   $$;
 
   insert into public.project_tasks (owner_id, project_id, title, status, completed_at)
@@ -1000,6 +1050,20 @@ begin
   update public.project_tasks set completed_at = '2000-01-01T00:00:00Z' where id = v_task_id;
   if (select completed_at from public.project_tasks where id = v_task_id) is distinct from v_task_completed_at then
     raise exception 'O cliente sobrescreveu completed_at de uma tarefa concluída.';
+  end if;
+
+  insert into public.project_tasks (owner_id, project_id, title)
+  values (v_owner, v_project_id, 'Tarefa excluída diretamente')
+  returning id into v_deleted_task_id;
+  delete from public.project_tasks where id = v_deleted_task_id and owner_id = v_owner;
+  if not found then
+    raise exception 'Exclusão direta da tarefa não removeu o registro.';
+  end if;
+  select count(*) into v_events from public.client_activities
+    where project_id = v_project_id and type = 'note'
+      and metadata ->> 'task_id' = v_deleted_task_id::text;
+  if v_events <> 1 then
+    raise exception 'Exclusão direta da tarefa não gerou exatamente um evento.';
   end if;
 
   -- Projeto cancelado deixa de consumir o total do contrato.
@@ -1119,6 +1183,23 @@ begin
   end if;
 
   reset role;
+
+  insert into public.projects (owner_id, client_id, contract_id, name, service, contracted_value)
+  values (v_owner, v_client_id, v_contract_id, 'Projeto para cascata', 'Site', 0)
+  returning id into v_cascade_project_id;
+  insert into public.project_tasks (owner_id, project_id, title)
+  values (v_owner, v_cascade_project_id, 'Tarefa removida pela cascata')
+  returning id into v_cascade_task_id;
+  delete from public.projects where id = v_cascade_project_id and owner_id = v_owner;
+  if exists (select 1 from public.project_tasks where id = v_cascade_task_id) then
+    raise exception 'Cascata do projeto não removeu a tarefa.';
+  end if;
+  if exists (
+    select 1 from public.client_activities
+    where project_id = v_cascade_project_id or metadata ->> 'task_id' = v_cascade_task_id::text
+  ) then
+    raise exception 'Cascata do projeto tentou criar histórico para uma tarefa sem projeto.';
+  end if;
 
   raise notice 'Contrato SQL de projetos aprovado.';
 end
