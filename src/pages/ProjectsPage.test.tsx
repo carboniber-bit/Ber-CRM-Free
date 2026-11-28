@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type { DndContextProps, DragEndEvent } from '@dnd-kit/core'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { PROJECT_MOVE_STATUSES, type ProjectListItem } from '../types/project'
+import { PROJECT_MOVE_STATUSES, type ProjectFilters, type ProjectListItem } from '../types/project'
 
 const { listProjects, listProjectsForBoard, setProjectStatus } = vi.hoisted(() => ({
   listProjects: vi.fn(), listProjectsForBoard: vi.fn(), setProjectStatus: vi.fn(),
@@ -198,6 +198,58 @@ describe('ProjectsPage', () => {
     expect(screen.getByText('Site da Empresa')).toBeTruthy()
   })
 
+  it('adia a leitura do Kanban durante movimentação e aplica os filtros mais recentes', async () => {
+    const pendingMove = deferred<ProjectListItem>()
+    const pendingBoard = deferred<{ projects: ProjectListItem[]; partial: boolean }>()
+    let moveConfirmed = false
+    let filteredSnapshot: { projects: ProjectListItem[]; partial: boolean } | undefined
+    setProjectStatus.mockReturnValueOnce(pendingMove.promise)
+    listProjectsForBoard.mockImplementation((filters: ProjectFilters) => {
+      const snapshot: { projects: ProjectListItem[]; partial: boolean } = {
+        projects: [{ ...project, status: moveConfirmed ? 'in_review' : 'in_development' }],
+        partial: false,
+      }
+      if (filters.search === 'Site') {
+        filteredSnapshot = snapshot
+        return pendingBoard.promise
+      }
+      return Promise.resolve(snapshot)
+    })
+    render(<MemoryRouter><ProjectsPage /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: 'Kanban' }))
+    const selector = await screen.findByLabelText('Status do projeto Site da Empresa') as HTMLSelectElement
+    expect(selector.value).toBe('in_development')
+    fireEvent.change(selector, { target: { value: 'in_review' } })
+    await waitFor(() => expect(setProjectStatus).toHaveBeenCalledWith('p1', 'in_review'))
+    fireEvent.change(screen.getByLabelText('Buscar projetos'), { target: { value: 'Site' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Aplicar filtros' }))
+    expect(listProjectsForBoard).toHaveBeenCalledTimes(1)
+    expect(listProjectsForBoard).toHaveBeenLastCalledWith({})
+    const pendingSelector = screen.getByLabelText('Status do projeto Site da Empresa') as HTMLSelectElement
+    expect(pendingSelector.value).toBe('in_review')
+    expect(pendingSelector.disabled).toBe(true)
+
+    await act(async () => {
+      moveConfirmed = true
+      pendingMove.resolve({ ...project, status: 'in_review' })
+      await pendingMove.promise
+    })
+    await waitFor(() => expect(listProjectsForBoard).toHaveBeenCalledTimes(2))
+    expect(listProjectsForBoard).toHaveBeenLastCalledWith({ search: 'Site' })
+    expect(filteredSnapshot).toEqual({
+      projects: [expect.objectContaining({ status: 'in_review' })], partial: false,
+    })
+    await act(async () => {
+      pendingBoard.resolve(filteredSnapshot!)
+      await pendingBoard.promise
+    })
+    const liveSelector = screen.getByLabelText('Status do projeto Site da Empresa') as HTMLSelectElement
+    await waitFor(() => {
+      expect(liveSelector.disabled).toBe(false)
+      expect(liveSelector.value).toBe('in_review')
+    })
+  })
+
   it('seletor mobile usa exatamente PROJECT_MOVE_STATUSES e move otimisticamente', async () => {
     const pending = deferred<ProjectListItem>()
     setProjectStatus.mockReturnValueOnce(pending.promise)
@@ -206,14 +258,19 @@ describe('ProjectsPage', () => {
     const selector = await screen.findByLabelText('Status do projeto Site da Empresa') as HTMLSelectElement
     expect(Array.from(selector.options, (option) => option.value)).toEqual([...PROJECT_MOVE_STATUSES])
     fireEvent.change(selector, { target: { value: 'in_review' } })
-    expect(selector.value).toBe('in_review')
-    expect(selector.disabled).toBe(true)
+    const pendingSelector = await screen.findByLabelText('Status do projeto Site da Empresa') as HTMLSelectElement
+    expect(pendingSelector.value).toBe('in_review')
+    expect(pendingSelector.disabled).toBe(true)
     await waitFor(() => expect(setProjectStatus).toHaveBeenCalledWith('p1', 'in_review'))
     await act(async () => {
       pending.resolve({ ...project, status: 'in_review' })
       await pending.promise
     })
-    await waitFor(() => expect(selector.disabled).toBe(false))
+    await waitFor(() => {
+      const liveSelector = screen.getByLabelText('Status do projeto Site da Empresa') as HTMLSelectElement
+      expect(liveSelector.disabled).toBe(false)
+      expect(liveSelector.value).toBe('in_review')
+    })
   })
 
   it('drag fora do board não move e falha faz rollback com toast', async () => {

@@ -156,15 +156,16 @@ export function ProjectsPage() {
     }
   }, [filters])
 
-  useEffect(() => {
-    if (view === 'kanban') void loadBoard()
-  }, [view, loadBoard])
-
   const queue = useProjectStatusQueue({
     projects: boardProjects,
     onChange: setBoardProjects,
     onRefresh: loadBoard,
   })
+
+  useEffect(() => {
+    if (view !== 'kanban') return
+    void queue.requestRefresh()
+  }, [view, filters, queue.requestRefresh])
 
   const changeView = (next: ViewMode) => {
     if (next === view) return

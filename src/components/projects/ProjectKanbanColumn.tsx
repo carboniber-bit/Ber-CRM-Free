@@ -40,10 +40,7 @@ function ProjectStatusControl({
       onChange={(event) => {
         const next = event.target.value
         if (pending || !isMoveStatus(next)) return
-        const control = event.currentTarget
-        control.disabled = true
-        const settle = () => { control.disabled = false }
-        void onMove(project.id, next).then(settle, settle)
+        void onMove(project.id, next)
       }}
     />
   )
