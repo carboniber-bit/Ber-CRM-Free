@@ -9,7 +9,7 @@ const { getProject, updateProject, setProjectStatus, deliverProject, listProject
   getProject: vi.fn(), updateProject: vi.fn(), setProjectStatus: vi.fn(), deliverProject: vi.fn(), listProjectFormOptions: vi.fn(),
 }))
 const { toast } = vi.hoisted(() => ({ toast: vi.fn() }))
-const { listTasks } = vi.hoisted(() => ({ listTasks: vi.fn() }))
+const { listTasks, updateTask } = vi.hoisted(() => ({ listTasks: vi.fn(), updateTask: vi.fn() }))
 const { listRevisions } = vi.hoisted(() => ({ listRevisions: vi.fn() }))
 vi.mock('../services/projectService', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/projectService')>()
@@ -21,7 +21,7 @@ vi.mock('../hooks/useToast', async (importOriginal) => {
 })
 vi.mock('../services/projectTaskService', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/projectTaskService')>()
-  return { ...actual, listTasks }
+  return { ...actual, listTasks, updateTask }
 })
 vi.mock('../services/projectRevisionService', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../services/projectRevisionService')>()
@@ -38,6 +38,15 @@ const project: ProjectDetail = {
   delivery_confirmed_at: null, delivery_url: null, files_url: null, final_notes: null, archived_at: null,
   created_at: '2026-11-25T12:00:00Z', updated_at: '2026-11-25T12:00:00Z',
   progressPercent: 50, activeTasks: 2, completedTasks: 1, tasks: [], revisions: [], activities: [],
+}
+
+function makeTask(id: string, status: ProjectDetail['tasks'][number]['status'] = 'pending') {
+  return {
+    id, owner_id: 'owner-1', project_id: 'p1', title: 'Layout', description: null, status,
+    responsible_name: null, start_date: null, due_date: null, priority: 'medium' as const, position: 0,
+    notes: null, completed_at: null, cancelled_at: null,
+    created_at: '2026-11-25T12:00:00Z', updated_at: '2026-11-25T12:00:00Z',
+  }
 }
 
 function renderPage() {
@@ -76,6 +85,7 @@ describe('ProjectDetailPage', () => {
     })
     toast.mockReset()
     listTasks.mockReset().mockResolvedValue([])
+    updateTask.mockReset()
     listRevisions.mockReset().mockResolvedValue([])
   })
 
@@ -98,6 +108,79 @@ describe('ProjectDetailPage', () => {
     expect((await screen.findByText('Nenhuma revisão registrada.')).textContent).toBe('Nenhuma revisão registrada.')
     expect(screen.getAllByRole('button', { name: 'Nova revisão' })).toHaveLength(1)
     expect(listRevisions).toHaveBeenCalledWith('p1')
+  })
+
+  it('preserva tarefa confirmada e métricas do detalhe quando os refreshes falham', async () => {
+    const pending = makeTask('t1')
+    const completed = { ...pending, status: 'completed' as const }
+    getProject.mockResolvedValueOnce({
+      ...project, tasks: [pending], progressPercent: 0, activeTasks: 1, completedTasks: 0,
+    }).mockRejectedValue(new Error('Falha ao atualizar projeto.'))
+    listTasks.mockResolvedValueOnce([pending]).mockRejectedValue(new Error('Falha ao atualizar tarefas.'))
+    updateTask.mockResolvedValue(completed)
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Tarefas' }))
+    fireEvent.change(await screen.findByLabelText('Status da tarefa Layout'), { target: { value: 'completed' } })
+    expect(await screen.findByText('Falha ao atualizar tarefas.')).toBeTruthy()
+    expect((screen.getByLabelText('Status da tarefa Layout') as HTMLSelectElement).value).toBe('completed')
+    expect(screen.getByRole('progressbar', { name: 'Progresso de tarefas' }).getAttribute('aria-valuenow')).toBe('100')
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Visão' }))
+    expect(await screen.findByText('Falha ao atualizar projeto.')).toBeTruthy()
+    expect(screen.getByRole('progressbar', { name: 'Progresso do projeto' }).getAttribute('aria-valuenow')).toBe('100')
+    expect(screen.getByText('1 de 1 tarefas concluídas')).toBeTruthy()
+  })
+
+  it('mescla tarefa confirmada no detalhe após trocar de aba durante a mutação', async () => {
+    const pending = makeTask('t1')
+    const completed = { ...pending, status: 'completed' as const }
+    const mutation = deferred<typeof completed>()
+    getProject.mockResolvedValueOnce({
+      ...project, tasks: [pending], progressPercent: 0, activeTasks: 1, completedTasks: 0,
+    }).mockRejectedValue(new Error('Falha ao atualizar projeto.'))
+    listTasks.mockResolvedValue([pending])
+    updateTask.mockReturnValue(mutation.promise)
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Tarefas' }))
+    fireEvent.change(await screen.findByLabelText('Status da tarefa Layout'), { target: { value: 'completed' } })
+    await waitFor(() => expect(updateTask).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('tab', { name: 'Visão' }))
+    await act(async () => {
+      mutation.resolve(completed)
+      await mutation.promise
+    })
+
+    expect(await screen.findByText('Falha ao atualizar projeto.')).toBeTruthy()
+    expect(screen.getByRole('progressbar', { name: 'Progresso do projeto' }).getAttribute('aria-valuenow')).toBe('100')
+    expect(screen.getByText('1 de 1 tarefas concluídas')).toBeTruthy()
+  })
+
+  it('descarta tarefa confirmada de rota antiga', async () => {
+    const pending = makeTask('t1')
+    const mutation = deferred<ProjectDetail['tasks'][number]>()
+    const projectP2: ProjectDetail = { ...project, id: 'p2', name: 'Projeto p2' }
+    getProject.mockResolvedValueOnce({
+      ...project, tasks: [pending], progressPercent: 0, activeTasks: 1, completedTasks: 0,
+    }).mockResolvedValue(projectP2)
+    listTasks.mockResolvedValue([pending])
+    updateTask.mockReturnValue(mutation.promise)
+    renderNavigablePage()
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Tarefas' }))
+    fireEvent.change(await screen.findByLabelText('Status da tarefa Layout'), { target: { value: 'completed' } })
+    await waitFor(() => expect(updateTask).toHaveBeenCalled())
+    fireEvent.click(screen.getByRole('button', { name: 'Abrir p2' }))
+    await screen.findByRole('heading', { name: 'Projeto p2' })
+    await act(async () => {
+      mutation.resolve({ ...pending, status: 'completed' })
+      await mutation.promise
+    })
+
+    expect(screen.getByRole('heading', { name: 'Projeto p2' })).toBeTruthy()
+    expect(screen.getByRole('progressbar', { name: 'Progresso do projeto' }).getAttribute('aria-valuenow')).toBe('50')
+    expect(screen.queryByRole('heading', { name: 'Site da Empresa' })).toBeNull()
   })
 
   it('mostra histórico do projeto sem copiar eventos', async () => {

@@ -17,9 +17,10 @@ import { Select } from '../components/ui/Select'
 import { Skeleton } from '../components/ui/Skeleton'
 import { useToast } from '../hooks/useToast'
 import { formatMoney } from '../lib/money'
+import { calculateProjectProgress } from '../lib/projectProgress'
 import { getProject, setProjectStatus } from '../services/projectService'
 import {
-  PROJECT_MOVE_STATUSES, type ProjectDetail, type ProjectMoveStatus,
+  PROJECT_MOVE_STATUSES, type ProjectDetail, type ProjectMoveStatus, type ProjectTask,
 } from '../types/project'
 import type { ClientActivity } from '../types/client'
 
@@ -142,6 +143,21 @@ function ProjectDetailContent({ projectId }: { projectId: string }) {
     void loadProject()
   }
   const childChanged = refresh
+  const tasksChanged = (tasks: ProjectTask[]) => {
+    if (!mountedRef.current) return
+    const confirmedTasks = tasks.filter((task) => task.project_id === projectId)
+    setLoadState((current) => {
+      if (
+        (current.status !== 'ready' && current.status !== 'error')
+        || current.project?.id !== projectId
+      ) return current
+      return {
+        status: 'ready',
+        project: { ...current.project, tasks: confirmedTasks, ...calculateProjectProgress(confirmedTasks) },
+      }
+    })
+    refresh()
+  }
 
   const confirmStatus = async () => {
     const project = currentProject
@@ -317,7 +333,7 @@ function ProjectDetailContent({ projectId }: { projectId: string }) {
             </Card>
           </div>
         )}
-        {tab === 'tasks' && <ProjectTaskList projectId={project.id} onChanged={childChanged} disabled={project.status === 'cancelled'} />}
+        {tab === 'tasks' && <ProjectTaskList projectId={project.id} onChanged={tasksChanged} disabled={project.status === 'cancelled'} />}
         {tab === 'revisions' && <ProjectRevisionList projectId={project.id} onChanged={childChanged} disabled={project.status === 'cancelled'} />}
         {tab === 'delivery' && (
           <ProjectDeliveryPanel

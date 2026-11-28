@@ -21,7 +21,7 @@ import { PROJECT_PRIORITY_LABELS } from './ProjectPriorityBadge'
 
 interface ProjectTaskListProps {
   projectId: string
-  onChanged: () => void
+  onChanged: (tasks: ProjectTask[]) => void
   disabled?: boolean
 }
 
@@ -81,6 +81,29 @@ function writeFromTask(task: ProjectTask, status = task.status): ProjectTaskWrit
   }
 }
 
+function withTask(tasks: ProjectTask[], task: ProjectTask, projectId: string): ProjectTask[] {
+  const current = tasks.filter((item) => item.project_id === projectId)
+  if (task.project_id !== projectId) return current
+  const index = current.findIndex((item) => item.id === task.id)
+  if (index < 0) current.push(task)
+  else current[index] = task
+  return current
+}
+
+function withoutTask(tasks: ProjectTask[], id: string, projectId: string): ProjectTask[] {
+  return tasks.filter((task) => task.project_id === projectId && task.id !== id)
+}
+
+function orderedTasks(tasks: ProjectTask[], orderedIds: string[], projectId: string): ProjectTask[] {
+  const positions = new Map(orderedIds.map((id, index) => [id, index]))
+  return tasks
+    .filter((task) => task.project_id === projectId)
+    .sort((left, right) => (
+      (positions.get(left.id) ?? Number.MAX_SAFE_INTEGER)
+      - (positions.get(right.id) ?? Number.MAX_SAFE_INTEGER)
+    ))
+}
+
 function isTaskStatus(value: string): value is TaskStatus {
   return (TASK_STATUSES as readonly string[]).includes(value)
 }
@@ -101,6 +124,8 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
   projectIdRef.current = projectId
   const loadStateRef = useRef(loadState)
   loadStateRef.current = loadState
+  const onChangedRef = useRef(onChanged)
+  onChangedRef.current = onChanged
 
   const reload = useCallback(async (background = false): Promise<void> => {
     const request = ++requestRef.current
@@ -148,6 +173,8 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
       : loadState.status === 'error' ? loadState.tasks ?? [] : []
     : []
   const metrics = calculateProjectProgress(currentTasks)
+  const showTasks = loadState.status === 'ready'
+    || (loadState.status === 'error' && loadState.tasks !== null)
   const actionsDisabled = disabled || saving
 
   const setField = <K extends keyof TaskDraft,>(key: K, value: TaskDraft[K]) => {
@@ -155,16 +182,27 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
     setErrors((current) => ({ ...current, [key]: undefined }))
   }
 
-  const perform = async (action: () => Promise<void>, success: string) => {
+  const perform = async (
+    action: (tasks: ProjectTask[]) => Promise<ProjectTask[]>,
+    success: string,
+  ) => {
     if (savingRef.current || disabled) return
+    const current = loadStateRef.current
+    if (current.projectId !== projectId || current.status === 'loading') return
+    const tasks = (current.status === 'ready' ? current.tasks : current.tasks ?? [])
+      .filter((task) => task.project_id === projectId)
     savingRef.current = true
     setSaving(true)
     try {
-      await action()
-      if (!mountedRef.current || projectIdRef.current !== projectId) return
+      const confirmedTasks = await action(tasks)
+      if (projectIdRef.current !== projectId) return
+      const nextState: TaskLoadState = { status: 'ready', projectId, tasks: confirmedTasks }
+      loadStateRef.current = nextState
+      if (mountedRef.current) setLoadState(nextState)
+      onChangedRef.current(confirmedTasks)
+      if (!mountedRef.current) return
       toast(success)
       await reload(true)
-      if (mountedRef.current && projectIdRef.current === projectId) onChanged()
     } catch (error) {
       if (mountedRef.current && projectIdRef.current === projectId) {
         toast(errorMessage(error, 'Não foi possível concluir a operação. Tente novamente.'), 'error')
@@ -201,18 +239,22 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
     setErrors(nextErrors)
     if (Object.values(nextErrors).some(Boolean)) return
     const payload = writeFromDraft(draft)
-    void perform(async () => {
-      if (editingTask) await updateTask(editingTask.id, payload)
-      else await createTask(projectId, payload)
-      setFormOpen(false)
-      setEditingTask(null)
+    void perform(async (tasks) => {
+      const saved = editingTask
+        ? await updateTask(editingTask.id, payload)
+        : await createTask(projectId, payload)
+      if (mountedRef.current && projectIdRef.current === projectId) {
+        setFormOpen(false)
+        setEditingTask(null)
+      }
+      return withTask(tasks, saved, projectId)
     }, editingTask ? 'Tarefa atualizada.' : 'Tarefa criada.')
   }
 
   const changeStatus = (task: ProjectTask, value: string) => {
     if (task.project_id !== projectId || !isTaskStatus(value) || value === task.status || actionsDisabled) return
     void perform(
-      async () => { await updateTask(task.id, writeFromTask(task, value)) },
+      async (tasks) => withTask(tasks, await updateTask(task.id, writeFromTask(task, value)), projectId),
       'Status da tarefa atualizado.',
     )
   }
@@ -220,9 +262,10 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
   const removeTask = async () => {
     if (!deleteCandidate || deleteCandidate.project_id !== projectId || actionsDisabled) return
     const id = deleteCandidate.id
-    await perform(async () => {
+    await perform(async (tasks) => {
       await deleteTask(id)
-      setDeleteCandidate(null)
+      if (mountedRef.current && projectIdRef.current === projectId) setDeleteCandidate(null)
+      return withoutTask(tasks, id, projectId)
     }, 'Tarefa excluída.')
   }
 
@@ -235,7 +278,10 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
     const original = orderedIds[index]
     orderedIds[index] = orderedIds[target]
     orderedIds[target] = original
-    await perform(async () => { await reorderTasks(projectId, orderedIds) }, 'Ordem das tarefas atualizada.')
+    await perform(async (tasks) => {
+      await reorderTasks(projectId, orderedIds)
+      return orderedTasks(tasks, orderedIds, projectId)
+    }, 'Ordem das tarefas atualizada.')
   }
 
   if (!stateBelongsToProject || loadState.status === 'loading') {
@@ -254,7 +300,7 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="font-display text-lg font-bold text-ink">Tarefas</h2>
-          {loadState.status === 'ready' && (
+          {showTasks && (
             metrics.progressPercent === null
               ? <p className="text-sm text-muted">Sem tarefas ativas</p>
               : (
@@ -291,7 +337,7 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
           <Button type="button" variant="outline" className="mt-3" onClick={() => void reload(true)}>Tentar novamente</Button>
         </div>
       )}
-      {loadState.status === 'ready' && currentTasks.length === 0 ? (
+      {showTasks && currentTasks.length === 0 ? (
         <EmptyState
           icon={ListTodo}
           title="Nenhuma tarefa cadastrada."

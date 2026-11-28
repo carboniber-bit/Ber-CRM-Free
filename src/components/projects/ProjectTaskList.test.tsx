@@ -56,7 +56,7 @@ describe('ProjectTaskList', () => {
       makeTask('t1', 'Layout', 'completed', 0),
       makeTask('t2', 'Conteúdo', 'pending', 1),
     ])
-    createTask.mockResolvedValue({ id: 't1' })
+    createTask.mockResolvedValue(makeTask('t1', 'Layout', 'pending', 0))
     const onChanged = vi.fn()
     render(<ProjectTaskList projectId="p1" onChanged={onChanged} />)
     await screen.findByText('Nenhuma tarefa cadastrada.')
@@ -65,6 +65,125 @@ describe('ProjectTaskList', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Adicionar tarefa' }))
     await waitFor(() => expect(onChanged).toHaveBeenCalled())
     expect((await screen.findByText('50%')).textContent).toBe('50%')
+  })
+
+  it('preserva status e métricas confirmados quando o refresh falha', async () => {
+    const existing = makeTask('t1', 'Layout')
+    const completed = { ...existing, status: 'completed' as const }
+    listTasks.mockResolvedValueOnce([existing]).mockRejectedValueOnce(new Error('Falha ao atualizar tarefas.'))
+    updateTask.mockResolvedValue(completed)
+    const onChanged = vi.fn()
+    render(<ProjectTaskList projectId="p1" onChanged={onChanged} />)
+    fireEvent.change(await screen.findByLabelText('Status da tarefa Layout'), { target: { value: 'completed' } })
+
+    expect(await screen.findByText('Falha ao atualizar tarefas.')).toBeTruthy()
+    expect((screen.getByLabelText('Status da tarefa Layout') as HTMLSelectElement).value).toBe('completed')
+    expect(screen.getByRole('progressbar', { name: 'Progresso de tarefas' }).getAttribute('aria-valuenow')).toBe('100')
+    expect(screen.getByText('100%')).toBeTruthy()
+    expect(onChanged).toHaveBeenCalledWith([completed])
+  })
+
+  it('preserva tarefa criada quando o refresh falha', async () => {
+    const created = makeTask('t1', 'Nova tarefa')
+    listTasks.mockResolvedValueOnce([]).mockRejectedValueOnce(new Error('Falha ao atualizar tarefas.'))
+    createTask.mockResolvedValue(created)
+    const onChanged = vi.fn()
+    render(<ProjectTaskList projectId="p1" onChanged={onChanged} />)
+    await screen.findByText('Nenhuma tarefa cadastrada.')
+    fireEvent.click(screen.getByRole('button', { name: 'Nova tarefa' }))
+    fireEvent.change(screen.getByLabelText('Título *'), { target: { value: 'Nova tarefa' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Adicionar tarefa' }))
+
+    expect(await screen.findByRole('heading', { name: 'Nova tarefa' })).toBeTruthy()
+    expect(screen.getByText('Falha ao atualizar tarefas.')).toBeTruthy()
+    expect(onChanged).toHaveBeenCalledWith([created])
+  })
+
+  it('preserva edição confirmada quando o refresh falha', async () => {
+    const existing = makeTask('t1', 'Layout')
+    const updated = { ...existing, title: 'Layout atualizado' }
+    listTasks.mockResolvedValueOnce([existing]).mockRejectedValueOnce(new Error('Falha ao atualizar tarefas.'))
+    updateTask.mockResolvedValue(updated)
+    const onChanged = vi.fn()
+    render(<ProjectTaskList projectId="p1" onChanged={onChanged} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar tarefa Layout' }))
+    fireEvent.change(screen.getByLabelText('Título *'), { target: { value: 'Layout atualizado' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar tarefa' }))
+
+    expect(await screen.findByRole('heading', { name: 'Layout atualizado' })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: 'Layout' })).toBeNull()
+    expect(onChanged).toHaveBeenCalledWith([updated])
+  })
+
+  it('preserva exclusão confirmada quando o refresh falha', async () => {
+    const existing = makeTask('t1', 'Layout')
+    listTasks.mockResolvedValueOnce([existing]).mockRejectedValueOnce(new Error('Falha ao atualizar tarefas.'))
+    deleteTask.mockResolvedValue({ id: 't1' })
+    const onChanged = vi.fn()
+    render(<ProjectTaskList projectId="p1" onChanged={onChanged} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Excluir tarefa Layout' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar exclusão' }))
+
+    expect(await screen.findByText('Falha ao atualizar tarefas.')).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: 'Layout' })).toBeNull()
+    expect(screen.getByText('Sem tarefas ativas')).toBeTruthy()
+    expect(onChanged).toHaveBeenCalledWith([])
+  })
+
+  it('preserva reordenação confirmada quando o refresh falha', async () => {
+    const first = makeTask('t1', 'Primeira', 'pending', 0)
+    const second = makeTask('t2', 'Segunda', 'pending', 1)
+    listTasks.mockResolvedValueOnce([first, second]).mockRejectedValueOnce(new Error('Falha ao atualizar tarefas.'))
+    reorderTasks.mockResolvedValue(undefined)
+    const onChanged = vi.fn()
+    render(<ProjectTaskList projectId="p1" onChanged={onChanged} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Mover tarefa Primeira para baixo' }))
+
+    expect(await screen.findByText('Falha ao atualizar tarefas.')).toBeTruthy()
+    expect(screen.getAllByRole('heading', { level: 3 }).map((heading) => heading.textContent)).toEqual(['Segunda', 'Primeira'])
+    expect(onChanged).toHaveBeenCalledWith([second, first])
+  })
+
+  it('notifica o detalhe após desmontar apenas a aba durante a mutação', async () => {
+    const existing = makeTask('t1', 'Layout')
+    const completed = { ...existing, status: 'completed' as const }
+    const mutation = deferred<ProjectTask>()
+    listTasks.mockResolvedValue([existing])
+    updateTask.mockReturnValue(mutation.promise)
+    const onChanged = vi.fn()
+    const { unmount } = render(<ProjectTaskList projectId="p1" onChanged={onChanged} />)
+    fireEvent.change(await screen.findByLabelText('Status da tarefa Layout'), { target: { value: 'completed' } })
+    await waitFor(() => expect(updateTask).toHaveBeenCalled())
+    unmount()
+
+    await act(async () => {
+      mutation.resolve(completed)
+      await mutation.promise
+    })
+
+    expect(onChanged).toHaveBeenCalledWith([completed])
+  })
+
+  it('descarta mutação confirmada de projeto anterior', async () => {
+    const existing = makeTask('t1', 'Layout')
+    const mutation = deferred<ProjectTask>()
+    const newTask = { ...makeTask('t2', 'Tarefa nova'), project_id: 'p2' }
+    listTasks.mockResolvedValueOnce([existing]).mockResolvedValueOnce([newTask])
+    updateTask.mockReturnValue(mutation.promise)
+    const onChanged = vi.fn()
+    const { rerender } = render(<ProjectTaskList projectId="p1" onChanged={onChanged} />)
+    fireEvent.change(await screen.findByLabelText('Status da tarefa Layout'), { target: { value: 'completed' } })
+    await waitFor(() => expect(updateTask).toHaveBeenCalled())
+    rerender(<ProjectTaskList projectId="p2" onChanged={onChanged} />)
+    await screen.findByLabelText('Status da tarefa Tarefa nova')
+
+    await act(async () => {
+      mutation.resolve({ ...existing, status: 'completed' })
+      await mutation.promise
+    })
+
+    expect((screen.getByLabelText('Status da tarefa Tarefa nova') as HTMLSelectElement).value).toBe('pending')
+    expect(onChanged).not.toHaveBeenCalled()
   })
 
   it('exige confirmação antes de excluir tarefa', async () => {
