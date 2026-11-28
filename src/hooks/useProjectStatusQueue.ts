@@ -62,7 +62,11 @@ export function useProjectStatusQueue(
 
     const current = projectsRef.current.find((project) => project.id === id)
     if (!current) return
-    const status = confirmedStatusRef.current.get(id) ?? current.status
+    const delivered = external.status === 'delivered'
+    const status = delivered
+      ? 'delivered'
+      : confirmedStatusRef.current.get(id) ?? current.status
+    if (delivered) confirmedStatusRef.current.set(id, 'delivered')
     const next = projectsRef.current.map((project) => (
       project.id === id ? { ...external, status } : project
     ))

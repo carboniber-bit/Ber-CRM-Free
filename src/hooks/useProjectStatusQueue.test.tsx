@@ -313,7 +313,66 @@ describe('useProjectStatusQueue', () => {
     expect(onChange).toHaveBeenCalledTimes(2)
   })
 
-  it('reconcilia campos externos preservando o rollback quando a mutação falha', async () => {
+  it.each(['resolve', 'reject'] as const)('faz delivered externo vencer a reconciliação quando a RPC %s, sem refresh posterior', async (outcome) => {
+    const pending = deferred<Project>()
+    const onChange = vi.fn()
+    const onRefresh = vi.fn().mockResolvedValue(undefined)
+    setProjectStatus.mockReturnValue(pending.promise)
+    const { result, rerender } = renderHook(
+      ({ projects }) => useProjectStatusQueue({ projects, onChange, onRefresh }),
+      { initialProps: { projects: [project] } },
+    )
+
+    let move!: Promise<void>
+    act(() => { move = result.current.moveProject('p1', 'planning') })
+    const external: ProjectListItem = {
+      ...project,
+      name: 'Nome externo',
+      client_name: 'Cliente externo',
+      description: 'Descrição externa',
+      status: 'delivered',
+      delivered_at: '2026-11-26T12:00:00Z',
+      delivery_confirmed_at: '2026-11-26T12:00:00Z',
+      delivery_url: 'https://example.test/entrega',
+      files_url: 'https://example.test/arquivos',
+      final_notes: 'Concluído',
+      updated_at: '2026-11-26T10:00:00Z',
+    }
+    rerender({ projects: [external] })
+    expect(result.current.projects[0]).toEqual(expect.objectContaining({
+      id: 'p1', name: 'Projeto', description: null, status: 'planning',
+    }))
+    expect(onChange).toHaveBeenCalledTimes(1)
+
+    if (outcome === 'resolve') {
+      await act(async () => {
+        pending.resolve({ ...project, status: 'planning', name: 'Retorno da RPC' })
+        await move
+      })
+    } else {
+      const rpcError = new Error('Falha na movimentação')
+      await act(async () => {
+        pending.reject(rpcError)
+        await expect(move).rejects.toBe(rpcError)
+      })
+    }
+
+    expect(result.current.projects[0]).toEqual(expect.objectContaining({
+      id: 'p1', name: 'Nome externo', client_name: 'Cliente externo',
+      description: 'Descrição externa', updated_at: '2026-11-26T10:00:00Z',
+      delivered_at: '2026-11-26T12:00:00Z', delivery_url: 'https://example.test/entrega',
+      files_url: 'https://example.test/arquivos', final_notes: 'Concluído', status: 'delivered',
+    }))
+    expect(result.current.pendingIds.size).toBe(0)
+    expect(onChange).toHaveBeenCalledTimes(2)
+    expect(onRefresh).not.toHaveBeenCalled()
+
+    await act(async () => { await result.current.moveProject('p1', 'in_development') })
+    expect(result.current.projects[0].status).toBe('delivered')
+    expect(setProjectStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it('reconcilia campos externos sem substituir o baseline quando a mutação não entregue falha', async () => {
     const pending = deferred<Project>()
     const onChange = vi.fn()
     setProjectStatus.mockReturnValue(pending.promise)
@@ -328,7 +387,7 @@ describe('useProjectStatusQueue', () => {
       ...project,
       name: 'Nome externo',
       description: 'Descrição externa',
-      status: 'delivered',
+      status: 'in_review',
       updated_at: '2026-11-26T10:00:00Z',
     }
     rerender({ projects: [external] })
