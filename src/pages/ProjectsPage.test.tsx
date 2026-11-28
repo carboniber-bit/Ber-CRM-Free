@@ -296,6 +296,52 @@ describe('ProjectsPage', () => {
     await waitFor(() => expect(selector.value).toBe('in_development'))
   })
 
+  it.each(['resolve', 'reject'] as const)('mantém delivered externo read-only no Kanban quando a RPC %s', async (outcome) => {
+    const pendingMove = deferred<ProjectListItem>()
+    const pendingBoard = deferred<{ projects: ProjectListItem[]; partial: boolean }>()
+    setProjectStatus.mockReturnValueOnce(pendingMove.promise)
+    render(<MemoryRouter><ProjectsPage /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: 'Kanban' }))
+    const selector = await screen.findByLabelText('Status do projeto Site da Empresa') as HTMLSelectElement
+
+    listProjectsForBoard.mockReturnValueOnce(pendingBoard.promise)
+    fireEvent.click(screen.getByRole('button', { name: 'Atualizar Kanban' }))
+    await waitFor(() => expect(listProjectsForBoard).toHaveBeenCalledTimes(2))
+    fireEvent.change(selector, { target: { value: 'in_review' } })
+    await waitFor(() => expect(setProjectStatus).toHaveBeenCalledWith('p1', 'in_review'))
+
+    const external: ProjectListItem = {
+      ...project,
+      status: 'delivered',
+      delivered_at: '2026-11-26T12:00:00Z',
+      delivery_confirmed_at: '2026-11-26T12:00:00Z',
+      delivery_url: 'https://example.test/entrega',
+      updated_at: '2026-11-26T10:00:00Z',
+    }
+    await act(async () => {
+      pendingBoard.resolve({ projects: [external], partial: false })
+      await pendingBoard.promise
+    })
+
+    if (outcome === 'resolve') {
+      await act(async () => {
+        pendingMove.resolve({ ...project, status: 'in_review' })
+        await pendingMove.promise
+      })
+    } else {
+      await act(async () => {
+        pendingMove.reject(new Error('Falha na movimentação'))
+        await pendingMove.promise.catch(() => undefined)
+      })
+    }
+
+    await waitFor(() => {
+      expect(screen.queryByLabelText('Status do projeto Site da Empresa')).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Arrastar Site da Empresa' })).toBeNull()
+      expect(screen.getByRole('group', { name: 'Entregue' }).textContent).toContain('Site da Empresa')
+    })
+  })
+
   it('mantém delivered visível, read-only e sem seletor de status', async () => {
     listProjectsForBoard.mockResolvedValue({
       projects: [project, { ...project, id: 'delivered', name: 'Projeto entregue', status: 'delivered' }],

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 // src/hooks/useProjectStatusQueue.test.tsx
+import { useState } from 'react'
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Project, ProjectListItem } from '../types/project'
@@ -364,12 +365,127 @@ describe('useProjectStatusQueue', () => {
       files_url: 'https://example.test/arquivos', final_notes: 'Concluído', status: 'delivered',
     }))
     expect(result.current.pendingIds.size).toBe(0)
-    expect(onChange).toHaveBeenCalledTimes(2)
+    expect(onChange).toHaveBeenCalledTimes(3)
     expect(onRefresh).not.toHaveBeenCalled()
 
     await act(async () => { await result.current.moveProject('p1', 'in_development') })
     expect(result.current.projects[0].status).toBe('delivered')
     expect(setProjectStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['resolve', 'reject'] as const)('preserva delivered externo no estado controlado quando a RPC %s', async (outcome) => {
+    const pending = deferred<Project>()
+    const onRefresh = vi.fn().mockResolvedValue(undefined)
+    setProjectStatus.mockReturnValue(pending.promise)
+    const { result } = renderHook(() => {
+      const [projects, setProjects] = useState<ProjectListItem[]>([project])
+      const queue = useProjectStatusQueue({ projects, onChange: setProjects, onRefresh })
+      return { projects, setProjects, queue }
+    })
+
+    let move!: Promise<void>
+    act(() => { move = result.current.queue.moveProject('p1', 'planning') })
+    const external: ProjectListItem = {
+      ...project,
+      name: 'Nome externo',
+      client_name: 'Cliente externo',
+      description: 'Descrição externa',
+      status: 'delivered',
+      delivered_at: '2026-11-26T12:00:00Z',
+      delivery_confirmed_at: '2026-11-26T12:00:00Z',
+      delivery_url: 'https://example.test/entrega',
+      files_url: 'https://example.test/arquivos',
+      final_notes: 'Concluído',
+      updated_at: '2026-11-26T10:00:00Z',
+    }
+    act(() => { result.current.setProjects([external]) })
+    expect(result.current.queue.projects[0].status).toBe('planning')
+
+    if (outcome === 'resolve') {
+      await act(async () => {
+        pending.resolve({ ...project, status: 'planning', name: 'Retorno da RPC' })
+        await move
+      })
+    } else {
+      const rpcError = new Error('Falha na movimentação')
+      await act(async () => {
+        pending.reject(rpcError)
+        await expect(move).rejects.toBe(rpcError)
+      })
+    }
+
+    expect(result.current.projects[0]).toEqual(expect.objectContaining({
+      id: 'p1', name: 'Nome externo', client_name: 'Cliente externo',
+      description: 'Descrição externa', updated_at: '2026-11-26T10:00:00Z',
+      delivered_at: '2026-11-26T12:00:00Z', delivery_url: 'https://example.test/entrega',
+      files_url: 'https://example.test/arquivos', final_notes: 'Concluído', status: 'delivered',
+    }))
+    expect(result.current.queue.projects[0]).toEqual(expect.objectContaining({
+      id: 'p1', name: 'Nome externo', status: 'delivered',
+    }))
+    expect(result.current.queue.pendingIds.size).toBe(0)
+    expect(onRefresh).not.toHaveBeenCalled()
+
+    await act(async () => { await result.current.queue.moveProject('p1', 'in_development') })
+    expect(result.current.queue.projects[0].status).toBe('delivered')
+    expect(setProjectStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it('não perde delivered externo quando outro projeto emite uma atualização controlada', async () => {
+    const pending = deferred<Project>()
+    const other: ProjectListItem = { ...project, id: 'p2', name: 'Outro projeto' }
+    setProjectStatus.mockImplementation((id: string) => (
+      id === 'p1' ? pending.promise : Promise.resolve({ ...other, status: 'planning' })
+    ))
+    const { result } = renderHook(() => {
+      const [projects, setProjects] = useState<ProjectListItem[]>([project, other])
+      const queue = useProjectStatusQueue({ projects, onChange: setProjects, onRefresh: vi.fn() })
+      return { queue, setProjects }
+    })
+
+    let firstMove!: Promise<void>
+    let secondMove!: Promise<void>
+    act(() => { firstMove = result.current.queue.moveProject('p1', 'planning') })
+    const external: ProjectListItem = {
+      ...project,
+      status: 'delivered',
+      delivered_at: '2026-11-26T12:00:00Z',
+      delivery_url: 'https://example.test/entrega',
+    }
+    act(() => { result.current.setProjects([external, other]) })
+    act(() => { secondMove = result.current.queue.moveProject('p2', 'planning') })
+    await act(async () => { await secondMove })
+    await act(async () => {
+      pending.resolve({ ...project, status: 'planning' })
+      await firstMove
+    })
+
+    expect(result.current.queue.projects[0]).toEqual(expect.objectContaining({
+      id: 'p1', status: 'delivered', delivered_at: '2026-11-26T12:00:00Z',
+      delivery_url: 'https://example.test/entrega',
+    }))
+  })
+
+  it('mantém delivered confirmado quando as props recebem um snapshot obsoleto não entregue', () => {
+    const delivered: ProjectListItem = {
+      ...project,
+      status: 'delivered',
+      delivered_at: '2026-11-26T12:00:00Z',
+      delivery_confirmed_at: '2026-11-26T12:00:00Z',
+      delivery_url: 'https://example.test/entrega',
+    }
+    const { result, rerender } = renderHook(
+      ({ projects }) => useProjectStatusQueue({ projects, onChange: vi.fn(), onRefresh: vi.fn() }),
+      { initialProps: { projects: [delivered] } },
+    )
+
+    rerender({ projects: [{ ...project, name: 'Snapshot obsoleto', status: 'planning' }] })
+
+    expect(result.current.projects[0]).toEqual(expect.objectContaining({
+      status: 'delivered',
+      delivered_at: '2026-11-26T12:00:00Z',
+      delivery_url: 'https://example.test/entrega',
+    }))
   })
 
   it('reconcilia campos externos sem substituir o baseline quando a mutação não entregue falha', async () => {

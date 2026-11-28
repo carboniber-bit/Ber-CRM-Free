@@ -70,10 +70,14 @@ export function useProjectStatusQueue(
     const next = projectsRef.current.map((project) => (
       project.id === id ? { ...external, status } : project
     ))
+    if (delivered) {
+      updateProjects(() => next)
+      return
+    }
     projectsRef.current = next
     if (!mountedRef.current) return
     setProjects(next)
-  }, [])
+  }, [updateProjects])
 
   useEffect(() => {
     mountedRef.current = true
@@ -98,8 +102,18 @@ export function useProjectStatusQueue(
 
     const next = incoming.map((incomingProject) => {
       if (!pendingCountsRef.current.has(incomingProject.id)) {
+        if (confirmedStatusRef.current.get(incomingProject.id) === 'delivered') {
+          return projectsRef.current.find((project) => project.id === incomingProject.id)
+            ?? { ...incomingProject, status: 'delivered' as const }
+        }
         confirmedStatusRef.current.set(incomingProject.id, incomingProject.status)
         return incomingProject
+      }
+
+      const pendingExternal = pendingExternalProjectsRef.current.get(incomingProject.id)
+      if (pendingExternal?.status === 'delivered' && incomingProject.status !== 'delivered') {
+        return projectsRef.current.find((project) => project.id === incomingProject.id)
+          ?? incomingProject
       }
 
       pendingExternalProjectsRef.current.set(incomingProject.id, incomingProject)
