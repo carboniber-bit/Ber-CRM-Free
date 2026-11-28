@@ -3650,10 +3650,13 @@ afterEach(cleanup)
 describe('ProjectForm', () => {
   beforeEach(() => {
     listProjectFormOptions.mockReset().mockResolvedValue({
-      clients: [{ id: 'client-1', name: 'Empresa A' }],
+      clients: [{ id: 'client-1', name: 'Empresa A' }, { id: 'client-2', name: 'Empresa B' }],
       contracts: [{
         id: 'contract-1', client_id: 'client-1', service: 'Site', total_value_cents: 100000,
         allocated_cents: 0, remaining_cents: 100000, due_date: null,
+      }, {
+        id: 'contract-2', client_id: 'client-2', service: 'Landing page', total_value_cents: 200000,
+        allocated_cents: 0, remaining_cents: 200000, due_date: null,
       }],
     })
     createProject.mockReset().mockResolvedValue(savedProject)
@@ -3674,8 +3677,17 @@ describe('ProjectForm', () => {
   it('filtra contratos pelo cliente e envia centavos', async () => {
     const onSaved = vi.fn()
     render(<ProjectForm onCancel={vi.fn()} onSaved={onSaved} />)
-    fireEvent.change(await screen.findByLabelText('Cliente *'), { target: { value: 'client-1' } })
-    fireEvent.change(screen.getByLabelText('Contrato *'), { target: { value: 'contract-1' } })
+    const client = await screen.findByLabelText('Cliente *')
+    const contract = screen.getByLabelText('Contrato *') as HTMLSelectElement
+
+    fireEvent.change(client, { target: { value: 'client-1' } })
+    expect(Array.from(contract.options, (option) => option.value)).toEqual(['', 'contract-1'])
+    fireEvent.change(client, { target: { value: 'client-2' } })
+    expect(Array.from(contract.options, (option) => option.value)).toEqual(['', 'contract-2'])
+    fireEvent.change(client, { target: { value: 'client-1' } })
+    expect(Array.from(contract.options, (option) => option.value)).toEqual(['', 'contract-1'])
+
+    fireEvent.change(contract, { target: { value: 'contract-1' } })
     fireEvent.change(screen.getByLabelText('Nome do projeto *'), { target: { value: 'Site da Empresa' } })
     fireEvent.change(screen.getByLabelText('Serviço *'), { target: { value: 'Site' } })
     fireEvent.change(screen.getByLabelText('Valor alocado (R$) *'), { target: { value: '1.000,00' } })
@@ -3684,6 +3696,20 @@ describe('ProjectForm', () => {
     expect(createProject).toHaveBeenCalledWith(expect.objectContaining({
       clientId: 'client-1', contractId: 'contract-1', contractedValueCents: 100000,
     }))
+  })
+
+  it('rejeita alocação acima do saldo disponível do contrato', async () => {
+    render(<ProjectForm onCancel={vi.fn()} onSaved={vi.fn()} />)
+    fireEvent.change(await screen.findByLabelText('Cliente *'), { target: { value: 'client-1' } })
+    fireEvent.change(screen.getByLabelText('Contrato *'), { target: { value: 'contract-1' } })
+    fireEvent.change(screen.getByLabelText('Nome do projeto *'), { target: { value: 'Site da Empresa' } })
+    fireEvent.change(screen.getByLabelText('Serviço *'), { target: { value: 'Site' } })
+    fireEvent.change(screen.getByLabelText('Valor alocado (R$) *'), { target: { value: '1.000,01' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Criar projeto' }))
+
+    expect((await screen.findByText(/O valor excede o limite disponível/)).textContent)
+      .toContain('O valor excede o limite disponível')
+    expect(createProject).not.toHaveBeenCalled()
   })
 
   it('sugere prazo editável e rejeita prazo anterior ao início', async () => {
@@ -3702,11 +3728,91 @@ describe('ProjectForm', () => {
     const current: ProjectListItem = {
       ...savedProject, client_name: 'Empresa A', progressPercent: null, activeTasks: 0, completedTasks: 0,
     }
+    listProjectFormOptions.mockResolvedValue({
+      clients: [{ id: 'client-1', name: 'Empresa A' }, { id: 'client-2', name: 'Empresa B' }],
+      contracts: [{
+        id: 'contract-1', client_id: 'client-1', service: 'Site', total_value_cents: 100000,
+        allocated_cents: 0, remaining_cents: 100000, due_date: null,
+      }, {
+        id: 'contract-1b', client_id: 'client-1', service: 'Landing page', total_value_cents: 200000,
+        allocated_cents: 0, remaining_cents: 200000, due_date: null,
+      }, {
+        id: 'contract-2', client_id: 'client-2', service: 'Consultoria', total_value_cents: 300000,
+        allocated_cents: 0, remaining_cents: 300000, due_date: null,
+      }],
+    })
     render(<ProjectForm project={current} onCancel={vi.fn()} onSaved={vi.fn()} />)
     const contract = await screen.findByLabelText('Contrato *') as HTMLSelectElement
-    expect(contract.value).toBe('contract-1')
     expect(contract.options).toHaveLength(1)
+    expect(contract.value).toBe('contract-1')
     expect(contract.options[0].textContent).toContain('Site')
+  })
+
+  it('edita projeto usando o saldo disponível mais o valor já contratado como limite', async () => {
+    const current: ProjectListItem = {
+      ...savedProject, contracted_value_cents: 100000, client_name: 'Empresa A',
+      progressPercent: null, activeTasks: 0, completedTasks: 0,
+    }
+    const updatedProject: Project = { ...savedProject, contracted_value_cents: 150000 }
+    const onSaved = vi.fn()
+    listProjectFormOptions.mockResolvedValue({
+      clients: [{ id: 'client-1', name: 'Empresa A' }],
+      contracts: [{
+        id: 'contract-1', client_id: 'client-1', service: 'Site', total_value_cents: 200000,
+        allocated_cents: 150000, remaining_cents: 50000, due_date: null,
+      }],
+    })
+    updateProject.mockResolvedValue(updatedProject)
+    render(<ProjectForm project={current} onCancel={vi.fn()} onSaved={onSaved} />)
+    await screen.findByLabelText('Contrato *')
+    fireEvent.change(screen.getByLabelText('Valor alocado (R$) *'), { target: { value: '1.500,00' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar alterações' }))
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(updatedProject))
+    expect(updateProject).toHaveBeenCalledTimes(1)
+    expect(updateProject).toHaveBeenCalledWith('project-1', expect.objectContaining({
+      contractedValueCents: 150000,
+    }))
+  })
+
+  it('não repete a criação nem oferece retry quando onSaved falha após persistir', async () => {
+    const onSaved = vi.fn(() => { throw new Error('Falha na navegação') })
+    render(<ProjectForm onCancel={vi.fn()} onSaved={onSaved} />)
+    fireEvent.change(await screen.findByLabelText('Cliente *'), { target: { value: 'client-1' } })
+    fireEvent.change(screen.getByLabelText('Contrato *'), { target: { value: 'contract-1' } })
+    fireEvent.change(screen.getByLabelText('Nome do projeto *'), { target: { value: 'Site da Empresa' } })
+    fireEvent.change(screen.getByLabelText('Serviço *'), { target: { value: 'Site' } })
+    fireEvent.change(screen.getByLabelText('Valor alocado (R$) *'), { target: { value: '1.000,00' } })
+    const submitButton = screen.getByRole('button', { name: 'Criar projeto' })
+    fireEvent.click(submitButton)
+
+    await waitFor(() => expect(toast).toHaveBeenCalled())
+    expect(createProject).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('button', { name: 'Tentar novamente' })).toBeNull()
+    expect((submitButton as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.submit(submitButton.closest('form') as HTMLFormElement)
+    expect(createProject).toHaveBeenCalledTimes(1)
+    expect(toast).toHaveBeenCalledWith(
+      'Projeto salvo, mas não foi possível concluir a próxima ação.', 'error',
+    )
+  })
+
+  it('mantém mensagem, toast e retry quando a persistência falha', async () => {
+    const onSaved = vi.fn()
+    createProject.mockRejectedValueOnce(new Error('Falha ao persistir')).mockResolvedValueOnce(savedProject)
+    render(<ProjectForm onCancel={vi.fn()} onSaved={onSaved} />)
+    fireEvent.change(await screen.findByLabelText('Cliente *'), { target: { value: 'client-1' } })
+    fireEvent.change(screen.getByLabelText('Contrato *'), { target: { value: 'contract-1' } })
+    fireEvent.change(screen.getByLabelText('Nome do projeto *'), { target: { value: 'Site da Empresa' } })
+    fireEvent.change(screen.getByLabelText('Serviço *'), { target: { value: 'Site' } })
+    fireEvent.change(screen.getByLabelText('Valor alocado (R$) *'), { target: { value: '1.000,00' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Criar projeto' }))
+
+    expect((await screen.findByText('Falha ao persistir')).textContent).toBe('Falha ao persistir')
+    expect(toast).toHaveBeenCalledWith('Falha ao persistir', 'error')
+    fireEvent.click(screen.getByRole('button', { name: 'Tentar novamente' }))
+    await waitFor(() => expect(onSaved).toHaveBeenCalledWith(savedProject))
+    expect(createProject).toHaveBeenCalledTimes(2)
   })
 
   it('bloqueia edição quando o contrato atual está cancelado ou fora das opções', async () => {
@@ -3835,9 +3941,11 @@ export function ProjectForm({ project, onCancel, onSaved }: ProjectFormProps) {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const dueDateEditedRef = useRef(Boolean(project?.due_date))
   const savingRef = useRef(false)
+  const savedRef = useRef(false)
   const mountedRef = useRef(true)
 
   useEffect(() => {
@@ -3847,8 +3955,6 @@ export function ProjectForm({ project, onCancel, onSaved }: ProjectFormProps) {
 
   useEffect(() => {
     let active = true
-    setOptions(null)
-    setLoadError(null)
     void listProjectFormOptions().then(
       (result) => {
         if (!active) return
@@ -3875,7 +3981,9 @@ export function ProjectForm({ project, onCancel, onSaved }: ProjectFormProps) {
   const selectedContract = options?.contracts.find((contract) =>
     contract.id === draft.contractId && contract.client_id === draft.clientId,
   )
-  const availableContracts = (options?.contracts ?? []).filter((contract) => contract.client_id === draft.clientId)
+  const availableContracts = (options?.contracts ?? []).filter((contract) =>
+    contract.client_id === draft.clientId && (!project || contract.id === project.contract_id),
+  )
   const currentContractMissing = Boolean(options && project
     && !availableContracts.some((contract) => contract.id === project.contract_id))
   const editBlockedMessage = project?.status === 'cancelled'
@@ -3984,7 +4092,7 @@ export function ProjectForm({ project, onCancel, onSaved }: ProjectFormProps) {
   }
 
   const save = async () => {
-    if (savingRef.current || !options || editBlockedMessage) return
+    if (savingRef.current || savedRef.current || !options || editBlockedMessage) return
 
     const nextErrors = validate()
     setErrors(nextErrors)
@@ -4009,20 +4117,32 @@ export function ProjectForm({ project, onCancel, onSaved }: ProjectFormProps) {
 
     savingRef.current = true
     setSaving(true)
+    let savedProject: Project
     try {
-      const saved = project
+      savedProject = project
         ? await updateProject(project.id, payload)
         : await createProject(payload)
-      if (!mountedRef.current) return
-      onSaved(saved)
     } catch (error) {
       if (!mountedRef.current) return
       const message = errorMessage(error, 'Não foi possível salvar o projeto. Tente novamente.')
       setSaveError(message)
       toast(message, 'error')
+      return
     } finally {
       savingRef.current = false
       if (mountedRef.current) setSaving(false)
+    }
+
+    if (!mountedRef.current) return
+    savedRef.current = true
+    setSaved(true)
+    try {
+      onSaved(savedProject)
+    } catch {
+      if (!mountedRef.current) return
+      const message = 'Projeto salvo, mas não foi possível concluir a próxima ação.'
+      setSaveError(message)
+      toast(message, 'error')
     }
   }
 
@@ -4037,7 +4157,15 @@ export function ProjectForm({ project, onCancel, onSaved }: ProjectFormProps) {
         <div className="rounded-xl border border-danger/40 bg-danger/5 p-4" role="alert">
           <p className="text-sm text-danger">{loadError}</p>
           <div className="mt-3 flex flex-wrap gap-2">
-            <Button type="button" variant="outline" onClick={() => setReloadKey((key) => key + 1)}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setOptions(null)
+                setLoadError(null)
+                setReloadKey((key) => key + 1)
+              }}
+            >
               Tentar novamente
             </Button>
             <Button type="button" variant="ghost" onClick={onCancel}>Cancelar</Button>
@@ -4185,21 +4313,23 @@ export function ProjectForm({ project, onCancel, onSaved }: ProjectFormProps) {
       {saveError && (
         <div className="rounded-xl border border-danger/40 bg-danger/5 p-4" role="alert">
           <p className="text-sm text-danger">{saveError}</p>
-          <Button
-            type="button"
-            variant="outline"
-            className="mt-3"
-            disabled={busy}
-            onClick={() => void save()}
-          >
-            Tentar novamente
-          </Button>
+          {!saved && (
+            <Button
+              type="button"
+              variant="outline"
+              className="mt-3"
+              disabled={busy}
+              onClick={() => void save()}
+            >
+              Tentar novamente
+            </Button>
+          )}
         </div>
       )}
 
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>Cancelar</Button>
-        <Button type="submit" variant="mint" loading={busy}>
+        <Button type="submit" variant="mint" loading={busy} disabled={saved}>
           {project ? 'Salvar alterações' : 'Criar projeto'}
         </Button>
       </div>
