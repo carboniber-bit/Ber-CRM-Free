@@ -42,6 +42,9 @@ vi.mock('../pages/SettingsPage', () => ({ SettingsPage: () => <h1>Configuraçõe
 vi.mock('../pages/ClientsPage', () => ({ ClientsPage: () => <h1>Clientes</h1> }))
 vi.mock('../pages/ClientNewPage', () => ({ ClientNewPage: () => <h1>Novo cliente</h1> }))
 vi.mock('../pages/ClientDetailPage', () => ({ ClientDetailPage: () => <h1>Detalhe do cliente</h1> }))
+vi.mock('../pages/ProjectsPage', () => ({ ProjectsPage: () => <h1>Projetos</h1> }))
+vi.mock('../pages/ProjectNewPage', () => ({ ProjectNewPage: () => <h1>Novo projeto</h1> }))
+vi.mock('../pages/ProjectDetailPage', () => ({ ProjectDetailPage: () => <h1>Detalhe do projeto</h1> }))
 vi.mock('../pages/ModulePlaceholderPage', () => ({
   ModulePlaceholderPage: ({ moduleKey }: { moduleKey: string }) => <h1>Módulo {moduleKey}</h1>,
 }))
@@ -86,7 +89,9 @@ describe('AppRoutes', () => {
     ['/clientes', 'Clientes'],
     ['/clientes/novo', 'Novo cliente'],
     ['/clientes/cliente-1', 'Detalhe do cliente'],
-    ['/projetos', 'Módulo projetos'],
+    ['/projetos', 'Projetos'],
+    ['/projetos/novo', 'Novo projeto'],
+    ['/projetos/project-1', 'Detalhe do projeto'],
     ['/financeiro', 'Módulo financeiro'],
     ['/relatorios', 'Módulo relatorios'],
   ])('%s renderiza %s dentro do layout protegido', (path, heading) => {
@@ -117,9 +122,30 @@ describe('AppRoutes', () => {
     expect(screen.queryByRole('heading', { name: 'Clientes' })).toBeNull()
   })
 
+  it('redireciona rota de projeto para login sem autenticação', () => {
+    routeState.authenticated = false
+    renderPath('/projetos')
+
+    expect(screen.getByRole('heading', { name: 'Login' })).toBeTruthy()
+    expect(screen.queryByText('Rota protegida')).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Projetos' })).toBeNull()
+  })
+
   it('usa a página 404 para caminho desconhecido', () => {
     renderPath('/rota-inexistente')
     expect(screen.getByRole('heading', { name: 'Página não encontrada' })).toBeTruthy()
     expect(screen.queryByText('Rota protegida')).toBeNull()
+  })
+
+  it('não usa mais placeholders para Clientes ou Projetos', () => {
+    renderPath('/projetos')
+    expect(screen.queryByRole('heading', { name: 'Módulo projetos' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Módulo clientes' })).toBeNull()
+  })
+
+  it('mantém /projetos/novo antes da rota dinâmica de detalhe', () => {
+    renderPath('/projetos/novo')
+    expect(screen.getByRole('heading', { name: 'Novo projeto' })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: 'Detalhe do projeto' })).toBeNull()
   })
 })

@@ -6,33 +6,30 @@ import { ModulePlaceholderPage } from './ModulePlaceholderPage'
 
 const modules = [
   {
-    moduleKey: 'projetos',
-    title: 'Projetos',
-    stage: 'Etapa 3',
-    description: 'O módulo Projetos será implementado no Plano 2 da Etapa 3. Até lá, os projetos básicos permanecem na ficha do cliente.',
-  },
-  {
     moduleKey: 'financeiro',
     title: 'Financeiro',
     stage: 'Etapa 3',
     description: 'Valores contratados e recebidos, separados dos estimados, chegam na Etapa 3, pelo Plano 3.',
+    actionLabel: 'Voltar ao dashboard',
+    actionTo: '/',
   },
   {
     moduleKey: 'relatorios',
     title: 'Relatórios',
     stage: 'Etapa 3',
     description: 'Relatórios de conversão, nichos e desempenho chegam na Etapa 3, no plano de finalização.',
+    actionLabel: 'Ir para Financeiro',
+    actionTo: '/financeiro',
   },
 ] as const
 
-type ModuleKey = typeof modules[number]['moduleKey']
-
-function renderModule(moduleKey: ModuleKey) {
+function renderModule(moduleKey: typeof modules[number]['moduleKey']) {
   return render(
-    <MemoryRouter initialEntries={[`/${moduleKey}`]}>
+    <MemoryRouter initialEntries={[`/modulos/${moduleKey}`]}>
       <Routes>
-        <Route path="/:moduleKey" element={<ModulePlaceholderPage moduleKey={moduleKey} />} />
-        <Route path="/leads" element={<div>Lista de leads</div>} />
+        <Route path="/modulos/:moduleKey" element={<ModulePlaceholderPage moduleKey={moduleKey} />} />
+        <Route path="/" element={<h1>Dashboard</h1>} />
+        <Route path="/financeiro" element={<h1>Módulo financeiro</h1>} />
       </Routes>
     </MemoryRouter>,
   )
@@ -55,25 +52,34 @@ afterEach(() => {
 })
 
 describe('ModulePlaceholderPage', () => {
-  it.each(modules)('$title usa a chave $moduleKey e explica exatamente a $stage', ({ moduleKey, title, stage, description }) => {
+  it.each(modules)('$title usa a chave $moduleKey, explica a $stage e possui o CTA correto', ({ moduleKey, title, stage, description, actionLabel, actionTo }) => {
     const { container } = renderModule(moduleKey)
-
     expect(screen.getByRole('heading', { level: 1, name: title })).toBeTruthy()
     expect(screen.getByRole('heading', { level: 3, name: `${title} — disponível na ${stage}` })).toBeTruthy()
     expect(screen.getByText(description)).toBeTruthy()
-    expect(screen.queryByRole('heading', { name: 'Clientes' })).toBeNull()
-
-    const link = screen.getByRole('link', { name: 'Voltar para Leads' })
-    expect(link.getAttribute('href')).toBe('/leads')
+    const link = screen.getByRole('link', { name: actionLabel })
+    expect(link.getAttribute('href')).toBe(actionTo)
     expect(link.classList.contains('inline-flex')).toBe(true)
     expect(link.classList.contains('h-10')).toBe(true)
     expect(link.classList.contains('rounded-xl')).toBe(true)
     expect(container.querySelectorAll('a button, a a, button a, a input, a select, a textarea')).toHaveLength(0)
   })
 
-  it('o CTA de Projetos navega para a lista de leads', async () => {
-    renderModule('projetos')
-    fireEvent.click(screen.getByRole('link', { name: 'Voltar para Leads' }))
-    expect(await screen.findByText('Lista de leads')).toBeTruthy()
+  it('o CTA financeiro volta ao dashboard em vez de apontar para si mesmo', () => {
+    renderModule('financeiro')
+    expect(screen.getByRole('link', { name: 'Voltar ao dashboard' }).getAttribute('href')).toBe('/')
+    expect(screen.queryByRole('link', { name: 'Ir para Financeiro' })).toBeNull()
+  })
+
+  it('o CTA financeiro navega para o dashboard', async () => {
+    renderModule('financeiro')
+    fireEvent.click(screen.getByRole('link', { name: 'Voltar ao dashboard' }))
+    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeTruthy()
+  })
+
+  it('somente Relatórios possui CTA para o módulo financeiro', async () => {
+    renderModule('relatorios')
+    fireEvent.click(screen.getByRole('link', { name: 'Ir para Financeiro' }))
+    expect(await screen.findByRole('heading', { name: 'Módulo financeiro' })).toBeTruthy()
   })
 })
