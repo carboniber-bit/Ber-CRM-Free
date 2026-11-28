@@ -8231,6 +8231,17 @@ git commit -m "feat: adicionar detalhe do projeto"
 **Interfaces:**
 - Produces: protected routes `/clientes`, `/clientes/novo`, `/clientes/:id`, `/projetos`, `/projetos/novo` and `/projetos/:id`; Financeiro and Relatórios remain placeholders.
 
+## Controller addendum — prioridade sobre o trecho literal
+
+- O escopo fica restrito aos cinco arquivos listados acima. Não altere componentes, serviços, migrations, dependências, rotas fora do trecho indicado ou documentos diferentes do README.
+- Remova o placeholder de Projetos, registre `/projetos`, `/projetos/novo` e `/projetos/:id` e preserve a rota estática `/projetos/novo` antes da dinâmica.
+- No README, não use emojis. Relatórios pertence à Etapa 3 · Finalização, não à Etapa 4; mantenha Financeiro e Relatórios como placeholders e declare apenas o que foi implementado.
+- As migrations `0006`/`0007`/`0008` já foram aplicadas e a importação/Pipeline foram validados no ambiente remoto. Não volte a afirmar que a aplicação está pendente; mantenha pendente somente a validação SQL autenticada completa e o isolamento RLS entre dois usuários, que não têm evidência atual.
+- Preserve todos os limites de segurança: Supabase Free, chave pública no frontend, RLS por proprietário, nenhum dado fictício, nenhuma receita criada por projeto e nenhuma automação de mensagens.
+- Escreva/ajuste os testes primeiro e execute o RED esperado antes da implementação. Depois execute GREEN focado, suíte completa, build, lint e diff checks; registre comandos e resultados no relatório.
+- Não execute migrations, não afirme validação autenticada/RLS entre dois usuários sem evidência e não marque verificações de navegador como feitas se não foram realizadas. A verificação visual ficará com o controller.
+- Faça commits pequenos e frequentes somente com os cinco arquivos autorizados. Não faça push, deploy, alterações no Supabase nem dispare subagentes.
+
 - [ ] **Step 1: Write failing route tests**
 
 Parta integralmente do harness completo de `src/routes/AppRoutes.test.tsx` do Plano 1 e acrescente os stubs/casos de Projetos abaixo. Preserve todas as rotas existentes, `/login` e `/status` públicas, o redirecionamento de rota protegida sem autenticação e a 404; os mocks evitam qualquer acesso ao Supabase. `src/routes/ProtectedRoute.test.tsx` permanece no Plano 1 e não é criado, alterado nem adicionado ao commit desta task.
@@ -8483,7 +8494,7 @@ describe('ModulePlaceholderPage', () => {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `npm test -- src/routes/AppRoutes.test.tsx src/pages/ModulePlaceholderPage.test.tsx`
-Expected: FAIL because Projetos is still a placeholder and the Financeiro CTA still points to `/financeiro` instead of the dashboard.
+Expected: FAIL because Projetos is still a placeholder and the Financeiro CTA still points to `/leads` instead of the dashboard.
 
 - [ ] **Step 3: Implement routes and incremental documentation**
 
@@ -8610,8 +8621,9 @@ CRM profissional construído por etapas, 100% em planos gratuitos.
 **Etapa atual: 3 — Planos 1 (Clientes) e 2 (Projetos) implementados; Plano 3 (Financeiro) pendente.**
 O CRM inclui Leads / Prospecção, Oportunidades, Pipeline Kanban, Follow-ups, Dashboard,
 Configurações, Clientes com contratos e Projetos com tarefas, revisões, histórico e entrega.
-Financeiro e Relatórios continuam como placeholders. A validação autenticada das migrations
-`0006`/`0008` e o isolamento RLS entre dois usuários permanecem pendentes até execução real
+Financeiro e Relatórios continuam como placeholders. As migrations `0001`–`0008` já foram
+aplicadas no ambiente Supabase atual. A validação SQL autenticada completa das migrations
+`0006`–`0008` e o isolamento RLS entre dois usuários permanecem pendentes até execução real
 com as contas de teste.
 
 ## Stack
@@ -8659,7 +8671,7 @@ Projeto Supabase: `nuzjlizqdldhygsliwwc`
    ```
 
    Reinicie o dev server após editar.
-3. **Execute o schema**: abra o [SQL Editor](https://supabase.com/dashboard/project/nuzjlizqdldhygsliwwc/sql/new)
+3. **Execute o schema em um novo ambiente**: abra o [SQL Editor](https://supabase.com/dashboard/project/nuzjlizqdldhygsliwwc/sql/new)
    e execute, nesta ordem, [`0001_profiles.sql`](supabase/migrations/0001_profiles.sql),
    [`0002_etapa2.sql`](supabase/migrations/0002_etapa2.sql),
    [`0003_duplicate_canonical.sql`](supabase/migrations/0003_duplicate_canonical.sql),
@@ -8669,6 +8681,7 @@ Projeto Supabase: `nuzjlizqdldhygsliwwc`
    [`0007_lead_maps_url.sql`](supabase/migrations/0007_lead_maps_url.sql) e
    [`0008_etapa3_projects.sql`](supabase/migrations/0008_etapa3_projects.sql).
    As migrations criam tabelas privadas, índices, políticas RLS, triggers e RPCs transacionais.
+   No ambiente Supabase atual do projeto, as migrations `0001`–`0008` já foram aplicadas.
 4. **Crie seu usuário**: Dashboard → Authentication → Users → *Add user* →
    informe e-mail e senha (marque *Auto Confirm User*). Não há cadastro público.
 5. Acesse `/status` no app para validar tudo, depois faça login em `/login`.
@@ -8780,14 +8793,14 @@ Limites atuais dos planos gratuitos:
 
 | Etapa | Escopo | Status |
 | ----- | ------ | ------ |
-| 1 | Fundação, auth, Supabase, deploy | ✅ concluída |
-| 2 · Plano 1 | Fundação do CRM: vitest, migration `0002`, types, services, kit UI, sidebar | ✅ concluída |
-| 2 · Plano 2 | Leads / prospecção: lista, ficha, follow-ups, WhatsApp, CSV | ✅ concluída |
+| 1 | Fundação, auth, Supabase, deploy | concluída |
+| 2 · Plano 1 | Fundação do CRM: vitest, migration `0002`, types, services, kit UI, sidebar | concluída |
+| 2 · Plano 2 | Leads / prospecção: lista, ficha, follow-ups, WhatsApp, CSV | concluída |
 | 2 · Plano 3 | Oportunidades, pipeline Kanban, follow-ups, dashboard, configurações | implementado; validação RLS entre 2 usuários pendente |
-| 3 · Plano 1 | Clientes, contratos, conversão e histórico | implementado; validação autenticada/RLS pendente |
-| 3 · Plano 2 | Projetos, tarefas, revisões, Kanban e entrega | implementado; validação autenticada/RLS pendente |
+| 3 · Plano 1 | Clientes, contratos, conversão e histórico | implementado; validação SQL autenticada/RLS pendente |
+| 3 · Plano 2 | Projetos, tarefas, revisões, Kanban e entrega | implementado; validação SQL autenticada/RLS pendente |
 | 3 · Plano 3 | Financeiro | pendente |
-| 4 | Relatórios | planejada |
+| 3 · Finalização | Relatórios, configurações, backup, segurança e auditoria | pendente |
 ````
 
 - [ ] **Step 4: Run complete verification**
@@ -8801,9 +8814,11 @@ git diff --check
 
 Expected: all commands exit 0. Fix regressions before proceeding.
 
-- [ ] **Step 5: Browser verification**
+- [ ] **Step 5: Controller browser verification**
 
-With migration 0008 applied and a real authenticated session, verify:
+A verificação abaixo pertence ao controller e não deve ser executada pelo implementador.
+As migrations `0006`–`0008` já estão aplicadas no ambiente atual. Com uma sessão
+autenticada real, verifique:
 1. Create a client/contract and two projects whose allocated values equal but do not exceed the contract.
 2. Um terceiro projeto que exceda o contrato é rejeitado com uma mensagem compreensível.
 3. Cards, list and Kanban show the same project and progress.
@@ -8814,7 +8829,8 @@ With migration 0008 applied and a real authenticated session, verify:
 8. Client detail project summary reflects the new project.
 9. Test 375, 768 and 1280 px; mobile uses selectors and has no horizontal page overflow.
 
-If migrations are not applied, report these checks as pending rather than passed.
+Registre cada verificação de navegador/RLS realmente executada; checks não executados
+permanecem pendentes e não devem ser apresentados como evidência.
 
 - [ ] **Step 6: Commit**
 
