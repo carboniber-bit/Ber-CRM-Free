@@ -6231,6 +6231,16 @@ Se a implementação for separada da correção de isolamento, commitar a corre�
 - Consumes: revision service, `deliverProject`, `DeliveryInput`, `Project`.
 - Produces: explicit approval and delivery actions with history feedback.
 
+**Controller addendum — isolamento e imutabilidade:**
+- O estado de carga de revisões carrega `projectId`; dados de outro projeto nunca são retidos em erro ou renderizados.
+- Toda mutação de revisão verifica montagem, ID atual e `revision.project_id`; respostas obsoletas não emitem toast, recarregam nem chamam `onChanged`.
+- O resultado persistido de create/edit/status/approval é aplicado localmente antes do reload; se o refresh falhar, a revisão aprovada permanece read-only.
+- A entrega mantém um guard global de saving fora da subárvore visual keyed por `project.id`; rascunho, erros, confirmação e entrega salva são descartados sincronicamente na troca.
+- A confirmação de entrega guarda snapshot `{ projectId, payload }` e usa somente esse payload; IDs diferentes do projeto atual são rejeitados.
+- Revisão aprovada não oferece edição, status ou nova aprovação. Projeto cancelado preserva histórico e bloqueia mutações.
+- URLs usam `type="text"` e `inputMode="url"`; o valor bruto deve ser HTTP(S) sem qualquer whitespace antes da normalização do payload.
+- Escopo restrito a estes quatro arquivos; nenhuma alteração de serviço, schema, rota, dependência ou finanças.
+
 - [ ] **Step 1: Write failing tests**
 
 ```tsx
@@ -6258,8 +6268,10 @@ import { ProjectRevisionList } from './ProjectRevisionList'
 function makeRevision(status: ProjectRevision['status'] = 'completed'): ProjectRevision {
   return {
     id: 'r1', owner_id: 'owner-1', project_id: 'p1', requested_at: '2026-11-25T12:00:00Z',
-    description: 'Ajustar cores', responsible_name: null, status, completed_at: null,
-    approved_at: null, notes: null, created_at: '2026-11-25T12:00:00Z', updated_at: '2026-11-25T12:00:00Z',
+    description: 'Ajustar cores', responsible_name: null, status,
+    completed_at: status === 'completed' || status === 'approved' ? '2026-11-25T12:30:00Z' : null,
+    approved_at: status === 'approved' ? '2026-11-25T13:00:00Z' : null,
+    notes: null, created_at: '2026-11-25T12:00:00Z', updated_at: '2026-11-25T12:00:00Z',
   }
 }
 
@@ -6274,7 +6286,7 @@ describe('ProjectRevisionList', () => {
   })
 
   it('mostra vazio e permite registrar revisão', async () => {
-    createRevision.mockResolvedValue({ id: 'r1' })
+    createRevision.mockResolvedValue(makeRevision('requested'))
     render(<ProjectRevisionList projectId="p1" onChanged={vi.fn()} />)
     await screen.findByText('Nenhuma revisão registrada.')
     fireEvent.click(screen.getByRole('button', { name: 'Nova revisão' }))
@@ -6285,7 +6297,7 @@ describe('ProjectRevisionList', () => {
 
   it('aprovação exige confirmação e não oferece delete', async () => {
     listRevisions.mockResolvedValue([makeRevision('completed')])
-    updateRevision.mockResolvedValue({ id: 'r1', status: 'approved' })
+    updateRevision.mockResolvedValue({ ...makeRevision('completed'), status: 'approved', approved_at: '2026-11-25T13:00:00Z' })
     render(<ProjectRevisionList projectId="p1" onChanged={vi.fn()} />)
     fireEvent.click(await screen.findByRole('button', { name: 'Aprovar revisão' }))
     expect(updateRevision).not.toHaveBeenCalled()
@@ -6295,6 +6307,69 @@ describe('ProjectRevisionList', () => {
     expect(screen.queryByRole('button', { name: /Excluir revisão/ })).toBeNull()
     expect(updateRevision.mock.calls[0][1]).not.toHaveProperty('approved_at')
     expect(updateRevision.mock.calls[0][1]).not.toHaveProperty('completed_at')
+  })
+
+  it('preserva a aprovação local quando o refresh em background falha', async () => {
+    const completed = makeRevision('completed')
+    const approved = {
+      ...completed, status: 'approved' as const,
+      approved_at: '2026-11-25T13:00:00Z', updated_at: '2026-11-25T13:00:00Z',
+    }
+    listRevisions
+      .mockResolvedValueOnce([completed])
+      .mockRejectedValueOnce(new Error('Falha ao atualizar revisões.'))
+    updateRevision.mockResolvedValue(approved)
+    render(<ProjectRevisionList projectId="p1" onChanged={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Aprovar revisão' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar aprovação' }))
+
+    expect((await screen.findByText('Falha ao atualizar revisões.')).textContent).toBe('Falha ao atualizar revisões.')
+    expect(screen.getByText('Aprovada')).toBeTruthy()
+    expect(screen.getByText(/Aprovada em/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Editar revisão' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Aprovar revisão' })).toBeNull()
+    expect(screen.queryByLabelText('Status da revisão')).toBeNull()
+    expect(updateRevision).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['create', 'edit', 'status'] as const)('preserva o resultado local de %s quando o refresh falha', async (operation) => {
+    const initial = makeRevision(operation === 'create' ? 'requested' : 'completed')
+    const returned = {
+      ...initial,
+      id: operation === 'create' ? 'r-new' : initial.id,
+      description: 'Revisão persistida',
+      status: operation === 'status' ? 'in_progress' as const : initial.status,
+      notes: 'Nota persistida',
+    }
+    listRevisions
+      .mockResolvedValueOnce(operation === 'create' ? [] : [initial])
+      .mockRejectedValueOnce(new Error('Falha ao atualizar revisões.'))
+    const mutation = operation === 'create' ? createRevision : updateRevision
+    mutation.mockResolvedValue(returned)
+    render(<ProjectRevisionList projectId="p1" onChanged={vi.fn()} />)
+
+    if (operation === 'create') {
+      await screen.findByText('Nenhuma revisão registrada.')
+      fireEvent.click(screen.getByRole('button', { name: 'Nova revisão' }))
+      fireEvent.change(screen.getByLabelText('Descrição *'), { target: { value: 'Descrição enviada' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Registrar revisão' }))
+    } else {
+      await screen.findByText('Ajustar cores')
+      if (operation === 'edit') {
+        fireEvent.click(screen.getByRole('button', { name: 'Editar revisão' }))
+        fireEvent.change(screen.getByLabelText('Descrição *'), { target: { value: 'Descrição editada' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Salvar revisão' }))
+      } else {
+        fireEvent.change(screen.getByLabelText('Status da revisão'), { target: { value: 'in_progress' } })
+      }
+    }
+
+    expect((await screen.findByText('Falha ao atualizar revisões.')).textContent).toBe('Falha ao atualizar revisões.')
+    expect(screen.getByText('Revisão persistida')).toBeTruthy()
+    expect(screen.getByText('Nota persistida')).toBeTruthy()
+    expect((screen.getByLabelText('Status da revisão') as HTMLSelectElement).value).toBe(returned.status)
+    expect(mutation).toHaveBeenCalledTimes(1)
   })
 
   it('revisão aprovada permanece read-only e edição não oferece approved', async () => {
@@ -6331,19 +6406,139 @@ describe('ProjectRevisionList', () => {
     expect((screen.getByRole('button', { name: 'Nova revisão' }) as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: 'Aprovar revisão' }) as HTMLButtonElement).disabled).toBe(true)
   })
+
+  it('não preserva revisões do projeto anterior quando a carga do novo projeto falha', async () => {
+    listRevisions
+      .mockResolvedValueOnce([makeRevision()])
+      .mockRejectedValueOnce(new Error('Falha ao carregar revisões do novo projeto.'))
+    const { rerender } = render(<ProjectRevisionList projectId="p1" onChanged={vi.fn()} />)
+    await screen.findByText('Ajustar cores')
+    rerender(<ProjectRevisionList projectId="p2" onChanged={vi.fn()} />)
+    expect(await screen.findByText('Falha ao carregar revisões do novo projeto.')).toBeTruthy()
+    expect(screen.queryByText('Ajustar cores')).toBeNull()
+  })
+
+  it('fecha o editor de revisão do projeto anterior após a troca', async () => {
+    listRevisions.mockResolvedValueOnce([makeRevision()]).mockResolvedValueOnce([])
+    const { rerender } = render(<ProjectRevisionList projectId="p1" onChanged={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar revisão' }))
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    rerender(<ProjectRevisionList projectId="p2" onChanged={vi.fn()} />)
+    await screen.findByText('Nenhuma revisão registrada.')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(updateRevision).not.toHaveBeenCalled()
+  })
+
+  it('fecha a aprovação de revisão do projeto anterior após a troca', async () => {
+    listRevisions.mockResolvedValueOnce([makeRevision('completed')]).mockResolvedValueOnce([])
+    const { rerender } = render(<ProjectRevisionList projectId="p1" onChanged={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Aprovar revisão' }))
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    rerender(<ProjectRevisionList projectId="p2" onChanged={vi.fn()} />)
+    await screen.findByText('Nenhuma revisão registrada.')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(updateRevision).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { operation: 'create', outcome: 'resolve' },
+    { operation: 'create', outcome: 'reject' },
+    { operation: 'update', outcome: 'resolve' },
+    { operation: 'update', outcome: 'reject' },
+  ] as const)('descarta $operation de p1 $outcome após trocar para p2', async ({ operation, outcome }) => {
+    const p1 = makeRevision('completed')
+    const p2 = { ...makeRevision('completed'), id: 'r2', project_id: 'p2', description: 'Revisão do projeto p2' }
+    listRevisions.mockResolvedValueOnce([p1]).mockResolvedValueOnce([p2])
+    const pending = deferred<ProjectRevision>()
+    const mutation = operation === 'create' ? createRevision : updateRevision
+    mutation.mockReturnValueOnce(pending.promise)
+    const onChanged = vi.fn()
+    const { rerender } = render(<ProjectRevisionList projectId="p1" onChanged={onChanged} />)
+    await screen.findByText('Ajustar cores')
+
+    if (operation === 'create') {
+      fireEvent.click(screen.getByRole('button', { name: 'Nova revisão' }))
+      fireEvent.change(screen.getByLabelText('Descrição *'), { target: { value: 'Nova revisão antiga' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Registrar revisão' }))
+    } else {
+      fireEvent.click(screen.getByRole('button', { name: 'Editar revisão' }))
+      fireEvent.change(screen.getByLabelText('Descrição *'), { target: { value: 'Edição antiga' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar revisão' }))
+    }
+    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1))
+
+    rerender(<ProjectRevisionList projectId="p2" onChanged={onChanged} />)
+    await screen.findByText('Revisão do projeto p2')
+    const reloadCalls = listRevisions.mock.calls.length
+    await act(async () => {
+      if (outcome === 'resolve') {
+        pending.resolve({ ...p1, id: operation === 'create' ? 'r-old' : p1.id, description: 'Revisão antiga' })
+        await pending.promise
+      } else {
+        pending.reject(new Error('Falha na mutação anterior.'))
+        await pending.promise.catch(() => undefined)
+      }
+    })
+
+    expect(toast).not.toHaveBeenCalled()
+    expect(onChanged).not.toHaveBeenCalled()
+    expect(listRevisions).toHaveBeenCalledTimes(reloadCalls)
+    expect(screen.queryByText('Revisão antiga')).toBeNull()
+    expect(screen.getByText('Revisão do projeto p2')).toBeTruthy()
+  })
+
+  it.each(['create', 'update'] as const)('descarta resposta de %s após desmontagem', async (operation) => {
+    listRevisions.mockResolvedValueOnce(operation === 'create' ? [] : [makeRevision('completed')])
+    const pending = deferred<ProjectRevision>()
+    const mutation = operation === 'create' ? createRevision : updateRevision
+    mutation.mockReturnValueOnce(pending.promise)
+    const onChanged = vi.fn()
+    const { unmount } = render(<ProjectRevisionList projectId="p1" onChanged={onChanged} />)
+
+    if (operation === 'create') {
+      await screen.findByText('Nenhuma revisão registrada.')
+      fireEvent.click(screen.getByRole('button', { name: 'Nova revisão' }))
+      fireEvent.change(screen.getByLabelText('Descrição *'), { target: { value: 'Revisão pendente' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Registrar revisão' }))
+    } else {
+      await screen.findByText('Ajustar cores')
+      fireEvent.click(screen.getByRole('button', { name: 'Editar revisão' }))
+      fireEvent.change(screen.getByLabelText('Descrição *'), { target: { value: 'Revisão pendente' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar revisão' }))
+    }
+    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1))
+    const reloadCalls = listRevisions.mock.calls.length
+    unmount()
+
+    await act(async () => {
+      if (operation === 'create') {
+        pending.resolve({ ...makeRevision('requested'), id: 'r-new', description: 'Revisão pendente' })
+        await pending.promise
+      } else {
+        pending.reject(new Error('Falha após desmontagem.'))
+        await pending.promise.catch(() => undefined)
+      }
+    })
+
+    expect(toast).not.toHaveBeenCalled()
+    expect(onChanged).not.toHaveBeenCalled()
+    expect(listRevisions).toHaveBeenCalledTimes(reloadCalls)
+  })
 })
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((res) => { resolve = res })
-  return { promise, resolve }
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
 }
 ```
 
 ```tsx
 // @vitest-environment jsdom
 // src/components/projects/ProjectDeliveryPanel.test.tsx
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Project } from '../../types/project'
 
@@ -6446,6 +6641,19 @@ describe('ProjectDeliveryPanel', () => {
     expect(deliverProject).not.toHaveBeenCalled()
   })
 
+  it('preserva whitespace inicial no input de arquivos até a validação explícita', async () => {
+    render(<ProjectDeliveryPanel project={project} onDelivered={vi.fn()} />)
+    const input = screen.getByLabelText('Link dos arquivos') as HTMLInputElement
+    expect(input.type).toBe('text')
+    expect(input.inputMode).toBe('url')
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega' } })
+    fireEvent.change(input, { target: { value: ' https://example.test/arquivos' } })
+    expect(input.value).toBe(' https://example.test/arquivos')
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    expect((await screen.findByText('Informe uma URL HTTP(S) válida.')).textContent).toBe('Informe uma URL HTTP(S) válida.')
+    expect(deliverProject).not.toHaveBeenCalled()
+  })
+
   it('não permite entregar projeto cancelado', () => {
     render(<ProjectDeliveryPanel project={{ ...project, status: 'cancelled' }} onDelivered={vi.fn()} />)
     expect(screen.getByText(/Entrega indisponível/).textContent).toMatch(/Entrega indisponível/)
@@ -6463,20 +6671,235 @@ describe('ProjectDeliveryPanel', () => {
     expect(screen.queryByRole('button', { name: 'Registrar entrega' })).toBeNull()
     expect(screen.queryByRole('combobox')).toBeNull()
   })
+
+  it('não confirma entrega anterior no primeiro commit da troca de projeto', () => {
+    deliverProject.mockResolvedValue({
+      ...project, status: 'delivered', delivered_at: '2026-11-26T12:00:00Z',
+      delivery_url: 'https://example.test/entrega',
+    })
+    const onDelivered = vi.fn()
+    const { rerender } = render(<SwitchProbe project={project} onDelivered={onDelivered} />)
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    expect(screen.getByRole('dialog').textContent).toMatch(/Confirmar entrega/)
+
+    rerender(<SwitchProbe project={{ ...project, id: 'p2', name: 'Outro projeto' }} onDelivered={onDelivered} />)
+
+    expect(deliverProject).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Abrir entrega' })).toBeNull()
+  })
+
+  it('confirma o snapshot validado mesmo se o rascunho mudar com o diálogo aberto', async () => {
+    const delivered = {
+      ...project, status: 'delivered' as const, delivered_at: '2026-11-26T12:00:00Z',
+      delivery_url: 'https://example.test/entrega', files_url: 'https://example.test/arquivos',
+      final_notes: 'Notas validadas',
+    }
+    deliverProject.mockResolvedValue(delivered)
+    const onDelivered = vi.fn()
+    render(<ProjectDeliveryPanel project={project} onDelivered={onDelivered} />)
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega' } })
+    fireEvent.change(screen.getByLabelText('Link dos arquivos'), { target: { value: 'https://example.test/arquivos' } })
+    fireEvent.change(screen.getByLabelText('Notas finais'), { target: { value: 'Notas validadas' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/alterado' } })
+    fireEvent.change(screen.getByLabelText('Notas finais'), { target: { value: 'Notas alteradas' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar entrega' }))
+
+    await waitFor(() => expect(onDelivered).toHaveBeenCalledWith(delivered))
+    expect(deliverProject).toHaveBeenCalledWith('p1', {
+      deliveryUrl: 'https://example.test/entrega', filesUrl: 'https://example.test/arquivos',
+      finalNotes: 'Notas validadas', confirmed: true,
+    })
+  })
+
+  it('mantém a guarda global de saving bloqueada até a entrega anterior terminar', async () => {
+    const pending = deferred<Project>()
+    const deliveredP2 = {
+      ...project, id: 'p2', status: 'delivered' as const, delivered_at: '2026-11-26T12:00:00Z',
+      delivery_url: 'https://example.test/entrega-p2',
+    }
+    deliverProject.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(deliveredP2)
+    const onDelivered = vi.fn()
+    const { rerender } = render(<ProjectDeliveryPanel project={project} onDelivered={onDelivered} />)
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega-p1' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar entrega' }))
+    await waitFor(() => expect(deliverProject).toHaveBeenCalledTimes(1))
+
+    rerender(<ProjectDeliveryPanel project={{ ...project, id: 'p2', name: 'Outro projeto' }} onDelivered={onDelivered} />)
+    const submitP2 = screen.getByRole('button', { name: /Registrar entrega/ }) as HTMLButtonElement
+    expect(submitP2.disabled).toBe(true)
+    fireEvent.click(submitP2)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(deliverProject).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      pending.resolve({
+        ...project, status: 'delivered', delivered_at: '2026-11-26T12:00:00Z',
+        delivery_url: 'https://example.test/entrega-p1',
+      })
+      await pending.promise
+    })
+    await waitFor(() => expect(submitP2.disabled).toBe(false))
+
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega-p2' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(submitP2)
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar entrega' }))
+    await waitFor(() => expect(deliverProject).toHaveBeenCalledTimes(2))
+    expect(deliverProject).toHaveBeenLastCalledWith('p2', {
+      deliveryUrl: 'https://example.test/entrega-p2', filesUrl: '', finalNotes: '', confirmed: true,
+    })
+  })
+
+  it('descarta entrega do projeto anterior e fecha a confirmação após a troca', async () => {
+    const pending = deferred<Project>()
+    deliverProject.mockReturnValueOnce(pending.promise)
+    const onDelivered = vi.fn()
+    const { rerender } = render(<ProjectDeliveryPanel project={project} onDelivered={onDelivered} />)
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar entrega' }))
+    await waitFor(() => expect(deliverProject).toHaveBeenCalledWith('p1', expect.any(Object)))
+    rerender(<ProjectDeliveryPanel project={{ ...project, id: 'p2', name: 'Outro projeto' }} onDelivered={onDelivered} />)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    await act(async () => {
+      pending.resolve({ ...project, status: 'delivered', delivered_at: '2026-11-26T12:00:00Z', delivery_url: 'https://example.test/entrega' })
+      await pending.promise
+    })
+    expect(onDelivered).not.toHaveBeenCalled()
+    expect(toast).not.toHaveBeenCalled()
+    expect(screen.queryByRole('link', { name: 'Abrir entrega' })).toBeNull()
+  })
+
+  it('descarta erro de entrega anterior após a troca de projeto', async () => {
+    const pending = deferred<Project>()
+    deliverProject.mockReturnValueOnce(pending.promise)
+    const onDelivered = vi.fn()
+    const { rerender } = render(<ProjectDeliveryPanel project={project} onDelivered={onDelivered} />)
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega-p1' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar entrega' }))
+    await waitFor(() => expect(deliverProject).toHaveBeenCalledTimes(1))
+
+    rerender(<ProjectDeliveryPanel project={{ ...project, id: 'p2', name: 'Outro projeto' }} onDelivered={onDelivered} />)
+    await act(async () => {
+      pending.reject(new Error('Falha na entrega anterior.'))
+      await pending.promise.catch(() => undefined)
+    })
+
+    expect(toast).not.toHaveBeenCalled()
+    expect(onDelivered).not.toHaveBeenCalled()
+    expect(screen.queryByText('Falha na entrega anterior.')).toBeNull()
+    expect((screen.getByRole('button', { name: 'Registrar entrega' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('libera a guarda global após rejeição e permite entregar o projeto atual', async () => {
+    const pending = deferred<Project>()
+    const deliveredP2 = {
+      ...project, id: 'p2', status: 'delivered' as const, delivered_at: '2026-11-26T12:00:00Z',
+      delivery_url: 'https://example.test/entrega-p2',
+    }
+    deliverProject.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(deliveredP2)
+    const onDelivered = vi.fn()
+    const { rerender } = render(<ProjectDeliveryPanel project={project} onDelivered={onDelivered} />)
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega-p1' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar entrega' }))
+    await waitFor(() => expect(deliverProject).toHaveBeenCalledTimes(1))
+
+    rerender(<ProjectDeliveryPanel project={{ ...project, id: 'p2', name: 'Outro projeto' }} onDelivered={onDelivered} />)
+    expect((screen.getByRole('button', { name: /Registrar entrega/ }) as HTMLButtonElement).disabled).toBe(true)
+    await act(async () => {
+      pending.reject(new Error('Falha na entrega anterior.'))
+      await pending.promise.catch(() => undefined)
+    })
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Registrar entrega' }) as HTMLButtonElement).disabled).toBe(false))
+
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega-p2' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar entrega' }))
+    await waitFor(() => expect(deliverProject).toHaveBeenCalledTimes(2))
+    expect(deliverProject).toHaveBeenLastCalledWith('p2', {
+      deliveryUrl: 'https://example.test/entrega-p2', filesUrl: '', finalNotes: '', confirmed: true,
+    })
+  })
+
+  it.each(['resolve', 'reject'] as const)('descarta resposta de entrega após desmontagem: %s', async (outcome) => {
+    const pending = deferred<Project>()
+    deliverProject.mockReturnValueOnce(pending.promise)
+    const onDelivered = vi.fn()
+    const { unmount } = render(<ProjectDeliveryPanel project={project} onDelivered={onDelivered} />)
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar entrega' }))
+    await waitFor(() => expect(deliverProject).toHaveBeenCalledTimes(1))
+    unmount()
+    render(<ProjectDeliveryPanel project={{ ...project, id: 'p2' }} onDelivered={onDelivered} />)
+    expect((screen.getByRole('button', { name: 'Registrar entrega' }) as HTMLButtonElement).disabled).toBe(false)
+
+    await act(async () => {
+      if (outcome === 'resolve') {
+        pending.resolve({
+          ...project, status: 'delivered', delivered_at: '2026-11-26T12:00:00Z',
+          delivery_url: 'https://example.test/entrega',
+        })
+        await pending.promise
+      } else {
+        pending.reject(new Error('Falha após desmontagem.'))
+        await pending.promise.catch(() => undefined)
+      }
+    })
+
+    expect(toast).not.toHaveBeenCalled()
+    expect(onDelivered).not.toHaveBeenCalled()
+    expect((screen.getByRole('button', { name: 'Registrar entrega' }) as HTMLButtonElement).disabled).toBe(false)
+  })
 })
+
+function SwitchProbe({ project: currentProject, onDelivered }: {
+  project: Project
+  onDelivered: (project: Project) => void
+}) {
+  useLayoutEffect(() => {
+    if (currentProject.id !== 'p2') return
+    screen.queryByRole('button', { name: 'Confirmar entrega' })?.click()
+  }, [currentProject.id])
+  return <ProjectDeliveryPanel project={currentProject} onDelivered={onDelivered} />
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `npm test -- src/components/projects/ProjectRevisionList.test.tsx src/components/projects/ProjectDeliveryPanel.test.tsx`
-Expected: FAIL with modules not found.
+Expected: FAIL with modules not found on the initial scaffold.
+
+Este RED de módulo ausente prova somente o scaffolding. A aprovação da task exige também RED/GREEN comportamental das regressões de isolamento e aprovação, mais provas controladas por mutação das famílias de retenção entre projetos, reset de diálogos, supressão de mutação obsoleta, defesas de revisão aprovada, entrega cancelada e URL com whitespace. Nenhuma mutação temporária pode entrar em commit.
 
 - [ ] **Step 3: Implement revisions and delivery**
 
 Create `src/components/projects/ProjectRevisionList.tsx`:
 
 ```tsx
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { MessageSquareText } from 'lucide-react'
 import { useToast } from '../../hooks/useToast'
 import {
@@ -6509,9 +6932,9 @@ interface RevisionDraft {
 }
 
 type RevisionLoadState =
-  | { status: 'loading' }
-  | { status: 'ready'; revisions: ProjectRevision[] }
-  | { status: 'error'; message: string; revisions: ProjectRevision[] | null }
+  | { status: 'loading'; projectId: string }
+  | { status: 'ready'; projectId: string; revisions: ProjectRevision[] }
+  | { status: 'error'; projectId: string; message: string; revisions: ProjectRevision[] | null }
 
 const REVISION_STATUS_LABELS: Record<RevisionStatus, string> = {
   requested: 'Solicitada', in_progress: 'Em andamento', completed: 'Concluída', approved: 'Aprovada',
@@ -6519,6 +6942,10 @@ const REVISION_STATUS_LABELS: Record<RevisionStatus, string> = {
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
+}
+
+function emptyDraft(): RevisionDraft {
+  return { description: '', responsibleName: '', status: 'requested', notes: '' }
 }
 
 function writeFromRevision(revision: ProjectRevision, status = revision.status): ProjectRevisionWrite {
@@ -6533,6 +6960,12 @@ function writeFromDraft(draft: RevisionDraft): ProjectRevisionWrite {
     description: draft.description.trim(), responsibleName: draft.responsibleName.trim(),
     status: draft.status, notes: draft.notes.trim(),
   }
+}
+
+function upsertRevision(revisions: ProjectRevision[], revision: ProjectRevision): ProjectRevision[] {
+  return revisions.some((current) => current.id === revision.id)
+    ? revisions.map((current) => current.id === revision.id ? revision : current)
+    : [revision, ...revisions]
 }
 
 function formatDateTime(value: string | null): string {
@@ -6550,68 +6983,90 @@ function isRevisionStatus(value: string): value is RevisionStatus {
 
 export function ProjectRevisionList({ projectId, onChanged, disabled = false }: ProjectRevisionListProps) {
   const { toast } = useToast()
-  const [loadState, setLoadState] = useState<RevisionLoadState>({ status: 'loading' })
+  const [loadState, setLoadState] = useState<RevisionLoadState>({ status: 'loading', projectId })
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<ProjectRevision | null>(null)
-  const [draft, setDraft] = useState<RevisionDraft>({
-    description: '', responsibleName: '', status: 'requested', notes: '',
-  })
+  const [draft, setDraft] = useState<RevisionDraft>(emptyDraft)
   const [error, setError] = useState<string | null>(null)
   const [approving, setApproving] = useState<ProjectRevision | null>(null)
   const [saving, setSaving] = useState(false)
   const savingRef = useRef(false)
-  const mountedRef = useRef(true)
+  const mountedRef = useRef(false)
   const requestRef = useRef(0)
   const projectIdRef = useRef(projectId)
-  projectIdRef.current = projectId
-  const loadStateRef = useRef(loadState)
-  loadStateRef.current = loadState
 
-  const reload = useCallback(async (background = false): Promise<void> => {
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    projectIdRef.current = projectId
+    return () => { mountedRef.current = false }
+  }, [projectId])
+
+  const reload = useCallback(async (background = false, mutated?: ProjectRevision): Promise<void> => {
     const request = ++requestRef.current
-    const previous = loadStateRef.current
-    const retained = previous.status === 'ready'
-      ? previous.revisions
-      : previous.status === 'error' ? previous.revisions : null
-    if (!background) setLoadState({ status: 'loading' })
+    if (!background) {
+      setLoadState((previous) => previous.projectId === projectId
+        ? { status: 'loading', projectId }
+        : previous)
+    }
     try {
       const revisions = await listRevisions(projectId)
-      if (!mountedRef.current || request !== requestRef.current) return
-      setLoadState({ status: 'ready', revisions })
+      if (!mountedRef.current || projectIdRef.current !== projectId || request !== requestRef.current) return
+      setLoadState({ status: 'ready', projectId, revisions })
     } catch (cause) {
-      if (!mountedRef.current || request !== requestRef.current) return
-      setLoadState({
-        status: 'error',
-        message: errorMessage(cause, 'Não foi possível carregar as revisões. Tente novamente.'),
-        revisions: retained,
+      if (!mountedRef.current || projectIdRef.current !== projectId || request !== requestRef.current) return
+      const message = errorMessage(cause, 'Não foi possível carregar as revisões. Tente novamente.')
+      setLoadState((previous) => {
+        const retained = previous.projectId === projectId
+          ? previous.status === 'ready'
+            ? previous.revisions
+            : previous.status === 'error' ? previous.revisions : null
+          : null
+        return {
+          status: 'error', projectId, message,
+          revisions: mutated ? upsertRevision(retained ?? [], mutated) : retained,
+        }
       })
     }
   }, [projectId])
 
   useEffect(() => {
-    mountedRef.current = true
-    return () => { mountedRef.current = false }
-  }, [])
-
-  useEffect(() => {
-    setLoadState({ status: 'loading' })
+    setFormOpen(false)
+    setEditing(null)
+    setApproving(null)
+    setDraft(emptyDraft())
+    setError(null)
     void reload()
   }, [reload])
 
-  const currentRevisions = loadState.status === 'ready'
-    ? loadState.revisions
-    : loadState.status === 'error' ? loadState.revisions ?? [] : []
+  const stateBelongsToProject = loadState.projectId === projectId
+  const currentRevisions = stateBelongsToProject
+    ? loadState.status === 'ready'
+      ? loadState.revisions
+      : loadState.status === 'error' ? loadState.revisions ?? [] : []
+    : []
   const actionsDisabled = disabled || saving
 
-  const perform = async (action: () => Promise<void>, success: string) => {
+  const perform = async (
+    action: () => Promise<ProjectRevision>,
+    success: string,
+    onSuccess?: () => void,
+  ) => {
     if (savingRef.current || disabled) return
     savingRef.current = true
     setSaving(true)
     try {
-      await action()
+      const updated = await action()
       if (!mountedRef.current || projectIdRef.current !== projectId) return
+      setLoadState((previous) => {
+        if (previous.projectId !== projectId) return previous
+        const retained = previous.status === 'ready'
+          ? previous.revisions
+          : previous.status === 'error' ? previous.revisions ?? [] : []
+        return { status: 'ready', projectId, revisions: upsertRevision(retained, updated) }
+      })
+      onSuccess?.()
       toast(success)
-      await reload(true)
+      await reload(true, updated)
       if (mountedRef.current && projectIdRef.current === projectId) onChanged()
     } catch (cause) {
       if (mountedRef.current && projectIdRef.current === projectId) {
@@ -6624,57 +7079,71 @@ export function ProjectRevisionList({ projectId, onChanged, disabled = false }: 
   }
 
   const openCreate = () => {
+    if (actionsDisabled) return
     setEditing(null)
-    setDraft({ description: '', responsibleName: '', status: 'requested', notes: '' })
+    setDraft(emptyDraft())
     setError(null)
     setFormOpen(true)
   }
 
   const openEdit = (revision: ProjectRevision) => {
+    if (actionsDisabled || revision.project_id !== projectId || revision.status === 'approved') return
     setEditing(revision)
     setDraft({
       description: revision.description, responsibleName: revision.responsible_name ?? '',
-      status: revision.status === 'approved' ? 'completed' : revision.status,
-      notes: revision.notes ?? '',
+      status: revision.status, notes: revision.notes ?? '',
     })
     setError(null)
     setFormOpen(true)
   }
 
+  const requestApproval = (revision: ProjectRevision) => {
+    if (actionsDisabled || revision.project_id !== projectId || revision.status !== 'completed') return
+    setError(null)
+    setApproving(revision)
+  }
+
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (actionsDisabled) return
+    if (actionsDisabled || draft.status === 'approved') return
+    if (editing && (editing.project_id !== projectId || editing.status === 'approved')) return
     if (!draft.description.trim()) {
       setError('Informe a descrição da revisão.')
       return
     }
     setError(null)
     const payload = writeFromDraft(draft)
-    void perform(async () => {
-      if (editing) await updateRevision(editing.id, payload)
-      else await createRevision(projectId, payload)
-      setFormOpen(false)
-      setEditing(null)
-    }, editing ? 'Revisão atualizada.' : 'Revisão registrada.')
+    void perform(
+      async () => editing
+        ? updateRevision(editing.id, payload)
+        : createRevision(projectId, payload),
+      editing ? 'Revisão atualizada.' : 'Revisão registrada.',
+      () => { setFormOpen(false); setEditing(null) },
+    )
   }
 
   const changeStatus = (revision: ProjectRevision, value: string) => {
-    if (!isRevisionStatus(value) || value === 'approved' || value === revision.status || actionsDisabled) return
-    void perform(async () => {
-      await updateRevision(revision.id, writeFromRevision(revision, value))
-    }, 'Status da revisão atualizado.')
+    if (
+      revision.project_id !== projectId || revision.status === 'approved'
+      || !isRevisionStatus(value) || value === 'approved' || value === revision.status || actionsDisabled
+    ) return
+    void perform(
+      async () => updateRevision(revision.id, writeFromRevision(revision, value)),
+      'Status da revisão atualizado.',
+    )
   }
 
   const approve = async () => {
-    if (!approving || actionsDisabled) return
+    if (!approving || actionsDisabled || approving.project_id !== projectId || approving.status !== 'completed') return
     const revision = approving
-    await perform(async () => {
-      await updateRevision(revision.id, writeFromRevision(revision, 'approved'))
-      setApproving(null)
-    }, 'Revisão aprovada.')
+    await perform(
+      async () => updateRevision(revision.id, writeFromRevision(revision, 'approved')),
+      'Revisão aprovada.',
+      () => setApproving(null),
+    )
   }
 
-  if (loadState.status === 'loading') {
+  if (!stateBelongsToProject || loadState.status === 'loading') {
     return (
       <div className="flex flex-col gap-3" aria-busy="true">
         <Skeleton className="h-32" /><Skeleton className="h-32" />
@@ -6733,12 +7202,12 @@ export function ProjectRevisionList({ projectId, onChanged, disabled = false }: 
                 options={REVISION_STATUSES.filter((status) => status !== 'approved').map((status) => ({
                   value: status, label: REVISION_STATUS_LABELS[status],
                 }))}
-                disabled={actionsDisabled}
+                disabled={actionsDisabled || revision.project_id !== projectId}
                 onChange={(event) => changeStatus(revision, event.target.value)}
               />
-              <Button type="button" variant="outline" disabled={actionsDisabled} onClick={() => openEdit(revision)}>Editar revisão</Button>
+              <Button type="button" variant="outline" disabled={actionsDisabled || revision.project_id !== projectId} onClick={() => openEdit(revision)}>Editar revisão</Button>
               {revision.status === 'completed' && (
-                <Button type="button" variant="mint" disabled={actionsDisabled} onClick={() => setApproving(revision)}>Aprovar revisão</Button>
+                <Button type="button" variant="mint" disabled={actionsDisabled || revision.project_id !== projectId} onClick={() => requestApproval(revision)}>Aprovar revisão</Button>
               )}
             </div>
           )}
@@ -6763,7 +7232,12 @@ export function ProjectRevisionList({ projectId, onChanged, disabled = false }: 
             value={draft.status}
             options={REVISION_STATUSES.filter((status) => status !== 'approved').map((status) => ({ value: status, label: REVISION_STATUS_LABELS[status] }))}
             disabled={actionsDisabled}
-            onChange={(event) => setDraft((current) => ({ ...current, status: event.target.value as RevisionStatus }))}
+            onChange={(event) => {
+              const status = event.target.value
+              if (isRevisionStatus(status) && status !== 'approved') {
+                setDraft((current) => ({ ...current, status }))
+              }
+            }}
           />
           <Textarea label="Notas" value={draft.notes} disabled={actionsDisabled} onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))} rows={3} />
           <div className="flex justify-end gap-2">
@@ -6790,7 +7264,7 @@ export function ProjectRevisionList({ projectId, onChanged, disabled = false }: 
 Create `src/components/projects/ProjectDeliveryPanel.tsx`:
 
 ```tsx
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { PackageCheck } from 'lucide-react'
 import { useToast } from '../../hooks/useToast'
 import { deliverProject } from '../../services/projectService'
@@ -6814,6 +7288,17 @@ interface DeliveryDraft {
 }
 
 type DeliveryErrors = Partial<Record<'deliveryUrl' | 'filesUrl' | 'confirmed', string>>
+
+interface DeliveryConfirmation {
+  projectId: string
+  payload: DeliveryInput
+}
+
+interface ProjectDeliveryContentProps extends ProjectDeliveryPanelProps {
+  saving: boolean
+  onStartSaving: () => boolean
+  onSavingComplete: () => void
+}
 
 function isHttpUrl(value: string): boolean {
   if (/\s/.test(value)) return false
@@ -6841,29 +7326,60 @@ function SafeLink({ href, label }: { href: string; label: string }) {
 }
 
 export function ProjectDeliveryPanel({ project, onDelivered }: ProjectDeliveryPanelProps) {
+  const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
+  const mountedRef = useRef(false)
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
+  const startSaving = () => {
+    if (savingRef.current) return false
+    savingRef.current = true
+    setSaving(true)
+    return true
+  }
+
+  const completeSaving = () => {
+    savingRef.current = false
+    if (mountedRef.current) setSaving(false)
+  }
+
+  return (
+    <ProjectDeliveryContent
+      key={project.id}
+      project={project}
+      onDelivered={onDelivered}
+      saving={saving}
+      onStartSaving={startSaving}
+      onSavingComplete={completeSaving}
+    />
+  )
+}
+
+function ProjectDeliveryContent({
+  project, onDelivered, saving, onStartSaving, onSavingComplete,
+}: ProjectDeliveryContentProps) {
   const { toast } = useToast()
   const [draft, setDraft] = useState<DeliveryDraft>({
     deliveryUrl: project.delivery_url ?? '', filesUrl: project.files_url ?? '',
     finalNotes: project.final_notes ?? '', confirmed: false,
   })
   const [errors, setErrors] = useState<DeliveryErrors>({})
-  const [confirmOpen, setConfirmOpen] = useState(false)
-  const [saving, setSaving] = useState(false)
+  const [confirmation, setConfirmation] = useState<DeliveryConfirmation | null>(null)
   const [savedDelivery, setSavedDelivery] = useState<Project | null>(null)
-  const savingRef = useRef(false)
-  const mountedRef = useRef(true)
+  const mountedRef = useRef(false)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     mountedRef.current = true
-    setSavedDelivery(null)
-    setDraft({
-      deliveryUrl: project.delivery_url ?? '', filesUrl: project.files_url ?? '',
-      finalNotes: project.final_notes ?? '', confirmed: false,
-    })
     return () => { mountedRef.current = false }
-  }, [project.id])
+  }, [])
 
-  const delivered = savedDelivery ?? (project.status === 'delivered' ? project : null)
+  const delivered = savedDelivery?.id === project.id
+    ? savedDelivery
+    : project.status === 'delivered' ? project : null
   if (project.status === 'cancelled') {
     return (
       <Card>
@@ -6892,29 +7408,35 @@ export function ProjectDeliveryPanel({ project, onDelivered }: ProjectDeliveryPa
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (savingRef.current) return
+    if (saving || project.status === 'cancelled') return
     const next: DeliveryErrors = {}
     if (!draft.deliveryUrl) next.deliveryUrl = 'Informe o link de entrega.'
     else if (!isHttpUrl(draft.deliveryUrl)) next.deliveryUrl = 'Informe uma URL HTTP(S) válida.'
     if (draft.filesUrl && !isHttpUrl(draft.filesUrl)) next.filesUrl = 'Informe uma URL HTTP(S) válida.'
     if (!draft.confirmed) next.confirmed = 'Confirme a entrega com o cliente.'
     setErrors(next)
-    if (Object.keys(next).length === 0) setConfirmOpen(true)
+    if (Object.keys(next).length === 0) {
+      setConfirmation({
+        projectId: project.id,
+        payload: {
+          deliveryUrl: draft.deliveryUrl.trim(), filesUrl: draft.filesUrl.trim(),
+          finalNotes: draft.finalNotes.trim(), confirmed: true,
+        },
+      })
+    }
   }
 
   const confirmDelivery = async () => {
-    if (savingRef.current) return
-    const payload: DeliveryInput = {
-      deliveryUrl: draft.deliveryUrl.trim(), filesUrl: draft.filesUrl.trim(),
-      finalNotes: draft.finalNotes.trim(), confirmed: true,
-    }
-    savingRef.current = true
-    setSaving(true)
+    const snapshot = confirmation
+    if (
+      !snapshot || snapshot.projectId !== project.id || project.status === 'cancelled'
+      || !onStartSaving()
+    ) return
     try {
-      const saved = await deliverProject(project.id, payload)
+      const saved = await deliverProject(snapshot.projectId, snapshot.payload)
       if (!mountedRef.current) return
       setSavedDelivery(saved)
-      setConfirmOpen(false)
+      setConfirmation(null)
       onDelivered(saved)
       toast('Entrega registrada com sucesso.')
     } catch (cause) {
@@ -6922,8 +7444,7 @@ export function ProjectDeliveryPanel({ project, onDelivered }: ProjectDeliveryPa
         toast(cause instanceof Error && cause.message ? cause.message : 'Não foi possível registrar a entrega.', 'error')
       }
     } finally {
-      savingRef.current = false
-      if (mountedRef.current) setSaving(false)
+      onSavingComplete()
     }
   }
 
@@ -6945,25 +7466,25 @@ export function ProjectDeliveryPanel({ project, onDelivered }: ProjectDeliveryPa
         <div><Button type="submit" variant="mint" loading={saving}>Registrar entrega</Button></div>
       </form>
       <ConfirmDialog
-        open={confirmOpen}
+        open={Boolean(confirmation)}
         title="Confirmar entrega"
         description="Confirmar a entrega deste projeto? Esta ação registra os links e não altera contrato, pagamento ou receita."
         confirmLabel="Confirmar entrega"
         loading={saving}
         onConfirm={() => void confirmDelivery()}
-        onCancel={() => { if (!saving) setConfirmOpen(false) }}
+        onCancel={() => { if (!saving) setConfirmation(null) }}
       />
     </Card>
   )
 }
 ```
 
-Nenhum módulo financeiro é importado. `approved_at`, `completed_at` e os timestamps de entrega são somente leitura; as escritas usam exclusivamente `ProjectRevisionWrite` e `DeliveryInput`. O link de entrega é obrigatório e tanto ele quanto o link de arquivos, quando informado, precisam ser HTTP(S) sem qualquer whitespace; a validação usa o valor bruto antes da normalização do payload.
+Nenhum módulo financeiro é importado. `approved_at`, `completed_at` e os timestamps de entrega são somente leitura; as escritas usam exclusivamente `ProjectRevisionWrite` e `DeliveryInput`. A aprovação e a entrega não alteram contrato, pagamento ou receita.
 
 - [ ] **Step 4: Run tests and build**
 
 Run: `npm test -- src/components/projects/ProjectRevisionList.test.tsx src/components/projects/ProjectDeliveryPanel.test.tsx && npm run build`
-Expected: PASS and build exit 0.
+Expected: PASS with 37/37 focused tests and build exit 0.
 
 - [ ] **Step 5: Commit**
 
