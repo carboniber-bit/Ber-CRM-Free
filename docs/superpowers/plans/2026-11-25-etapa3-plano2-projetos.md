@@ -5593,6 +5593,18 @@ git commit -m "feat: adicionar lista e kanban de projetos"
 - Consumes: task service functions, `calculateProjectProgress`, `ProjectTaskWrite`.
 - Produces: task modal, inline status change, delete confirmation and progress summary.
 
+## Controller addendum — isolamento por projeto
+
+Este adendo incorpora o fix round 1 aprovado após a revisão independente:
+
+- Associar `projectId` a todos os estados de carga e reter a lista anterior somente quando o ID for o mesmo.
+- Derivar `currentTasks` somente para o projeto atual e exibir loading enquanto o estado ainda pertence ao projeto anterior.
+- Ao trocar de projeto, fechar formulário e confirmação, limpar `editingTask`, `deleteCandidate`, rascunho e erros.
+- Bloquear edição, status, exclusão e reordenação quando `task.project_id !== projectId`; o submit de edição também rejeita tarefa estrangeira.
+- Preservar `saving`/`savingRef` como guarda global até a mutação anterior terminar.
+- O botão de edição deve ter nome acessível `Editar tarefa ${task.title}`.
+- A suíte focalizada final deve ter 14 testes, incluindo título obrigatório, falha de carga após troca, fechamento dos diálogos e nome acessível.
+
 - [ ] **Step 1: Write failing tests**
 
 ```tsx
@@ -5746,6 +5758,57 @@ describe('ProjectTaskList', () => {
     expect((screen.getByLabelText('Status da tarefa Layout') as HTMLSelectElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: 'Excluir tarefa Layout' }) as HTMLButtonElement).disabled).toBe(true)
   })
+
+  it('exige título antes de criar tarefa', async () => {
+    render(<ProjectTaskList projectId="p1" onChanged={vi.fn()} />)
+    await screen.findByText('Nenhuma tarefa cadastrada.')
+    fireEvent.click(screen.getByRole('button', { name: 'Nova tarefa' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Adicionar tarefa' }))
+    expect((await screen.findByText('Informe o título da tarefa.')).textContent)
+      .toBe('Informe o título da tarefa.')
+    expect(createTask).not.toHaveBeenCalled()
+  })
+
+  it('não preserva tarefas do projeto anterior quando a carga do novo projeto falha', async () => {
+    listTasks
+      .mockResolvedValueOnce([makeTask('t1', 'Tarefa antiga')])
+      .mockRejectedValueOnce(new Error('Falha ao carregar tarefas do novo projeto.'))
+    const { rerender } = render(<ProjectTaskList projectId="p1" onChanged={vi.fn()} />)
+    await screen.findByText('Tarefa antiga')
+    rerender(<ProjectTaskList projectId="p2" onChanged={vi.fn()} />)
+    expect((await screen.findByText('Falha ao carregar tarefas do novo projeto.')).textContent)
+      .toBe('Falha ao carregar tarefas do novo projeto.')
+    expect(screen.queryByText('Tarefa antiga')).toBeNull()
+    expect(screen.queryByLabelText('Status da tarefa Tarefa antiga')).toBeNull()
+  })
+
+  it('fecha o editor e não atualiza tarefa do projeto anterior após a troca', async () => {
+    listTasks.mockResolvedValueOnce([makeTask('t1', 'Layout')]).mockResolvedValueOnce([])
+    const { rerender } = render(<ProjectTaskList projectId="p1" onChanged={vi.fn()} />)
+    fireEvent.click(await screen.findByText('Editar tarefa'))
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    rerender(<ProjectTaskList projectId="p2" onChanged={vi.fn()} />)
+    await screen.findByText('Nenhuma tarefa cadastrada.')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(updateTask).not.toHaveBeenCalled()
+  })
+
+  it('fecha a confirmação de exclusão do projeto anterior após a troca', async () => {
+    listTasks.mockResolvedValueOnce([makeTask('t1', 'Layout')]).mockResolvedValueOnce([])
+    const { rerender } = render(<ProjectTaskList projectId="p1" onChanged={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Excluir tarefa Layout' }))
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    rerender(<ProjectTaskList projectId="p2" onChanged={vi.fn()} />)
+    await screen.findByText('Nenhuma tarefa cadastrada.')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(deleteTask).not.toHaveBeenCalled()
+  })
+
+  it('identifica o controle de edição pela tarefa', async () => {
+    listTasks.mockResolvedValue([makeTask('t1', 'Layout')])
+    render(<ProjectTaskList projectId="p1" onChanged={vi.fn()} />)
+    expect(await screen.findByRole('button', { name: 'Editar tarefa Layout' })).toBeTruthy()
+  })
 })
 
 function deferred<T>() {
@@ -5758,7 +5821,7 @@ function deferred<T>() {
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `npm test -- src/components/projects/ProjectTaskList.test.tsx`
-Expected: FAIL with module not found.
+Expected: FAIL with module not found. Para a regressão de título vazio, a validação já existia no baseline; a prova controlada removeu temporariamente somente essa checagem, observou RED e a restaurou antes da implementação final.
 
 - [ ] **Step 3: Implement the task list**
 
@@ -5805,9 +5868,9 @@ interface TaskDraft {
 
 type TaskDraftErrors = Partial<Record<keyof TaskDraft, string>>
 type TaskLoadState =
-  | { status: 'loading' }
-  | { status: 'ready'; tasks: ProjectTask[] }
-  | { status: 'error'; message: string; tasks: ProjectTask[] | null }
+  | { status: 'loading'; projectId: string }
+  | { status: 'ready'; projectId: string; tasks: ProjectTask[] }
+  | { status: 'error'; projectId: string; message: string; tasks: ProjectTask[] | null }
 
 const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
   pending: 'Pendente', in_progress: 'Em andamento', completed: 'Concluída', cancelled: 'Cancelada',
@@ -5854,7 +5917,7 @@ function isTaskStatus(value: string): value is TaskStatus {
 
 export function ProjectTaskList({ projectId, onChanged, disabled = false }: ProjectTaskListProps) {
   const { toast } = useToast()
-  const [loadState, setLoadState] = useState<TaskLoadState>({ status: 'loading' })
+  const [loadState, setLoadState] = useState<TaskLoadState>({ status: 'loading', projectId })
   const [formOpen, setFormOpen] = useState(false)
   const [editingTask, setEditingTask] = useState<ProjectTask | null>(null)
   const [draft, setDraft] = useState<TaskDraft>(emptyDraft)
@@ -5872,18 +5935,21 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
   const reload = useCallback(async (background = false): Promise<void> => {
     const request = ++requestRef.current
     const previous = loadStateRef.current
-    const retained = previous.status === 'ready'
-      ? previous.tasks
-      : previous.status === 'error' ? previous.tasks : null
-    if (!background) setLoadState({ status: 'loading' })
+    const retained = previous.projectId === projectId
+      ? previous.status === 'ready'
+        ? previous.tasks
+        : previous.status === 'error' ? previous.tasks : null
+      : null
+    if (!background) setLoadState({ status: 'loading', projectId })
     try {
       const tasks = await listTasks(projectId)
       if (!mountedRef.current || request !== requestRef.current) return
-      setLoadState({ status: 'ready', tasks })
+      setLoadState({ status: 'ready', projectId, tasks })
     } catch (error) {
       if (!mountedRef.current || request !== requestRef.current) return
       setLoadState({
         status: 'error',
+        projectId,
         message: errorMessage(error, 'Não foi possível carregar as tarefas. Tente novamente.'),
         tasks: retained,
       })
@@ -5896,13 +5962,21 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
   }, [])
 
   useEffect(() => {
-    setLoadState({ status: 'loading' })
+    setLoadState({ status: 'loading', projectId })
+    setFormOpen(false)
+    setEditingTask(null)
+    setDeleteCandidate(null)
+    setDraft(emptyDraft())
+    setErrors({})
     void reload()
   }, [reload])
 
-  const currentTasks = loadState.status === 'ready'
-    ? loadState.tasks
-    : loadState.status === 'error' ? loadState.tasks ?? [] : []
+  const stateBelongsToProject = loadState.projectId === projectId
+  const currentTasks = stateBelongsToProject
+    ? loadState.status === 'ready'
+      ? loadState.tasks
+      : loadState.status === 'error' ? loadState.tasks ?? [] : []
+    : []
   const metrics = calculateProjectProgress(currentTasks)
   const actionsDisabled = disabled || saving
 
@@ -5939,6 +6013,7 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
   }
 
   const openEdit = (task: ProjectTask) => {
+    if (task.project_id !== projectId) return
     setEditingTask(task)
     setDraft(draftFromTask(task))
     setErrors({})
@@ -5947,7 +6022,7 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
 
   const submitTask = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (actionsDisabled) return
+    if (actionsDisabled || (editingTask && editingTask.project_id !== projectId)) return
     const nextErrors: TaskDraftErrors = {}
     if (!draft.title.trim()) nextErrors.title = 'Informe o título da tarefa.'
     if (draft.startDate && draft.dueDate && draft.dueDate < draft.startDate) {
@@ -5965,7 +6040,7 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
   }
 
   const changeStatus = (task: ProjectTask, value: string) => {
-    if (!isTaskStatus(value) || value === task.status || actionsDisabled) return
+    if (task.project_id !== projectId || !isTaskStatus(value) || value === task.status || actionsDisabled) return
     void perform(
       async () => { await updateTask(task.id, writeFromTask(task, value)) },
       'Status da tarefa atualizado.',
@@ -5973,7 +6048,7 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
   }
 
   const removeTask = async () => {
-    if (!deleteCandidate || actionsDisabled) return
+    if (!deleteCandidate || deleteCandidate.project_id !== projectId || actionsDisabled) return
     const id = deleteCandidate.id
     await perform(async () => {
       await deleteTask(id)
@@ -5982,7 +6057,7 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
   }
 
   const moveTask = async (task: ProjectTask, direction: -1 | 1) => {
-    if (actionsDisabled) return
+    if (task.project_id !== projectId || actionsDisabled) return
     const index = currentTasks.findIndex((item) => item.id === task.id)
     const target = index + direction
     if (index < 0 || target < 0 || target >= currentTasks.length) return
@@ -5993,7 +6068,7 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
     await perform(async () => { await reorderTasks(projectId, orderedIds) }, 'Ordem das tarefas atualizada.')
   }
 
-  if (loadState.status === 'loading') {
+  if (!stateBelongsToProject || loadState.status === 'loading') {
     return (
       <div className="flex flex-col gap-3" aria-busy="true">
         <Skeleton className="h-24" />
@@ -6069,19 +6144,19 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
                   label={`Status da tarefa ${task.title}`}
                   value={task.status}
                   options={TASK_STATUSES.map((status) => ({ value: status, label: TASK_STATUS_LABELS[status] }))}
-                  disabled={actionsDisabled}
+                  disabled={actionsDisabled || task.project_id !== projectId}
                   onChange={(event) => changeStatus(task, event.target.value)}
                 />
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
-                <Button type="button" variant="ghost" disabled={actionsDisabled || index === 0} aria-label={`Mover tarefa ${task.title} para cima`} onClick={() => void moveTask(task, -1)}>
+                <Button type="button" variant="ghost" disabled={actionsDisabled || task.project_id !== projectId || index === 0} aria-label={`Mover tarefa ${task.title} para cima`} onClick={() => void moveTask(task, -1)}>
                   <ArrowUp className="h-4 w-4" aria-hidden="true" />
                 </Button>
-                <Button type="button" variant="ghost" disabled={actionsDisabled || index === currentTasks.length - 1} aria-label={`Mover tarefa ${task.title} para baixo`} onClick={() => void moveTask(task, 1)}>
+                <Button type="button" variant="ghost" disabled={actionsDisabled || task.project_id !== projectId || index === currentTasks.length - 1} aria-label={`Mover tarefa ${task.title} para baixo`} onClick={() => void moveTask(task, 1)}>
                   <ArrowDown className="h-4 w-4" aria-hidden="true" />
                 </Button>
-                <Button type="button" variant="outline" disabled={actionsDisabled} onClick={() => openEdit(task)}>Editar tarefa</Button>
-                <Button type="button" variant="danger" disabled={actionsDisabled} aria-label={`Excluir tarefa ${task.title}`} onClick={() => setDeleteCandidate(task)}>Excluir</Button>
+                <Button type="button" variant="outline" disabled={actionsDisabled || task.project_id !== projectId} aria-label={`Editar tarefa ${task.title}`} onClick={() => openEdit(task)}>Editar tarefa</Button>
+                <Button type="button" variant="danger" disabled={actionsDisabled || task.project_id !== projectId} aria-label={`Excluir tarefa ${task.title}`} onClick={() => setDeleteCandidate(task)}>Excluir</Button>
               </div>
             </li>
           ))}
@@ -6126,12 +6201,12 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
 }
 ```
 
-O payload de escrita é montado explicitamente a partir de `ProjectTaskWrite`; `completed_at` e `cancelled_at` nunca aparecem no frontend. A ordem enviada à RPC inclui todas as tarefas, e respostas de requests anteriores são descartadas por versão e montagem.
+O payload de escrita é montado explicitamente a partir de `ProjectTaskWrite`; `completed_at` e `cancelled_at` nunca aparecem no frontend. A ordem enviada à RPC inclui todas as tarefas, e respostas de requests anteriores são descartadas por versão e montagem. O estado e os diálogos são isolados por projeto.
 
 - [ ] **Step 4: Run tests and build**
 
 Run: `npm test -- src/components/projects/ProjectTaskList.test.tsx && npm run build`
-Expected: PASS and build exit 0.
+Expected: PASS with 14 tests and build exit 0.
 
 - [ ] **Step 5: Commit**
 
@@ -6139,6 +6214,8 @@ Expected: PASS and build exit 0.
 git add src/components/projects/ProjectTaskList.tsx src/components/projects/ProjectTaskList.test.tsx
 git commit -m "feat: adicionar tarefas e progresso do projeto"
 ```
+
+Se a implementação for separada da correção de isolamento, commitar a correção revisada com `fix: isolar tarefas e diálogos por projeto`.
 
 ---
 
