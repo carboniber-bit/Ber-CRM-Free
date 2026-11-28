@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { ArrowDown, ArrowUp, ListTodo } from 'lucide-react'
 import { calculateProjectProgress } from '../../lib/projectProgress'
 import { useToast } from '../../hooks/useToast'
@@ -121,11 +121,14 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
   const mountedRef = useRef(true)
   const requestRef = useRef(0)
   const projectIdRef = useRef(projectId)
-  projectIdRef.current = projectId
   const loadStateRef = useRef(loadState)
-  loadStateRef.current = loadState
   const onChangedRef = useRef(onChanged)
-  onChangedRef.current = onChanged
+
+  useLayoutEffect(() => {
+    projectIdRef.current = projectId
+    loadStateRef.current = loadState
+    onChangedRef.current = onChanged
+  }, [projectId, loadState, onChanged])
 
   const reload = useCallback(async (background = false): Promise<void> => {
     const request = ++requestRef.current

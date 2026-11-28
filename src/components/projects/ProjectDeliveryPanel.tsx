@@ -64,9 +64,12 @@ export function ProjectDeliveryPanel({ project, onDelivered }: ProjectDeliveryPa
   const savingRef = useRef(false)
   const mountedRef = useRef(false)
   const projectIdRef = useRef(project.id)
-  projectIdRef.current = project.id
   const onDeliveredRef = useRef(onDelivered)
-  onDeliveredRef.current = onDelivered
+
+  useLayoutEffect(() => {
+    projectIdRef.current = project.id
+    onDeliveredRef.current = onDelivered
+  }, [project.id, onDelivered])
 
   useLayoutEffect(() => {
     mountedRef.current = true

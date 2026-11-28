@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { formatMoney, parseMoneyInput } from '../../lib/money'
 import { suggestProjectDueDate } from '../../lib/projectProgress'
 import { createProject, listProjectFormOptions, updateProject } from '../../services/projectService'
@@ -93,11 +93,14 @@ export function ProjectForm({ project, onCancel, onSaved, onSavingChange }: Proj
   const savedRef = useRef(false)
   const mountedRef = useRef(true)
   const projectIdRef = useRef(project?.id)
-  projectIdRef.current = project?.id
   const onSavedRef = useRef(onSaved)
-  onSavedRef.current = onSaved
   const onSavingChangeRef = useRef(onSavingChange)
-  onSavingChangeRef.current = onSavingChange
+
+  useLayoutEffect(() => {
+    projectIdRef.current = project?.id
+    onSavedRef.current = onSaved
+    onSavingChangeRef.current = onSavingChange
+  }, [project?.id, onSaved, onSavingChange])
 
   useEffect(() => {
     mountedRef.current = true
