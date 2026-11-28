@@ -757,6 +757,7 @@ declare
   v_project_contract_id uuid;
   v_empty_contract_id uuid;
   v_empty_installments jsonb;
+  v_original_installment_id uuid;
   v_invalid_amount text;
   v_sum numeric;
   v_last_amount numeric;
@@ -877,6 +878,35 @@ begin
   perform public.replace_contract_installments(v_empty_contract_id, jsonb_build_array(
     jsonb_build_object('amount', '250.00', 'due_date', v_today + 45, 'notes', null)
   ));
+  select id into v_original_installment_id
+    from public.contract_installments
+    where contract_id = v_empty_contract_id and owner_id = v_owner;
+  if v_original_installment_id is null then
+    raise exception 'Parcela original de 250.00 não foi criada.';
+  end if;
+
+  begin
+    perform public.replace_contract_installments(v_empty_contract_id, null::jsonb);
+    raise exception 'Parcelas NULL foram aceitas.';
+  exception when others then
+    if sqlerrm = 'Parcelas NULL foram aceitas.' then raise; end if;
+    get stacked diagnostics v_state = returned_sqlstate;
+    if v_state <> '22023'
+      or sqlerrm <> 'Parcelas devem ser uma lista.' then
+      raise;
+    end if;
+  end;
+  if not exists (
+    select 1 from public.contract_installments
+    where id = v_original_installment_id
+      and contract_id = v_empty_contract_id and owner_id = v_owner and amount = 250.00
+  ) or (
+    select count(*) from public.contract_installments
+    where contract_id = v_empty_contract_id and owner_id = v_owner
+  ) <> 1 then
+    raise exception 'Parcelas NULL alteraram a parcela preexistente de 250.00.';
+  end if;
+
   v_empty_installments := public.replace_contract_installments(v_empty_contract_id, '[]'::jsonb);
   if jsonb_array_length(v_empty_installments) <> 0
     or exists (
@@ -886,11 +916,47 @@ begin
     raise exception 'Array vazio não removeu todas as parcelas.';
   end if;
 
+  perform public.replace_contract_installments(v_empty_contract_id, jsonb_build_array(
+    jsonb_build_object('amount', '250.00', 'due_date', v_today + 45, 'notes', null)
+  ));
+  select id into v_original_installment_id
+    from public.contract_installments
+    where contract_id = v_empty_contract_id and owner_id = v_owner;
+  if v_original_installment_id is null then
+    raise exception 'Parcela original de 250.00 não foi recriada.';
+  end if;
+
+  begin
+    perform public.replace_contract_installments(v_empty_contract_id, jsonb_build_array(
+      jsonb_build_object('amount', '250.00', 'due_date', v_today + 45, 'notes', null),
+      jsonb_build_object('amount', 'abc', 'due_date', v_today + 45, 'notes', null)
+    ));
+    raise exception 'Lista com parcela válida seguida de inválida foi aceita.';
+  exception when others then
+    if sqlerrm = 'Lista com parcela válida seguida de inválida foi aceita.' then raise; end if;
+    get stacked diagnostics v_state = returned_sqlstate;
+    if v_state <> '22023'
+      or sqlerrm <> 'Cada parcela exige valor positivo com duas casas e vencimento.' then
+      raise;
+    end if;
+  end;
+  if not exists (
+    select 1 from public.contract_installments
+    where id = v_original_installment_id
+      and contract_id = v_empty_contract_id and owner_id = v_owner and amount = 250.00
+  ) or (
+    select count(*) from public.contract_installments
+    where contract_id = v_empty_contract_id and owner_id = v_owner
+  ) <> 1 then
+    raise exception 'Lista parcialmente inválida alterou a parcela original de 250.00.';
+  end if;
+
   foreach v_invalid_amount in array array[
     'abc', '1e3', 'NaN', 'Infinity', '1.234', '1000000000000.00'
   ] loop
     begin
       perform public.replace_contract_installments(v_empty_contract_id, jsonb_build_array(
+        jsonb_build_object('amount', '250.00', 'due_date', v_today + 45, 'notes', null),
         jsonb_build_object('amount', v_invalid_amount, 'due_date', v_today + 45, 'notes', null)
       ));
       raise exception 'Parcela com amount textual inválido foi aceita: %.', v_invalid_amount;
@@ -903,11 +969,59 @@ begin
       end if;
     end;
   end loop;
-  if exists (
+  if not exists (
     select 1 from public.contract_installments
+    where id = v_original_installment_id
+      and contract_id = v_empty_contract_id and owner_id = v_owner and amount = 250.00
+  ) or (
+    select count(*) from public.contract_installments
     where contract_id = v_empty_contract_id and owner_id = v_owner
-  ) then
-    raise exception 'Uma parcela inválida persistiu após a validação textual.';
+  ) <> 1 then
+    raise exception 'Uma parcela inválida alterou a parcela original de 250.00.';
+  end if;
+
+  perform public.cancel_contract(v_empty_contract_id);
+  select total_value into v_sum from public.contracts where id = v_empty_contract_id;
+  if v_sum <> 250.00 then
+    raise exception 'Cancelamento alterou o total do contrato.';
+  end if;
+
+  begin
+    perform public.replace_contract_installments(v_empty_contract_id, '[]'::jsonb);
+    raise exception 'Parcelas de contrato cancelado foram alteradas.';
+  exception when others then
+    if sqlerrm = 'Parcelas de contrato cancelado foram alteradas.' then raise; end if;
+    get stacked diagnostics v_state = returned_sqlstate;
+    if v_state <> '23514'
+      or sqlerrm <> 'Contrato cancelado não pode ter parcelas alteradas.' then
+      raise;
+    end if;
+  end;
+
+  begin
+    perform public.adjust_contract(v_empty_contract_id, 200.00);
+    raise exception 'Total de contrato cancelado foi ajustado.';
+  exception when others then
+    if sqlerrm = 'Total de contrato cancelado foi ajustado.' then raise; end if;
+    get stacked diagnostics v_state = returned_sqlstate;
+    if v_state <> '23514'
+      or sqlerrm <> 'Contrato cancelado não pode ter o valor ajustado.' then
+      raise;
+    end if;
+  end;
+
+  select total_value into v_sum from public.contracts where id = v_empty_contract_id;
+  if v_sum <> 250.00
+    or not exists (
+      select 1 from public.contract_installments
+      where id = v_original_installment_id
+        and contract_id = v_empty_contract_id and owner_id = v_owner and amount = 250.00
+    )
+    or (
+      select count(*) from public.contract_installments
+      where contract_id = v_empty_contract_id and owner_id = v_owner
+    ) <> 1 then
+    raise exception 'Mutações negadas alteraram o total ou a parcela do contrato cancelado.';
   end if;
 
   reset role;
@@ -1025,6 +1139,9 @@ declare
   v_count int;
 begin
   if v_owner is null then raise exception 'Sessão autenticada necessária.' using errcode = '42501'; end if;
+  if p_installments is null then
+    raise exception 'Parcelas devem ser uma lista.' using errcode = '22023';
+  end if;
   if p_installments is not null and jsonb_typeof(p_installments) <> 'array' then
     raise exception 'Parcelas devem ser uma lista.' using errcode = '22023';
   end if;
@@ -1036,6 +1153,9 @@ begin
     where id = p_contract_id and owner_id = v_owner
     for update;
   if not found then raise exception 'Contrato não encontrado ou acesso negado.' using errcode = '42501'; end if;
+  if v_contract.status = 'cancelled' then
+    raise exception 'Contrato cancelado não pode ter parcelas alteradas.' using errcode = '23514';
+  end if;
   if exists (
     select 1 from public.financial_payments
     where contract_id = p_contract_id and owner_id = v_owner
@@ -1047,7 +1167,7 @@ begin
   -- Doze dígitos inteiros e no máximo duas casas já limitam cada valor a 999999999999.99.
   if exists (
     select 1
-    from jsonb_array_elements(coalesce(p_installments, '[]'::jsonb)) as a(value)
+    from jsonb_array_elements(p_installments) as a(value)
     where jsonb_typeof(a.value) <> 'object'
       or nullif(a.value ->> 'amount', '') is null
       or (a.value ->> 'amount') !~ '^[0-9]{1,12}(\.[0-9]{1,2})?$'
@@ -1060,7 +1180,7 @@ begin
   -- Somente após a validação textual é seguro converter e somar.
   select coalesce(sum((value ->> 'amount')::numeric), 0), count(*)
     into v_sum, v_count
-    from jsonb_array_elements(coalesce(p_installments, '[]'::jsonb));
+    from jsonb_array_elements(p_installments);
   -- Uma lista vazia representa um contrato sem parcelas; não existe soma para comparar.
   if v_count > 0 and v_sum <> v_contract.total_value then
     raise exception 'A soma das parcelas deve ser igual ao valor do contrato.' using errcode = '23514';
@@ -1073,7 +1193,7 @@ begin
   )
   select v_owner, p_contract_id, ordinality - 1, (value ->> 'amount')::numeric,
     (value ->> 'due_date')::date, nullif(value ->> 'notes', '')
-  from jsonb_array_elements(coalesce(p_installments, '[]'::jsonb)) with ordinality;
+  from jsonb_array_elements(p_installments) with ordinality;
 
   insert into public.client_activities (
     owner_id, client_id, contract_id, type, description, metadata
@@ -1123,6 +1243,9 @@ begin
     where id = p_contract_id and owner_id = v_owner
     for update;
   if not found then raise exception 'Contrato não encontrado ou acesso negado.' using errcode = '42501'; end if;
+  if v_contract.status = 'cancelled' then
+    raise exception 'Contrato cancelado não pode ter o valor ajustado.' using errcode = '23514';
+  end if;
 
   -- A advisory precede todas as linhas compartilhadas com pagamentos e projetos.
   -- Não travar projetos aqui: adjust_contract não os altera.
