@@ -298,8 +298,12 @@ describe('ProjectDeliveryPanel', () => {
     })
   })
 
-  it.each(['resolve', 'reject'] as const)('descarta resposta de entrega após desmontagem: %s', async (outcome) => {
+  it.each(['resolve', 'reject'] as const)('comunica resposta da mesma instância após desmontagem, sem toast: %s', async (outcome) => {
     const pending = deferred<Project>()
+    const delivered = {
+      ...project, status: 'delivered' as const, delivered_at: '2026-11-26T12:00:00Z',
+      delivery_url: 'https://example.test/entrega',
+    }
     deliverProject.mockReturnValueOnce(pending.promise)
     const onDelivered = vi.fn()
     const { unmount } = render(<ProjectDeliveryPanel project={project} onDelivered={onDelivered} />)
@@ -314,10 +318,7 @@ describe('ProjectDeliveryPanel', () => {
 
     await act(async () => {
       if (outcome === 'resolve') {
-        pending.resolve({
-          ...project, status: 'delivered', delivered_at: '2026-11-26T12:00:00Z',
-          delivery_url: 'https://example.test/entrega',
-        })
+        pending.resolve(delivered)
         await pending.promise
       } else {
         pending.reject(new Error('Falha após desmontagem.'))
@@ -325,8 +326,9 @@ describe('ProjectDeliveryPanel', () => {
       }
     })
 
+    if (outcome === 'resolve') expect(onDelivered).toHaveBeenCalledWith(delivered)
+    else expect(onDelivered).not.toHaveBeenCalled()
     expect(toast).not.toHaveBeenCalled()
-    expect(onDelivered).not.toHaveBeenCalled()
     expect((screen.getByRole('button', { name: 'Registrar entrega' }) as HTMLButtonElement).disabled).toBe(false)
   })
 })

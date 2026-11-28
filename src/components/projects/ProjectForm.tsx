@@ -21,6 +21,7 @@ export interface ProjectFormProps {
   project?: ProjectListItem
   onCancel: () => void
   onSaved: (project: Project) => void
+  onSavingChange?: (saving: boolean) => void
 }
 
 interface ProjectDraft {
@@ -77,7 +78,7 @@ function withCurrentOption(
     : options
 }
 
-export function ProjectForm({ project, onCancel, onSaved }: ProjectFormProps) {
+export function ProjectForm({ project, onCancel, onSaved, onSavingChange }: ProjectFormProps) {
   const { toast } = useToast()
   const [draft, setDraft] = useState<ProjectDraft>(() => initialDraft(project))
   const [errors, setErrors] = useState<ProjectDraftErrors>({})
@@ -91,6 +92,12 @@ export function ProjectForm({ project, onCancel, onSaved }: ProjectFormProps) {
   const savingRef = useRef(false)
   const savedRef = useRef(false)
   const mountedRef = useRef(true)
+  const projectIdRef = useRef(project?.id)
+  projectIdRef.current = project?.id
+  const onSavedRef = useRef(onSaved)
+  onSavedRef.current = onSaved
+  const onSavingChangeRef = useRef(onSavingChange)
+  onSavingChangeRef.current = onSavingChange
 
   useEffect(() => {
     mountedRef.current = true
@@ -259,15 +266,20 @@ export function ProjectForm({ project, onCancel, onSaved }: ProjectFormProps) {
       priority: draft.priority,
     }
 
+    const editingProjectId = project?.id
     savingRef.current = true
     setSaving(true)
+    onSavingChangeRef.current?.(true)
     let savedProject: Project
     try {
       savedProject = project
         ? await updateProject(project.id, payload)
         : await createProject(payload)
     } catch (error) {
-      if (!mountedRef.current) return
+      if (
+        !mountedRef.current
+        || (editingProjectId && projectIdRef.current !== editingProjectId)
+      ) return
       const message = errorMessage(error, 'Não foi possível salvar o projeto. Tente novamente.')
       setSaveError(message)
       toast(message, 'error')
@@ -275,13 +287,14 @@ export function ProjectForm({ project, onCancel, onSaved }: ProjectFormProps) {
     } finally {
       savingRef.current = false
       if (mountedRef.current) setSaving(false)
+      onSavingChangeRef.current?.(false)
     }
 
-    if (!mountedRef.current) return
+    if (editingProjectId ? projectIdRef.current !== editingProjectId : !mountedRef.current) return
     savedRef.current = true
-    setSaved(true)
+    if (mountedRef.current) setSaved(true)
     try {
-      onSaved(savedProject)
+      onSavedRef.current(savedProject)
     } catch {
       if (!mountedRef.current) return
       const message = 'Projeto salvo, mas não foi possível concluir a próxima ação.'

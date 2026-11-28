@@ -3,7 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ProjectDetail } from '../types/project'
+import type { Project, ProjectDetail } from '../types/project'
 
 const { getProject, updateProject, setProjectStatus, deliverProject, listProjectFormOptions } = vi.hoisted(() => ({
   getProject: vi.fn(), updateProject: vi.fn(), setProjectStatus: vi.fn(), deliverProject: vi.fn(), listProjectFormOptions: vi.fn(),
@@ -30,13 +30,17 @@ vi.mock('../services/projectRevisionService', async (importOriginal) => {
 
 import { ProjectDetailPage } from './ProjectDetailPage'
 
-const project: ProjectDetail = {
+const projectRecord: Project = {
   id: 'p1', owner_id: 'owner-1', client_id: 'client-1', contract_id: 'contract-1', source_link_id: null,
-  name: 'Site da Empresa', client_name: 'Empresa A', service: 'Site', contracted_value_cents: 123456,
+  name: 'Site da Empresa', service: 'Site', contracted_value_cents: 123456,
   description: null, start_date: '2026-11-25', due_date: '2026-12-10', responsible_name: null,
   priority: 'high', status: 'in_development', completed_at: null, delivered_at: null,
   delivery_confirmed_at: null, delivery_url: null, files_url: null, final_notes: null, archived_at: null,
   created_at: '2026-11-25T12:00:00Z', updated_at: '2026-11-25T12:00:00Z',
+}
+
+const project: ProjectDetail = {
+  ...projectRecord, client_name: 'Empresa A',
   progressPercent: 50, activeTasks: 2, completedTasks: 1, tasks: [], revisions: [], activities: [],
 }
 
@@ -46,6 +50,23 @@ function makeTask(id: string, status: ProjectDetail['tasks'][number]['status'] =
     responsible_name: null, start_date: null, due_date: null, priority: 'medium' as const, position: 0,
     notes: null, completed_at: null, cancelled_at: null,
     created_at: '2026-11-25T12:00:00Z', updated_at: '2026-11-25T12:00:00Z',
+  }
+}
+
+function makeRevision(): ProjectDetail['revisions'][number] {
+  return {
+    id: 'r1', owner_id: 'owner-1', project_id: 'p1', requested_at: '2026-11-25T12:00:00Z',
+    description: 'Revisar página inicial', responsible_name: null, status: 'requested',
+    completed_at: null, approved_at: null, notes: null,
+    created_at: '2026-11-25T12:00:00Z', updated_at: '2026-11-25T12:00:00Z',
+  }
+}
+
+function makeActivity(): ProjectDetail['activities'][number] {
+  return {
+    id: 'a1', owner_id: 'owner-1', client_id: 'client-1', project_id: 'p1', contract_id: 'contract-1',
+    type: 'status_change', description: 'Projeto em desenvolvimento.', metadata: {},
+    created_by: 'owner-1', created_at: '2026-11-25T10:00:00Z',
   }
 }
 
@@ -246,6 +267,147 @@ describe('ProjectDetailPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Salvar alterações' }))
     await waitFor(() => expect(updateProject).toHaveBeenCalledWith('p1', expect.objectContaining({ name: 'Site atualizado' })))
     await waitFor(() => expect(getProject).toHaveBeenCalledTimes(2))
+  })
+
+  it('preserva edição confirmada e dados do detalhe quando o refresh falha', async () => {
+    getProject.mockResolvedValueOnce({
+      ...project, tasks: [makeTask('t1'), makeTask('t2', 'completed')],
+      revisions: [makeRevision()], activities: [makeActivity()],
+    }).mockRejectedValue(new Error('Falha ao atualizar projeto.'))
+    updateProject.mockResolvedValue({
+      ...projectRecord, name: 'Site atualizado', contracted_value_cents: 100000,
+    })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar projeto' }))
+    const nameInput = await screen.findByLabelText('Nome do projeto *')
+    fireEvent.change(nameInput, { target: { value: 'Site atualizado' } })
+    fireEvent.change(screen.getByLabelText('Valor alocado (R$) *'), { target: { value: '1.000,00' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar alterações' }))
+
+    expect(await screen.findByText('Falha ao atualizar projeto.')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Site atualizado' })).toBeTruthy()
+    expect(screen.getByText('R$ 1.000,00').textContent?.replace(/\u00a0/g, ' ')).toBe('R$ 1.000,00')
+    expect(screen.getByRole('link', { name: 'Empresa A' }).getAttribute('href')).toBe('/clientes/client-1')
+    expect(screen.getByRole('progressbar', { name: 'Progresso do projeto' }).getAttribute('aria-valuenow')).toBe('50')
+    expect(screen.getByText('1 de 2 tarefas concluídas')).toBeTruthy()
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Histórico' }))
+    expect(screen.getByText('Projeto em desenvolvimento.')).toBeTruthy()
+  })
+
+  it('preserva entrega confirmada e não reapresenta o formulário quando o refresh falha', async () => {
+    const delivered: Project = {
+      ...projectRecord, status: 'delivered', delivered_at: '2026-11-26T12:00:00Z',
+      delivery_confirmed_at: '2026-11-26T12:00:00Z', delivery_url: 'https://example.test/entrega',
+      files_url: 'https://example.test/arquivos', final_notes: 'Concluído',
+    }
+    getProject.mockResolvedValueOnce({ ...project, status: 'completed' })
+      .mockRejectedValue(new Error('Falha ao atualizar projeto.'))
+    deliverProject.mockResolvedValue(delivered)
+    renderPage()
+    fireEvent.click(await screen.findByRole('tab', { name: 'Entrega' }))
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega' } })
+    fireEvent.change(screen.getByLabelText('Link dos arquivos'), { target: { value: 'https://example.test/arquivos' } })
+    fireEvent.change(screen.getByLabelText('Notas finais'), { target: { value: 'Concluído' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar entrega' }))
+
+    expect(await screen.findByText('Falha ao atualizar projeto.')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Entrega registrada' })).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'Abrir entrega' }).getAttribute('href')).toBe('https://example.test/entrega')
+    expect(screen.getByText('Entregue')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Visão' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Entrega' }))
+    expect(screen.getByRole('heading', { name: 'Entrega registrada' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Registrar entrega' })).toBeNull()
+  })
+
+  it('mescla entrega confirmada no detalhe após trocar de aba durante a mutação', async () => {
+    const pending = deferred<Project>()
+    const delivered: Project = {
+      ...projectRecord, status: 'delivered', delivered_at: '2026-11-26T12:00:00Z',
+      delivery_confirmed_at: '2026-11-26T12:00:00Z', delivery_url: 'https://example.test/entrega',
+    }
+    getProject.mockResolvedValueOnce({ ...project, status: 'completed' })
+      .mockRejectedValue(new Error('Falha ao atualizar projeto.'))
+    deliverProject.mockReturnValueOnce(pending.promise)
+    renderPage()
+    fireEvent.click(await screen.findByRole('tab', { name: 'Entrega' }))
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar entrega' }))
+    await waitFor(() => expect(deliverProject).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('tab', { name: 'Visão' }))
+
+    await act(async () => {
+      pending.resolve(delivered)
+      await pending.promise
+    })
+
+    expect(await screen.findByText('Falha ao atualizar projeto.')).toBeTruthy()
+    expect(screen.getByText('Entregue')).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: 'Entrega' }))
+    expect(screen.getByRole('heading', { name: 'Entrega registrada' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Registrar entrega' })).toBeNull()
+  })
+
+  it('descarta entrega confirmada de rota antiga', async () => {
+    const pending = deferred<Project>()
+    const projectP2: ProjectDetail = { ...project, id: 'p2', name: 'Projeto p2', status: 'completed' }
+    getProject.mockResolvedValueOnce({ ...project, status: 'completed' }).mockResolvedValue(projectP2)
+    deliverProject.mockReturnValueOnce(pending.promise)
+    renderNavigablePage()
+    fireEvent.click(await screen.findByRole('tab', { name: 'Entrega' }))
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar entrega' }))
+    await waitFor(() => expect(deliverProject).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Abrir p2' }))
+    await screen.findByRole('heading', { name: 'Projeto p2' })
+
+    await act(async () => {
+      pending.resolve({
+        ...projectRecord, status: 'delivered', delivered_at: '2026-11-26T12:00:00Z',
+        delivery_url: 'https://example.test/entrega',
+      })
+      await pending.promise
+    })
+
+    expect(screen.getByRole('heading', { name: 'Projeto p2' })).toBeTruthy()
+    expect((screen.getByLabelText('Status do projeto') as HTMLSelectElement).value).toBe('completed')
+    expect(screen.queryByText('Entregue')).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Site da Empresa' })).toBeNull()
+    expect(toast).not.toHaveBeenCalledWith('Entrega registrada com sucesso.')
+  })
+
+  it.each(['Escape', 'backdrop'] as const)('bloqueia %s do modal de edição durante o saving', async (action) => {
+    const pending = deferred<Project>()
+    getProject.mockResolvedValueOnce(project).mockRejectedValue(new Error('Falha ao atualizar projeto.'))
+    updateProject.mockReturnValueOnce(pending.promise)
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar projeto' }))
+    await screen.findByLabelText('Nome do projeto *')
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar alterações' }))
+    await waitFor(() => expect(updateProject).toHaveBeenCalledTimes(1))
+    const dialog = screen.getByRole('dialog', { name: 'Editar projeto' })
+
+    if (action === 'Escape') fireEvent.keyDown(window, { key: 'Escape' })
+    else fireEvent.click(dialog.parentElement as HTMLElement)
+
+    expect(screen.getByRole('dialog', { name: 'Editar projeto' })).toBe(dialog)
+    expect(screen.queryByRole('button', { name: 'Fechar' })).toBeNull()
+
+    await act(async () => {
+      pending.resolve({ ...projectRecord, name: 'Site atualizado' })
+      await pending.promise
+    })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(await screen.findByRole('heading', { name: 'Site atualizado' })).toBeTruthy()
   })
 
   it('projeto cancelado preserva tarefas e revisões sem permitir criações', async () => {

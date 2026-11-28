@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // src/components/projects/ProjectForm.test.tsx
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Project, ProjectListItem } from '../../types/project'
 
@@ -158,6 +158,71 @@ describe('ProjectForm', () => {
     }))
   })
 
+  it('comunica edição confirmada após desmontar o formulário', async () => {
+    const current: ProjectListItem = {
+      ...savedProject, client_name: 'Empresa A', progressPercent: null, activeTasks: 0, completedTasks: 0,
+    }
+    const updated: Project = { ...savedProject, name: 'Site atualizado' }
+    const pending = deferred<Project>()
+    updateProject.mockReturnValueOnce(pending.promise)
+    const onSaved = vi.fn()
+    const { unmount } = render(<ProjectForm project={current} onCancel={vi.fn()} onSaved={onSaved} />)
+    await screen.findByLabelText('Contrato *')
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar alterações' }))
+    await waitFor(() => expect(updateProject).toHaveBeenCalledTimes(1))
+    unmount()
+
+    await act(async () => {
+      pending.resolve(updated)
+      await pending.promise
+    })
+
+    expect(onSaved).toHaveBeenCalledWith(updated)
+  })
+
+  it('descarta edição confirmada de projeto anterior', async () => {
+    const current: ProjectListItem = {
+      ...savedProject, client_name: 'Empresa A', progressPercent: null, activeTasks: 0, completedTasks: 0,
+    }
+    const pending = deferred<Project>()
+    updateProject.mockReturnValueOnce(pending.promise)
+    const onSaved = vi.fn()
+    const { rerender } = render(<ProjectForm project={current} onCancel={vi.fn()} onSaved={onSaved} />)
+    await screen.findByLabelText('Contrato *')
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar alterações' }))
+    await waitFor(() => expect(updateProject).toHaveBeenCalledTimes(1))
+    rerender(<ProjectForm project={{ ...current, id: 'project-2' }} onCancel={vi.fn()} onSaved={onSaved} />)
+
+    await act(async () => {
+      pending.resolve(savedProject)
+      await pending.promise
+    })
+
+    expect(onSaved).not.toHaveBeenCalled()
+  })
+
+  it('não comunica criação confirmada após o usuário sair da página', async () => {
+    const pending = deferred<Project>()
+    createProject.mockReturnValueOnce(pending.promise)
+    const onSaved = vi.fn()
+    const { unmount } = render(<ProjectForm onCancel={vi.fn()} onSaved={onSaved} />)
+    fireEvent.change(await screen.findByLabelText('Cliente *'), { target: { value: 'client-1' } })
+    fireEvent.change(screen.getByLabelText('Contrato *'), { target: { value: 'contract-1' } })
+    fireEvent.change(screen.getByLabelText('Nome do projeto *'), { target: { value: 'Site da Empresa' } })
+    fireEvent.change(screen.getByLabelText('Serviço *'), { target: { value: 'Site' } })
+    fireEvent.change(screen.getByLabelText('Valor alocado (R$) *'), { target: { value: '1.000,00' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Criar projeto' }))
+    await waitFor(() => expect(createProject).toHaveBeenCalledTimes(1))
+    unmount()
+
+    await act(async () => {
+      pending.resolve(savedProject)
+      await pending.promise
+    })
+
+    expect(onSaved).not.toHaveBeenCalled()
+  })
+
   it('não repete a criação nem oferece retry quando onSaved falha após persistir', async () => {
     const onSaved = vi.fn(() => { throw new Error('Falha na navegação') })
     render(<ProjectForm onCancel={vi.fn()} onSaved={onSaved} />)
@@ -225,3 +290,9 @@ describe('ProjectForm', () => {
     expect(updateProject).not.toHaveBeenCalled()
   })
 })
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((res) => { resolve = res })
+  return { promise, resolve }
+}

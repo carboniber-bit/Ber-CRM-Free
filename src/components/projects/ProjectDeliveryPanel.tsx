@@ -63,6 +63,10 @@ export function ProjectDeliveryPanel({ project, onDelivered }: ProjectDeliveryPa
   const [saving, setSaving] = useState(false)
   const savingRef = useRef(false)
   const mountedRef = useRef(false)
+  const projectIdRef = useRef(project.id)
+  projectIdRef.current = project.id
+  const onDeliveredRef = useRef(onDelivered)
+  onDeliveredRef.current = onDelivered
 
   useLayoutEffect(() => {
     mountedRef.current = true
@@ -81,11 +85,16 @@ export function ProjectDeliveryPanel({ project, onDelivered }: ProjectDeliveryPa
     if (mountedRef.current) setSaving(false)
   }
 
+  const handleDelivered = (saved: Project) => {
+    if (projectIdRef.current !== saved.id) return
+    onDeliveredRef.current(saved)
+  }
+
   return (
     <ProjectDeliveryContent
       key={project.id}
       project={project}
-      onDelivered={onDelivered}
+      onDelivered={handleDelivered}
       saving={saving}
       onStartSaving={startSaving}
       onSavingComplete={completeSaving}
@@ -168,11 +177,13 @@ function ProjectDeliveryContent({
     ) return
     try {
       const saved = await deliverProject(snapshot.projectId, snapshot.payload)
-      if (!mountedRef.current) return
-      setSavedDelivery(saved)
-      setConfirmation(null)
+      if (saved.id !== snapshot.projectId) return
+      if (mountedRef.current) {
+        setSavedDelivery(saved)
+        setConfirmation(null)
+        toast('Entrega registrada com sucesso.')
+      }
       onDelivered(saved)
-      toast('Entrega registrada com sucesso.')
     } catch (cause) {
       if (mountedRef.current) {
         toast(cause instanceof Error && cause.message ? cause.message : 'Não foi possível registrar a entrega.', 'error')

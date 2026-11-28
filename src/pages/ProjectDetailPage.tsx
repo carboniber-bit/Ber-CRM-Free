@@ -20,7 +20,7 @@ import { formatMoney } from '../lib/money'
 import { calculateProjectProgress } from '../lib/projectProgress'
 import { getProject, setProjectStatus } from '../services/projectService'
 import {
-  PROJECT_MOVE_STATUSES, type ProjectDetail, type ProjectMoveStatus, type ProjectTask,
+  PROJECT_MOVE_STATUSES, type Project, type ProjectDetail, type ProjectMoveStatus, type ProjectTask,
 } from '../types/project'
 import type { ClientActivity } from '../types/client'
 
@@ -87,12 +87,14 @@ function ProjectDetailContent({ projectId }: { projectId: string }) {
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<TabKey>('overview')
   const [editOpen, setEditOpen] = useState(false)
+  const [editSaving, setEditSaving] = useState(false)
   const [pendingStatus, setPendingStatus] = useState<ProjectMoveStatus | null>(null)
   const [savingStatus, setSavingStatus] = useState(false)
   const mountedRef = useRef(false)
   const requestRef = useRef(0)
   const statusMutationRef = useRef(0)
   const savingStatusRef = useRef(false)
+  const editSavingRef = useRef(false)
 
   useLayoutEffect(() => {
     mountedRef.current = true
@@ -154,6 +156,33 @@ function ProjectDetailContent({ projectId }: { projectId: string }) {
       return {
         status: 'ready',
         project: { ...current.project, tasks: confirmedTasks, ...calculateProjectProgress(confirmedTasks) },
+      }
+    })
+    refresh()
+  }
+  const editSavingChanged = (saving: boolean) => {
+    editSavingRef.current = saving
+    if (mountedRef.current) setEditSaving(saving)
+  }
+  const projectChanged = (saved: Project) => {
+    if (!mountedRef.current || saved.id !== projectId) return
+    setLoadState((current) => {
+      if (
+        (current.status !== 'ready' && current.status !== 'error')
+        || current.project?.id !== projectId
+      ) return current
+      return {
+        status: 'ready',
+        project: {
+          ...current.project, ...saved,
+          client_name: current.project.client_name,
+          progressPercent: current.project.progressPercent,
+          activeTasks: current.project.activeTasks,
+          completedTasks: current.project.completedTasks,
+          tasks: current.project.tasks,
+          revisions: current.project.revisions,
+          activities: current.project.activities,
+        },
       }
     })
     refresh()
@@ -338,9 +367,7 @@ function ProjectDetailContent({ projectId }: { projectId: string }) {
         {tab === 'delivery' && (
           <ProjectDeliveryPanel
             project={project}
-            onDelivered={(delivered) => {
-              if (delivered.id === projectId) childChanged()
-            }}
+            onDelivered={projectChanged}
           />
         )}
         {tab === 'history' && (
@@ -362,15 +389,22 @@ function ProjectDetailContent({ projectId }: { projectId: string }) {
         )}
       </section>
 
-      <Modal open={editOpen} onClose={() => setEditOpen(false)} title="Editar projeto" wide>
+      <Modal
+        open={editOpen}
+        onClose={() => { if (!editSavingRef.current) setEditOpen(false) }}
+        title="Editar projeto"
+        wide
+        dismissible={!editSaving}
+      >
         <ProjectForm
           project={project}
           onCancel={() => setEditOpen(false)}
+          onSavingChange={editSavingChanged}
           onSaved={(saved) => {
             if (!mountedRef.current || saved.id !== projectId) return
             setEditOpen(false)
             toast('Projeto atualizado.')
-            refresh()
+            projectChanged(saved)
           }}
         />
       </Modal>
