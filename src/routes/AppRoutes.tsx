@@ -16,6 +16,9 @@ import { SettingsPage } from '../pages/SettingsPage'
 import { ClientsPage } from '../pages/ClientsPage'
 import { ClientNewPage } from '../pages/ClientNewPage'
 import { ClientDetailPage } from '../pages/ClientDetailPage'
+import { ProjectsPage } from '../pages/ProjectsPage'
+import { ProjectNewPage } from '../pages/ProjectNewPage'
+import { ProjectDetailPage } from '../pages/ProjectDetailPage'
 import { ModulePlaceholderPage } from '../pages/ModulePlaceholderPage'
 import { NotFoundPage } from '../pages/NotFoundPage'
 
@@ -35,7 +38,9 @@ export function AppRoutes() {
           <Route path="/clientes" element={<ClientsPage />} />
           <Route path="/clientes/novo" element={<ClientNewPage />} />
           <Route path="/clientes/:id" element={<ClientDetailPage />} />
-          <Route path="/projetos" element={<ModulePlaceholderPage moduleKey="projetos" />} />
+          <Route path="/projetos" element={<ProjectsPage />} />
+          <Route path="/projetos/novo" element={<ProjectNewPage />} />
+          <Route path="/projetos/:id" element={<ProjectDetailPage />} />
           <Route path="/financeiro" element={<ModulePlaceholderPage moduleKey="financeiro" />} />
           <Route path="/relatorios" element={<ModulePlaceholderPage moduleKey="relatorios" />} />
           <Route path="/configuracoes" element={<SettingsPage />} />
