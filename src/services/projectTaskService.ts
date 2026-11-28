@@ -2,6 +2,8 @@
 import { requireSupabase, throwDbError } from '../lib/db'
 import type { ProjectTask, ProjectTaskWrite } from '../types/project'
 
+const PAGE_SIZE = 1000
+
 function nullable(value: string | null): string | null {
   return value?.trim() ? value.trim() : null
 }
@@ -25,11 +27,19 @@ function taskRow<T>(data: T | null): T {
 }
 
 export async function listTasks(projectId: string): Promise<ProjectTask[]> {
-  const { data, error } = await requireSupabase()
-    .from('project_tasks').select('*').eq('project_id', projectId)
-    .order('position').order('id')
-  throwDbError(error)
-  return data ?? []
+  const client = requireSupabase()
+  const tasks: ProjectTask[] = []
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await client
+      .from('project_tasks').select('*').eq('project_id', projectId)
+      .order('position').order('id')
+      .range(from, from + PAGE_SIZE - 1)
+    throwDbError(error)
+    const page = (data ?? []) as ProjectTask[]
+    tasks.push(...page)
+    if (page.length < PAGE_SIZE) break
+  }
+  return tasks
 }
 
 export async function createTask(projectId: string, input: ProjectTaskWrite): Promise<ProjectTask> {

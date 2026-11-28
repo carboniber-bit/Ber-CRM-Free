@@ -2,6 +2,8 @@
 import { requireSupabase, throwDbError } from '../lib/db'
 import type { ProjectRevision, ProjectRevisionWrite } from '../types/project'
 
+const PAGE_SIZE = 1000
+
 function nullable(value: string): string | null {
   return value.trim() ? value.trim() : null
 }
@@ -21,11 +23,19 @@ function revisionRow(data: unknown): ProjectRevision {
 }
 
 export async function listRevisions(projectId: string): Promise<ProjectRevision[]> {
-  const { data, error } = await requireSupabase()
-    .from('project_revisions').select('*').eq('project_id', projectId)
-    .order('requested_at', { ascending: false })
-  throwDbError(error)
-  return (data ?? []) as ProjectRevision[]
+  const client = requireSupabase()
+  const revisions: ProjectRevision[] = []
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await client
+      .from('project_revisions').select('*').eq('project_id', projectId)
+      .order('requested_at', { ascending: false }).order('id', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1)
+    throwDbError(error)
+    const page = (data ?? []) as ProjectRevision[]
+    revisions.push(...page)
+    if (page.length < PAGE_SIZE) break
+  }
+  return revisions
 }
 
 export async function createRevision(projectId: string, input: ProjectRevisionWrite): Promise<ProjectRevision> {
