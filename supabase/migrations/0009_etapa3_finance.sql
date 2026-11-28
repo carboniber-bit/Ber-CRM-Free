@@ -280,6 +280,9 @@ declare
   v_count int;
 begin
   if v_owner is null then raise exception 'Sessão autenticada necessária.' using errcode = '42501'; end if;
+  if p_installments is null then
+    raise exception 'Parcelas devem ser uma lista.' using errcode = '22023';
+  end if;
   if p_installments is not null and jsonb_typeof(p_installments) <> 'array' then
     raise exception 'Parcelas devem ser uma lista.' using errcode = '22023';
   end if;
@@ -291,6 +294,9 @@ begin
     where id = p_contract_id and owner_id = v_owner
     for update;
   if not found then raise exception 'Contrato não encontrado ou acesso negado.' using errcode = '42501'; end if;
+  if v_contract.status = 'cancelled' then
+    raise exception 'Contrato cancelado não pode ter parcelas alteradas.' using errcode = '23514';
+  end if;
   if exists (
     select 1 from public.financial_payments
     where contract_id = p_contract_id and owner_id = v_owner
@@ -302,7 +308,7 @@ begin
   -- Doze dígitos inteiros e no máximo duas casas já limitam cada valor a 999999999999.99.
   if exists (
     select 1
-    from jsonb_array_elements(coalesce(p_installments, '[]'::jsonb)) as a(value)
+    from jsonb_array_elements(p_installments) as a(value)
     where jsonb_typeof(a.value) <> 'object'
       or nullif(a.value ->> 'amount', '') is null
       or (a.value ->> 'amount') !~ '^[0-9]{1,12}(\.[0-9]{1,2})?$'
@@ -315,7 +321,7 @@ begin
   -- Somente após a validação textual é seguro converter e somar.
   select coalesce(sum((value ->> 'amount')::numeric), 0), count(*)
     into v_sum, v_count
-    from jsonb_array_elements(coalesce(p_installments, '[]'::jsonb));
+    from jsonb_array_elements(p_installments);
   -- Uma lista vazia representa um contrato sem parcelas; não existe soma para comparar.
   if v_count > 0 and v_sum <> v_contract.total_value then
     raise exception 'A soma das parcelas deve ser igual ao valor do contrato.' using errcode = '23514';
@@ -328,7 +334,7 @@ begin
   )
   select v_owner, p_contract_id, ordinality - 1, (value ->> 'amount')::numeric,
     (value ->> 'due_date')::date, nullif(value ->> 'notes', '')
-  from jsonb_array_elements(coalesce(p_installments, '[]'::jsonb)) with ordinality;
+  from jsonb_array_elements(p_installments) with ordinality;
 
   insert into public.client_activities (
     owner_id, client_id, contract_id, type, description, metadata
@@ -378,6 +384,9 @@ begin
     where id = p_contract_id and owner_id = v_owner
     for update;
   if not found then raise exception 'Contrato não encontrado ou acesso negado.' using errcode = '42501'; end if;
+  if v_contract.status = 'cancelled' then
+    raise exception 'Contrato cancelado não pode ter o valor ajustado.' using errcode = '23514';
+  end if;
 
   -- A advisory precede todas as linhas compartilhadas com pagamentos e projetos.
   -- Não travar projetos aqui: adjust_contract não os altera.
