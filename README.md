@@ -2,15 +2,13 @@
 
 CRM profissional construído por etapas, 100% em planos gratuitos.
 
-**Etapa atual: 3 — Plano 1 (Clientes) implementado; Projetos e Financeiro nos próximos planos.**
+**Etapa atual: 3 — Planos 1 (Clientes) e 2 (Projetos) implementados; Plano 3 (Financeiro) pendente.**
 O CRM inclui Leads / Prospecção, Oportunidades, Pipeline Kanban, Follow-ups, Dashboard,
-Configurações e Clientes. O módulo Clientes possui lista com filtros e paginação,
-cadastro com contrato inicial, ficha com projetos básicos, contratos e histórico combinado,
-arquivamento confirmado e conversão de leads por vínculo real.
-A aplicação das migrations `0006` (Clientes) e `0007` (link exato do Maps) e do teste SQL da Etapa 3 deve ser executada pelo usuário.
-O teste de isolamento RLS entre dois usuários permanece pendente até existir uma segunda
-conta temporária de teste. Projetos, Financeiro e Relatórios continuam como placeholders
-até seus respectivos planos.
+Configurações, Clientes com contratos e Projetos com tarefas, revisões, histórico e entrega.
+Financeiro e Relatórios continuam como placeholders. As migrations `0001`–`0008` já foram
+aplicadas no ambiente Supabase atual. A validação SQL autenticada completa das migrations
+`0006`–`0008` e o isolamento RLS entre dois usuários permanecem pendentes até execução real
+com as contas de teste.
 
 ## Stack
 
@@ -57,29 +55,31 @@ Projeto Supabase: `nuzjlizqdldhygsliwwc`
    ```
 
    Reinicie o dev server após editar.
-3. **Execute o schema**: abra o [SQL Editor](https://supabase.com/dashboard/project/nuzjlizqdldhygsliwwc/sql/new)
+3. **Execute o schema em um novo ambiente**: abra o [SQL Editor](https://supabase.com/dashboard/project/nuzjlizqdldhygsliwwc/sql/new)
    e execute, nesta ordem, [`0001_profiles.sql`](supabase/migrations/0001_profiles.sql),
    [`0002_etapa2.sql`](supabase/migrations/0002_etapa2.sql),
    [`0003_duplicate_canonical.sql`](supabase/migrations/0003_duplicate_canonical.sql),
    [`0004_followup_atomic.sql`](supabase/migrations/0004_followup_atomic.sql),
    [`0005_followup_rpc_json.sql`](supabase/migrations/0005_followup_rpc_json.sql),
-   [`0006_etapa3_clients.sql`](supabase/migrations/0006_etapa3_clients.sql) e
-   [`0007_lead_maps_url.sql`](supabase/migrations/0007_lead_maps_url.sql).
-   As migrations criam as tabelas privadas, os índices, as políticas RLS e as
-   RPCs e triggers transacionais. Depois aplique
-   [`supabase/tests/etapa3_clients.sql`](supabase/tests/etapa3_clients.sql) para a
-   validação SQL da Etapa 3. A aplicação das migrations e a execução desse teste SQL
-   são responsabilidade do usuário; o frontend não as executa automaticamente.
+   [`0006_etapa3_clients.sql`](supabase/migrations/0006_etapa3_clients.sql),
+   [`0007_lead_maps_url.sql`](supabase/migrations/0007_lead_maps_url.sql) e
+   [`0008_etapa3_projects.sql`](supabase/migrations/0008_etapa3_projects.sql).
+   As migrations criam tabelas privadas, índices, políticas RLS, triggers e RPCs transacionais.
+   No ambiente Supabase atual do projeto, as migrations `0001`–`0008` já foram aplicadas.
 4. **Crie seu usuário**: Dashboard → Authentication → Users → *Add user* →
    informe e-mail e senha (marque *Auto Confirm User*). Não há cadastro público.
 5. Acesse `/status` no app para validar tudo, depois faça login em `/login`.
+6. Com uma sessão autenticada, execute os testes SQL
+   [`etapa3_clients.sql`](supabase/tests/etapa3_clients.sql) e
+   [`etapa3_projects.sql`](supabase/tests/etapa3_projects.sql). Só marque a validação
+   de RLS entre dois usuários como concluída após testar duas sessões distintas.
 
 ### Segurança
 
 - Apenas a chave **pública** (anon/publishable) é usada no frontend.
   **Nunca** coloque a `service_role` key no `.env.local` ou no código.
 - RLS ativo nas tabelas privadas com `owner_id = auth.uid()`; a validação cruzada
-  com dois usuários está pendente por falta de uma segunda conta temporária.
+  com dois usuários está pendente até a execução autenticada dos testes.
 - Rotas internas protegidas por sessão; sem sessão → redireciona para `/login`.
 - `.env.local` está no `.gitignore` — credenciais nunca vão para o GitHub.
 
@@ -88,37 +88,41 @@ Projeto Supabase: `nuzjlizqdldhygsliwwc`
 ```
 src/
   components/
-    ui/           Button, Input, Card, Modal, Toast, StatusBadge, PresenceBadge, ScoreBar…
+    ui/           Button, Input, Select, Card, Modal, ConfirmDialog, Toast, Spinner…
     auth/         telas de autenticação
     leads/        LeadForm, LeadFiltersBar, LeadChecklist, OpportunityPanel, LeadTimeline,
-                  LeadFollowups, FollowupDialog, ContactDialog, WhatsAppDialog, CsvImportModal,
-                  ConversionDialog
-    clients/      ClientForm, ClientHistory
+                  LeadFollowups, FollowupDialog, ContactDialog, WhatsAppDialog, CsvImportModal
+    clients/      ClientForm e componentes do módulo de clientes
+    projects/     ProjectForm, badges, cards, Kanban, tarefas, revisões e entrega
     pipeline/     KanbanCard e KanbanColumn
     followups/    FollowupItem
   pages/          LoginPage, DashboardPage, StatusPage, NotFoundPage, LeadsPage,
                   LeadNewPage, LeadDetailPage, LeadEditPage, OpportunitiesPage,
                   PipelinePage, FollowUpsPage, SettingsPage, ClientsPage, ClientNewPage,
-                  ClientDetailPage, ModulePlaceholderPage
+                  ClientDetailPage, ProjectsPage, ProjectNewPage, ProjectDetailPage,
+                  ModulePlaceholderPage
   layouts/        AuthLayout (login) e AppLayout (app autenticado, sidebar + drawer mobile)
-  hooks/          useAuth, useToast
+  hooks/          useAuth, useToast, useProjectStatusQueue
   services/       authService, leadService, activityService, followupService,
-                  digitalCheckService, dashboardService, settingsService, clientService
+                  digitalCheckService, dashboardService, settingsService, clientService,
+                  projectService, projectTaskService, projectRevisionService
   lib/            supabase.ts (cliente único), db.ts, csv.ts, format.ts, leadForm.ts,
-                  money.ts, url.ts, opportunity.ts, whatsapp.ts, dashboard.ts, pipeline.ts
+                  opportunity.ts, whatsapp.ts, dashboard.ts, pipeline.ts, money.ts,
+                  projectProgress.ts (+ testes próprios)
   types/          Profile, Lead, Activity, Followup, Check, Settings, Client, Contract,
-                  Project, ClientHistoryEntry, LeadClientLink
+                  Project, ProjectTask, ProjectRevision, ClientActivity
   utils/          helpers
   routes/         AppRoutes + ProtectedRoute
 supabase/
-  migrations/   0001–0007 (profiles, leads, CRM, duplicidades, follow-ups, clientes e Maps)
-  tests/        etapa3_clients.sql (validação SQL executada pelo usuário)
+  migrations/   0001–0008 (profiles, leads, follow-ups, clientes e projetos)
+  tests/        etapa3_clients.sql, etapa3_projects.sql e etapa3_task_concurrency.sql
 ```
 
 Rotas protegidas: `/` (dashboard) · `/leads` · `/leads/novo` · `/leads/:id` ·
 `/leads/:id/editar` · `/oportunidades` · `/pipeline` · `/followups` · `/configuracoes` ·
-`/clientes` · `/clientes/novo` · `/clientes/:id` · `/projetos` · `/financeiro` ·
-`/relatorios`. `/login` e `/status` são públicas; rotas desconhecidas exibem a página 404.
+`/clientes` · `/clientes/novo` · `/clientes/:id` · `/projetos` · `/projetos/novo` ·
+`/projetos/:id` · `/financeiro` · `/relatorios`. `/login` e `/status` são públicas;
+rotas desconhecidas exibem a página 404.
 
 ## Fluxo de prospecção
 
@@ -133,6 +137,11 @@ Rotas protegidas: `/` (dashboard) · `/leads` · `/leads/novo` · `/leads/:id` �
    mobile. A mudança fica registrada no histórico.
 6. **Agende Follow-ups**, conclua com resultado e acompanhe os atrasados pelo dashboard
    e pelo sino do cabeçalho.
+7. **Converta em cliente**, mantenha contrato e histórico e cadastre projetos vinculados.
+8. **Acompanhe projetos** em cards, lista paginada ou Kanban. Tarefas canceladas/excluídas
+   ficam fora do denominador; sem tarefas ativas o progresso é `null` (“Sem tarefas ativas”).
+9. **Registre revisões e entregas** com confirmação explícita. Concluir ou entregar um projeto
+   não cria receita e não altera contrato ou pagamento.
 
 Limites atuais dos planos gratuitos:
 
@@ -144,10 +153,11 @@ Limites atuais dos planos gratuitos:
   da consulta elegível antes de ordenar e priorizar. Como usa paginação por offset, escrita
   concorrente durante a leitura pode alterar o conjunto retornado.
 - O Pipeline carrega até 500 leads por consulta e a exportação CSV inclui até 1000
-  registros da view filtrada; a interface avisa quando há mais resultados.
-- Valores estimados não são faturamento nem dinheiro recebido. A ficha do cliente mostra
-  projetos básicos e valores contratados; os módulos Projetos, Financeiro e Relatórios
-  ainda não foram implementados.
+  registros do view filtrada; a interface avisa quando há mais resultados.
+- Projetos usam 24 itens por página na lista. O Kanban carrega até 500 projetos não
+  arquivados e não cancelados e avisa explicitamente quando o resultado é parcial.
+- Valores estimados, contratados e recebidos são conceitos distintos. O módulo Financeiro
+  será implementado no Plano 3 da Etapa 3; projetos não efetuam mutações financeiras.
 
 ## Deploy na Vercel (plano Hobby, gratuito)
 
@@ -171,7 +181,7 @@ Limites atuais dos planos gratuitos:
 | 2 · Plano 1 | Fundação do CRM: vitest, migration `0002`, types, services, kit UI, sidebar | concluída |
 | 2 · Plano 2 | Leads / prospecção: lista, ficha, follow-ups, WhatsApp, CSV | concluída |
 | 2 · Plano 3 | Oportunidades, pipeline Kanban, follow-ups, dashboard, configurações | implementado; validação RLS entre 2 usuários pendente |
-| 3 · Plano 1 | Clientes, contratos, histórico e conversão de leads | implementado; migration e validação SQL pendentes de execução pelo usuário |
-| 3 · Plano 2 | Projetos | planejado |
-| 3 · Plano 3 | Financeiro | planejado |
-| 3 · Finalização | Relatórios, configurações, backup, segurança e auditoria | planejada |
+| 3 · Plano 1 | Clientes, contratos, conversão e histórico | implementado; validação SQL autenticada/RLS pendente |
+| 3 · Plano 2 | Projetos, tarefas, revisões, Kanban e entrega | implementado; validação SQL autenticada/RLS pendente |
+| 3 · Plano 3 | Financeiro | pendente |
+| 3 · Finalização | Relatórios, configurações, backup, segurança e auditoria | pendente |
