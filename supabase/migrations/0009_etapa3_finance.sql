@@ -82,7 +82,7 @@ create table public.financial_payment_allocations (
   created_at timestamptz not null default now(),
   constraint financial_payment_allocations_payment_installment_key unique (payment_id, installment_id),
   constraint financial_payment_allocations_payment_owner_fk foreign key (owner_id, contract_id, payment_id)
-    references public.financial_payments (owner_id, contract_id, id) on delete cascade,
+    references public.financial_payments (owner_id, contract_id, id) on delete restrict,
   constraint financial_payment_allocations_installment_owner_fk foreign key (owner_id, contract_id, installment_id)
     references public.contract_installments (owner_id, contract_id, id) on delete restrict
 );
