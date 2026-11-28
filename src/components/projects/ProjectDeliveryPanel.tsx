@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { PackageCheck } from 'lucide-react'
 import { useToast } from '../../hooks/useToast'
 import { deliverProject } from '../../services/projectService'
@@ -22,6 +22,17 @@ interface DeliveryDraft {
 }
 
 type DeliveryErrors = Partial<Record<'deliveryUrl' | 'filesUrl' | 'confirmed', string>>
+
+interface DeliveryConfirmation {
+  projectId: string
+  payload: DeliveryInput
+}
+
+interface ProjectDeliveryContentProps extends ProjectDeliveryPanelProps {
+  saving: boolean
+  onStartSaving: () => boolean
+  onSavingComplete: () => void
+}
 
 function isHttpUrl(value: string): boolean {
   if (/\s/.test(value)) return false
@@ -49,31 +60,56 @@ function SafeLink({ href, label }: { href: string; label: string }) {
 }
 
 export function ProjectDeliveryPanel({ project, onDelivered }: ProjectDeliveryPanelProps) {
+  const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
+  const mountedRef = useRef(false)
+
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
+  const startSaving = () => {
+    if (savingRef.current) return false
+    savingRef.current = true
+    setSaving(true)
+    return true
+  }
+
+  const completeSaving = () => {
+    savingRef.current = false
+    if (mountedRef.current) setSaving(false)
+  }
+
+  return (
+    <ProjectDeliveryContent
+      key={project.id}
+      project={project}
+      onDelivered={onDelivered}
+      saving={saving}
+      onStartSaving={startSaving}
+      onSavingComplete={completeSaving}
+    />
+  )
+}
+
+function ProjectDeliveryContent({
+  project, onDelivered, saving, onStartSaving, onSavingComplete,
+}: ProjectDeliveryContentProps) {
   const { toast } = useToast()
   const [draft, setDraft] = useState<DeliveryDraft>({
     deliveryUrl: project.delivery_url ?? '', filesUrl: project.files_url ?? '',
     finalNotes: project.final_notes ?? '', confirmed: false,
   })
   const [errors, setErrors] = useState<DeliveryErrors>({})
-  const [confirmOpen, setConfirmOpen] = useState(false)
-  const [saving, setSaving] = useState(false)
+  const [confirmation, setConfirmation] = useState<DeliveryConfirmation | null>(null)
   const [savedDelivery, setSavedDelivery] = useState<Project | null>(null)
-  const savingRef = useRef(false)
-  const mountedRef = useRef(true)
-  const projectIdRef = useRef(project.id)
-  projectIdRef.current = project.id
+  const mountedRef = useRef(false)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     mountedRef.current = true
-    setConfirmOpen(false)
-    setErrors({})
-    setSavedDelivery(null)
-    setDraft({
-      deliveryUrl: project.delivery_url ?? '', filesUrl: project.files_url ?? '',
-      finalNotes: project.final_notes ?? '', confirmed: false,
-    })
     return () => { mountedRef.current = false }
-  }, [project.id])
+  }, [])
 
   const delivered = savedDelivery?.id === project.id
     ? savedDelivery
@@ -106,39 +142,43 @@ export function ProjectDeliveryPanel({ project, onDelivered }: ProjectDeliveryPa
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (savingRef.current || project.status === 'cancelled') return
+    if (saving || project.status === 'cancelled') return
     const next: DeliveryErrors = {}
     if (!draft.deliveryUrl) next.deliveryUrl = 'Informe o link de entrega.'
     else if (!isHttpUrl(draft.deliveryUrl)) next.deliveryUrl = 'Informe uma URL HTTP(S) válida.'
     if (draft.filesUrl && !isHttpUrl(draft.filesUrl)) next.filesUrl = 'Informe uma URL HTTP(S) válida.'
     if (!draft.confirmed) next.confirmed = 'Confirme a entrega com o cliente.'
     setErrors(next)
-    if (Object.keys(next).length === 0) setConfirmOpen(true)
+    if (Object.keys(next).length === 0) {
+      setConfirmation({
+        projectId: project.id,
+        payload: {
+          deliveryUrl: draft.deliveryUrl.trim(), filesUrl: draft.filesUrl.trim(),
+          finalNotes: draft.finalNotes.trim(), confirmed: true,
+        },
+      })
+    }
   }
 
   const confirmDelivery = async () => {
-    if (savingRef.current || project.status === 'cancelled') return
-    const deliveryProjectId = project.id
-    const payload: DeliveryInput = {
-      deliveryUrl: draft.deliveryUrl.trim(), filesUrl: draft.filesUrl.trim(),
-      finalNotes: draft.finalNotes.trim(), confirmed: true,
-    }
-    savingRef.current = true
-    setSaving(true)
+    const snapshot = confirmation
+    if (
+      !snapshot || snapshot.projectId !== project.id || project.status === 'cancelled'
+      || !onStartSaving()
+    ) return
     try {
-      const saved = await deliverProject(deliveryProjectId, payload)
-      if (!mountedRef.current || projectIdRef.current !== deliveryProjectId) return
+      const saved = await deliverProject(snapshot.projectId, snapshot.payload)
+      if (!mountedRef.current) return
       setSavedDelivery(saved)
-      setConfirmOpen(false)
+      setConfirmation(null)
       onDelivered(saved)
       toast('Entrega registrada com sucesso.')
     } catch (cause) {
-      if (mountedRef.current && projectIdRef.current === deliveryProjectId) {
+      if (mountedRef.current) {
         toast(cause instanceof Error && cause.message ? cause.message : 'Não foi possível registrar a entrega.', 'error')
       }
     } finally {
-      savingRef.current = false
-      if (mountedRef.current) setSaving(false)
+      onSavingComplete()
     }
   }
 
@@ -160,13 +200,13 @@ export function ProjectDeliveryPanel({ project, onDelivered }: ProjectDeliveryPa
         <div><Button type="submit" variant="mint" loading={saving}>Registrar entrega</Button></div>
       </form>
       <ConfirmDialog
-        open={confirmOpen}
+        open={Boolean(confirmation)}
         title="Confirmar entrega"
         description="Confirmar a entrega deste projeto? Esta ação registra os links e não altera contrato, pagamento ou receita."
         confirmLabel="Confirmar entrega"
         loading={saving}
         onConfirm={() => void confirmDelivery()}
-        onCancel={() => { if (!saving) setConfirmOpen(false) }}
+        onCancel={() => { if (!saving) setConfirmation(null) }}
       />
     </Card>
   )

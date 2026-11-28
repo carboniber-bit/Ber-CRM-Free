@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // src/components/projects/ProjectDeliveryPanel.test.tsx
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { useLayoutEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Project } from '../../types/project'
 
@@ -121,6 +122,92 @@ describe('ProjectDeliveryPanel', () => {
     expect(screen.queryByRole('combobox')).toBeNull()
   })
 
+  it('não confirma entrega anterior no primeiro commit da troca de projeto', () => {
+    deliverProject.mockResolvedValue({
+      ...project, status: 'delivered', delivered_at: '2026-11-26T12:00:00Z',
+      delivery_url: 'https://example.test/entrega',
+    })
+    const onDelivered = vi.fn()
+    const { rerender } = render(<SwitchProbe project={project} onDelivered={onDelivered} />)
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    expect(screen.getByRole('dialog').textContent).toMatch(/Confirmar entrega/)
+
+    rerender(<SwitchProbe project={{ ...project, id: 'p2', name: 'Outro projeto' }} onDelivered={onDelivered} />)
+
+    expect(deliverProject).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Abrir entrega' })).toBeNull()
+  })
+
+  it('confirma o snapshot validado mesmo se o rascunho mudar com o diálogo aberto', async () => {
+    const delivered = {
+      ...project, status: 'delivered' as const, delivered_at: '2026-11-26T12:00:00Z',
+      delivery_url: 'https://example.test/entrega', files_url: 'https://example.test/arquivos',
+      final_notes: 'Notas validadas',
+    }
+    deliverProject.mockResolvedValue(delivered)
+    const onDelivered = vi.fn()
+    render(<ProjectDeliveryPanel project={project} onDelivered={onDelivered} />)
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega' } })
+    fireEvent.change(screen.getByLabelText('Link dos arquivos'), { target: { value: 'https://example.test/arquivos' } })
+    fireEvent.change(screen.getByLabelText('Notas finais'), { target: { value: 'Notas validadas' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/alterado' } })
+    fireEvent.change(screen.getByLabelText('Notas finais'), { target: { value: 'Notas alteradas' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar entrega' }))
+
+    await waitFor(() => expect(onDelivered).toHaveBeenCalledWith(delivered))
+    expect(deliverProject).toHaveBeenCalledWith('p1', {
+      deliveryUrl: 'https://example.test/entrega', filesUrl: 'https://example.test/arquivos',
+      finalNotes: 'Notas validadas', confirmed: true,
+    })
+  })
+
+  it('mantém a guarda global de saving bloqueada até a entrega anterior terminar', async () => {
+    const pending = deferred<Project>()
+    const deliveredP2 = {
+      ...project, id: 'p2', status: 'delivered' as const, delivered_at: '2026-11-26T12:00:00Z',
+      delivery_url: 'https://example.test/entrega-p2',
+    }
+    deliverProject.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(deliveredP2)
+    const onDelivered = vi.fn()
+    const { rerender } = render(<ProjectDeliveryPanel project={project} onDelivered={onDelivered} />)
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega-p1' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar entrega' }))
+    await waitFor(() => expect(deliverProject).toHaveBeenCalledTimes(1))
+
+    rerender(<ProjectDeliveryPanel project={{ ...project, id: 'p2', name: 'Outro projeto' }} onDelivered={onDelivered} />)
+    const submitP2 = screen.getByRole('button', { name: /Registrar entrega/ }) as HTMLButtonElement
+    expect(submitP2.disabled).toBe(true)
+    fireEvent.click(submitP2)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(deliverProject).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      pending.resolve({
+        ...project, status: 'delivered', delivered_at: '2026-11-26T12:00:00Z',
+        delivery_url: 'https://example.test/entrega-p1',
+      })
+      await pending.promise
+    })
+    await waitFor(() => expect(submitP2.disabled).toBe(false))
+
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega-p2' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(submitP2)
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar entrega' }))
+    await waitFor(() => expect(deliverProject).toHaveBeenCalledTimes(2))
+    expect(deliverProject).toHaveBeenLastCalledWith('p2', {
+      deliveryUrl: 'https://example.test/entrega-p2', filesUrl: '', finalNotes: '', confirmed: true,
+    })
+  })
+
   it('descarta entrega do projeto anterior e fecha a confirmação após a troca', async () => {
     const pending = deferred<Project>()
     deliverProject.mockReturnValueOnce(pending.promise)
@@ -141,6 +228,17 @@ describe('ProjectDeliveryPanel', () => {
     expect(screen.queryByRole('link', { name: 'Abrir entrega' })).toBeNull()
   })
 })
+
+function SwitchProbe({ project: currentProject, onDelivered }: {
+  project: Project
+  onDelivered: (project: Project) => void
+}) {
+  useLayoutEffect(() => {
+    if (currentProject.id !== 'p2') return
+    screen.queryByRole('button', { name: 'Confirmar entrega' })?.click()
+  }, [currentProject.id])
+  return <ProjectDeliveryPanel project={currentProject} onDelivered={onDelivered} />
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void
