@@ -206,3 +206,25 @@ A auto-revisão identificou avisos `react(refs)` introduzidos pela escrita de re
 - Os Minors M1–M4 da revisão não foram alterados, pois o brief autorizou somente I1–I5.
 - A revisão foi realizada pelo implementador único, sem revisor independente/subagente, conforme a restrição explícita do brief.
 - Não houve desvio de arquivos autorizados além do relatório final solicitado.
+
+## Adendo pós-re-revisão — N1/I5 e correção residual
+
+- Commits: `340d86c docs: registrar fix round final do Plano 2` e `71d7a01 fix: preservar entrega externa no estado do Kanban`.
+- A primeira re-revisão (`final-fix-rereview.md`) aprovou I1–I4 e manteve I5 aberto por N1: a reconciliação de `delivered` alterava apenas o estado interno, enquanto `ProjectsPage` realimenta o hook por `onChange={setBoardProjects}` e podia rebaixar o estado terminal.
+- RED inicial das regressões com estado controlado real: **3 testes falharam e 16 passaram**. A correção fez a reconciliação terminal passar por `updateProjects`, atualizando estado interno e pai.
+- Uma regressão adicional revelou que a atualização de outro projeto em paralelo ainda podia substituir o snapshot externo `delivered` pendente. RED específico: **1 teste falhou e 19 passaram**. O guard passou a preservar o snapshot terminal pendente contra incoming não entregue.
+- GREEN final: `npm test -- src/hooks/useProjectStatusQueue.test.tsx src/pages/ProjectsPage.test.tsx` — **2 arquivos e 37 testes passaram**. O hook usa `useState` real e a página renderiza `ProjectsPage` real, verificando read-only e coluna Entregue após sucesso e rejeição da RPC.
+- A segunda re-revisão (`final-fix-rereview-2.md`, range `340d86c..71d7a01`) concluiu **N1/I5 RESOLVED**, com **0 Critical, 0 Important e 1 Minor**, veredito **APPROVED**.
+- Ruling: R1 Minor fica parkado como não bloqueador. Quando o baseline já é `delivered`, snapshots novos com o mesmo status não atualizam metadados não terminais; o status terminal permanece correto e a frescor desses campos depende de remontagem ou saída/retorno do item. Custo se incorreto: metadados podem permanecer antigos até esse evento, sem rebaixar a entrega.
+
+### Gate completo fresco após `71d7a01`
+
+| Gate | Resultado real |
+|---|---|
+| `npm test` | **59 arquivos e 1.017 testes passaram** |
+| `npm run build` | Aprovado; 2.685 módulos; bundle principal `1.280,10 kB`, gzip `360,63 kB`; aviso conhecido de chunk acima de 500 kB |
+| `npm run lint` | **0 erros e 16 avisos** em 171 arquivos, 116 regras |
+| `git diff --check` | Aprovado, sem saída; somente aviso de conversão LF/CRLF |
+| `git diff --cached --check` | Aprovado, sem saída |
+
+O commit do alinhamento documental e o push são registrados no ledger de fechamento.

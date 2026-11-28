@@ -42,6 +42,17 @@
 - Revisão aprovada é imutável no banco, inclusive identidade, datas de solicitação/criação, descrição, responsável, notas, projeto e proprietário, além do status.
 - A sequência documentada de migrations inclui `0007_lead_maps_url.sql` entre a fundação de clientes e a migration de projetos.
 
+## Ajustes finais aprovados em 2026-11-28
+
+Esta seção consolida as correções decorrentes da revisão ampla e da re-revisão do Plano 2. Ela prevalece sobre os trechos de código baseline das Tasks 2, 4, 6, 8, 9, 10 e 11 quando houver divergência; os arquivos atuais em `src/` e `supabase/` são a implementação final.
+
+- **Task 4 — paginação:** `listTasks` e `listRevisions` percorrem páginas de 1.000 com `.range(from, from + 999)`, acumulam resultados e propagam falha de qualquer página. Tarefas ordenam por `position` e `id`; revisões por `requested_at desc` e `id asc`.
+- **Task 2 — cascata administrativa:** `lock_project_task_mutations` retorna antes do advisory lock quando `auth.uid()` é nulo, sem afrouxar RLS ou grants. A evidência disponível é estática; SQL runtime continua pendente.
+- **Tasks 9 e 11 — mutações confirmadas:** criar, editar, status e excluir tarefas aplicam o resultado confirmado localmente antes do refresh; reordenação aplica a ordem confirmada. O detalhe mescla métricas e a lista do projeto corrente, preserva o estado em falha de refresh e descarta respostas de projeto/rota antiga.
+- **Tasks 10 e 11 — edição e entrega:** o detalhe mescla por `id` o projeto confirmado antes do refresh, preservando `client_name`, métricas, tarefas, revisões e atividades. Callbacks sobrevivem à desmontagem da aba, mas não à troca de projeto/rota. O modal de edição permanece não dispensável durante `saving`.
+- **Tasks 6 e 8 — `delivered` terminal:** a reconciliação de um snapshot externo `delivered` usa `updateProjects`, portanto atualiza também o estado controlado por `onChange`. O baseline confirmado `delivered` bloqueia snapshots obsoletos não entregues; um snapshot externo terminal pendente também não pode ser substituído pelo eco de outra atualização. Sucesso, rejeição da RPC, concorrência entre projetos e read-only no Kanban têm regressões no hook e em `ProjectsPage`.
+- **Limitação não bloqueante R1:** um snapshot novo que continue `delivered` não atualiza metadados não terminais enquanto o baseline terminal estiver confirmado. O status permanece correto; a frescor desses campos depende de remontagem ou saída/retorno do item. O achado foi parkado pela revisão final.
+
 ## Convenções de teste
 
 - Todo arquivo `.test.tsx` começa com `// @vitest-environment jsdom`; o ambiente global é `node` e não há matchers jest-dom instalados.
