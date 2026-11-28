@@ -68,7 +68,7 @@ Projeto Supabase: `nuzjlizqdldhygsliwwc`
    No ambiente Supabase atual do projeto, as migrations `0001`–`0008` já foram aplicadas.
 4. **Crie seu usuário**: Dashboard → Authentication → Users → *Add user* →
    informe e-mail e senha (marque *Auto Confirm User*). Não há cadastro público.
-5. Acesse `/status` no app para validar tudo, depois faça login em `/login`.
+5. Acesse `/status` no app para validar configuração, conexão, sessão e schema de perfis; depois faça login em `/login`.
 6. Com uma sessão autenticada, execute os testes SQL
    [`etapa3_clients.sql`](supabase/tests/etapa3_clients.sql) e
    [`etapa3_projects.sql`](supabase/tests/etapa3_projects.sql). Só marque a validação
