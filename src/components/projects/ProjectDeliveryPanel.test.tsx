@@ -104,6 +104,19 @@ describe('ProjectDeliveryPanel', () => {
     expect(deliverProject).not.toHaveBeenCalled()
   })
 
+  it('preserva whitespace inicial no input de arquivos até a validação explícita', async () => {
+    render(<ProjectDeliveryPanel project={project} onDelivered={vi.fn()} />)
+    const input = screen.getByLabelText('Link dos arquivos') as HTMLInputElement
+    expect(input.type).toBe('text')
+    expect(input.inputMode).toBe('url')
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega' } })
+    fireEvent.change(input, { target: { value: ' https://example.test/arquivos' } })
+    expect(input.value).toBe(' https://example.test/arquivos')
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    expect((await screen.findByText('Informe uma URL HTTP(S) válida.')).textContent).toBe('Informe uma URL HTTP(S) válida.')
+    expect(deliverProject).not.toHaveBeenCalled()
+  })
+
   it('não permite entregar projeto cancelado', () => {
     render(<ProjectDeliveryPanel project={{ ...project, status: 'cancelled' }} onDelivered={vi.fn()} />)
     expect(screen.getByText(/Entrega indisponível/).textContent).toMatch(/Entrega indisponível/)
@@ -225,7 +238,96 @@ describe('ProjectDeliveryPanel', () => {
       await pending.promise
     })
     expect(onDelivered).not.toHaveBeenCalled()
+    expect(toast).not.toHaveBeenCalled()
     expect(screen.queryByRole('link', { name: 'Abrir entrega' })).toBeNull()
+  })
+
+  it('descarta erro de entrega anterior após a troca de projeto', async () => {
+    const pending = deferred<Project>()
+    deliverProject.mockReturnValueOnce(pending.promise)
+    const onDelivered = vi.fn()
+    const { rerender } = render(<ProjectDeliveryPanel project={project} onDelivered={onDelivered} />)
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega-p1' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar entrega' }))
+    await waitFor(() => expect(deliverProject).toHaveBeenCalledTimes(1))
+
+    rerender(<ProjectDeliveryPanel project={{ ...project, id: 'p2', name: 'Outro projeto' }} onDelivered={onDelivered} />)
+    await act(async () => {
+      pending.reject(new Error('Falha na entrega anterior.'))
+      await pending.promise.catch(() => undefined)
+    })
+
+    expect(toast).not.toHaveBeenCalled()
+    expect(onDelivered).not.toHaveBeenCalled()
+    expect(screen.queryByText('Falha na entrega anterior.')).toBeNull()
+    expect((screen.getByRole('button', { name: 'Registrar entrega' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('libera a guarda global após rejeição e permite entregar o projeto atual', async () => {
+    const pending = deferred<Project>()
+    const deliveredP2 = {
+      ...project, id: 'p2', status: 'delivered' as const, delivered_at: '2026-11-26T12:00:00Z',
+      delivery_url: 'https://example.test/entrega-p2',
+    }
+    deliverProject.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(deliveredP2)
+    const onDelivered = vi.fn()
+    const { rerender } = render(<ProjectDeliveryPanel project={project} onDelivered={onDelivered} />)
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega-p1' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar entrega' }))
+    await waitFor(() => expect(deliverProject).toHaveBeenCalledTimes(1))
+
+    rerender(<ProjectDeliveryPanel project={{ ...project, id: 'p2', name: 'Outro projeto' }} onDelivered={onDelivered} />)
+    expect((screen.getByRole('button', { name: /Registrar entrega/ }) as HTMLButtonElement).disabled).toBe(true)
+    await act(async () => {
+      pending.reject(new Error('Falha na entrega anterior.'))
+      await pending.promise.catch(() => undefined)
+    })
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Registrar entrega' }) as HTMLButtonElement).disabled).toBe(false))
+
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega-p2' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar entrega' }))
+    await waitFor(() => expect(deliverProject).toHaveBeenCalledTimes(2))
+    expect(deliverProject).toHaveBeenLastCalledWith('p2', {
+      deliveryUrl: 'https://example.test/entrega-p2', filesUrl: '', finalNotes: '', confirmed: true,
+    })
+  })
+
+  it.each(['resolve', 'reject'] as const)('descarta resposta de entrega após desmontagem: %s', async (outcome) => {
+    const pending = deferred<Project>()
+    deliverProject.mockReturnValueOnce(pending.promise)
+    const onDelivered = vi.fn()
+    const { unmount } = render(<ProjectDeliveryPanel project={project} onDelivered={onDelivered} />)
+    fireEvent.change(screen.getByLabelText('Link de entrega *'), { target: { value: 'https://example.test/entrega' } })
+    fireEvent.click(screen.getByLabelText('Entrega confirmada com o cliente'))
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirmar entrega' }))
+    await waitFor(() => expect(deliverProject).toHaveBeenCalledTimes(1))
+    unmount()
+    render(<ProjectDeliveryPanel project={{ ...project, id: 'p2' }} onDelivered={onDelivered} />)
+    expect((screen.getByRole('button', { name: 'Registrar entrega' }) as HTMLButtonElement).disabled).toBe(false)
+
+    await act(async () => {
+      if (outcome === 'resolve') {
+        pending.resolve({
+          ...project, status: 'delivered', delivered_at: '2026-11-26T12:00:00Z',
+          delivery_url: 'https://example.test/entrega',
+        })
+        await pending.promise
+      } else {
+        pending.reject(new Error('Falha após desmontagem.'))
+        await pending.promise.catch(() => undefined)
+      }
+    })
+
+    expect(toast).not.toHaveBeenCalled()
+    expect(onDelivered).not.toHaveBeenCalled()
+    expect((screen.getByRole('button', { name: 'Registrar entrega' }) as HTMLButtonElement).disabled).toBe(false)
   })
 })
 
@@ -242,6 +344,7 @@ function SwitchProbe({ project: currentProject, onDelivered }: {
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((res) => { resolve = res })
-  return { promise, resolve }
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
 }

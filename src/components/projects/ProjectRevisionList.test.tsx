@@ -87,6 +87,45 @@ describe('ProjectRevisionList', () => {
     expect(updateRevision).toHaveBeenCalledTimes(1)
   })
 
+  it.each(['create', 'edit', 'status'] as const)('preserva o resultado local de %s quando o refresh falha', async (operation) => {
+    const initial = makeRevision(operation === 'create' ? 'requested' : 'completed')
+    const returned = {
+      ...initial,
+      id: operation === 'create' ? 'r-new' : initial.id,
+      description: 'Revisão persistida',
+      status: operation === 'status' ? 'in_progress' as const : initial.status,
+      notes: 'Nota persistida',
+    }
+    listRevisions
+      .mockResolvedValueOnce(operation === 'create' ? [] : [initial])
+      .mockRejectedValueOnce(new Error('Falha ao atualizar revisões.'))
+    const mutation = operation === 'create' ? createRevision : updateRevision
+    mutation.mockResolvedValue(returned)
+    render(<ProjectRevisionList projectId="p1" onChanged={vi.fn()} />)
+
+    if (operation === 'create') {
+      await screen.findByText('Nenhuma revisão registrada.')
+      fireEvent.click(screen.getByRole('button', { name: 'Nova revisão' }))
+      fireEvent.change(screen.getByLabelText('Descrição *'), { target: { value: 'Descrição enviada' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Registrar revisão' }))
+    } else {
+      await screen.findByText('Ajustar cores')
+      if (operation === 'edit') {
+        fireEvent.click(screen.getByRole('button', { name: 'Editar revisão' }))
+        fireEvent.change(screen.getByLabelText('Descrição *'), { target: { value: 'Descrição editada' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Salvar revisão' }))
+      } else {
+        fireEvent.change(screen.getByLabelText('Status da revisão'), { target: { value: 'in_progress' } })
+      }
+    }
+
+    expect((await screen.findByText('Falha ao atualizar revisões.')).textContent).toBe('Falha ao atualizar revisões.')
+    expect(screen.getByText('Revisão persistida')).toBeTruthy()
+    expect(screen.getByText('Nota persistida')).toBeTruthy()
+    expect((screen.getByLabelText('Status da revisão') as HTMLSelectElement).value).toBe(returned.status)
+    expect(mutation).toHaveBeenCalledTimes(1)
+  })
+
   it('revisão aprovada permanece read-only e edição não oferece approved', async () => {
     listRevisions.mockResolvedValue([makeRevision('approved')])
     render(<ProjectRevisionList projectId="p1" onChanged={vi.fn()} />)
@@ -154,10 +193,96 @@ describe('ProjectRevisionList', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(updateRevision).not.toHaveBeenCalled()
   })
+
+  it.each([
+    { operation: 'create', outcome: 'resolve' },
+    { operation: 'create', outcome: 'reject' },
+    { operation: 'update', outcome: 'resolve' },
+    { operation: 'update', outcome: 'reject' },
+  ] as const)('descarta $operation de p1 $outcome após trocar para p2', async ({ operation, outcome }) => {
+    const p1 = makeRevision('completed')
+    const p2 = { ...makeRevision('completed'), id: 'r2', project_id: 'p2', description: 'Revisão do projeto p2' }
+    listRevisions.mockResolvedValueOnce([p1]).mockResolvedValueOnce([p2])
+    const pending = deferred<ProjectRevision>()
+    const mutation = operation === 'create' ? createRevision : updateRevision
+    mutation.mockReturnValueOnce(pending.promise)
+    const onChanged = vi.fn()
+    const { rerender } = render(<ProjectRevisionList projectId="p1" onChanged={onChanged} />)
+    await screen.findByText('Ajustar cores')
+
+    if (operation === 'create') {
+      fireEvent.click(screen.getByRole('button', { name: 'Nova revisão' }))
+      fireEvent.change(screen.getByLabelText('Descrição *'), { target: { value: 'Nova revisão antiga' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Registrar revisão' }))
+    } else {
+      fireEvent.click(screen.getByRole('button', { name: 'Editar revisão' }))
+      fireEvent.change(screen.getByLabelText('Descrição *'), { target: { value: 'Edição antiga' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar revisão' }))
+    }
+    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1))
+
+    rerender(<ProjectRevisionList projectId="p2" onChanged={onChanged} />)
+    await screen.findByText('Revisão do projeto p2')
+    const reloadCalls = listRevisions.mock.calls.length
+    await act(async () => {
+      if (outcome === 'resolve') {
+        pending.resolve({ ...p1, id: operation === 'create' ? 'r-old' : p1.id, description: 'Revisão antiga' })
+        await pending.promise
+      } else {
+        pending.reject(new Error('Falha na mutação anterior.'))
+        await pending.promise.catch(() => undefined)
+      }
+    })
+
+    expect(toast).not.toHaveBeenCalled()
+    expect(onChanged).not.toHaveBeenCalled()
+    expect(listRevisions).toHaveBeenCalledTimes(reloadCalls)
+    expect(screen.queryByText('Revisão antiga')).toBeNull()
+    expect(screen.getByText('Revisão do projeto p2')).toBeTruthy()
+  })
+
+  it.each(['create', 'update'] as const)('descarta resposta de %s após desmontagem', async (operation) => {
+    listRevisions.mockResolvedValueOnce(operation === 'create' ? [] : [makeRevision('completed')])
+    const pending = deferred<ProjectRevision>()
+    const mutation = operation === 'create' ? createRevision : updateRevision
+    mutation.mockReturnValueOnce(pending.promise)
+    const onChanged = vi.fn()
+    const { unmount } = render(<ProjectRevisionList projectId="p1" onChanged={onChanged} />)
+
+    if (operation === 'create') {
+      await screen.findByText('Nenhuma revisão registrada.')
+      fireEvent.click(screen.getByRole('button', { name: 'Nova revisão' }))
+      fireEvent.change(screen.getByLabelText('Descrição *'), { target: { value: 'Revisão pendente' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Registrar revisão' }))
+    } else {
+      await screen.findByText('Ajustar cores')
+      fireEvent.click(screen.getByRole('button', { name: 'Editar revisão' }))
+      fireEvent.change(screen.getByLabelText('Descrição *'), { target: { value: 'Revisão pendente' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Salvar revisão' }))
+    }
+    await waitFor(() => expect(mutation).toHaveBeenCalledTimes(1))
+    const reloadCalls = listRevisions.mock.calls.length
+    unmount()
+
+    await act(async () => {
+      if (operation === 'create') {
+        pending.resolve({ ...makeRevision('requested'), id: 'r-new', description: 'Revisão pendente' })
+        await pending.promise
+      } else {
+        pending.reject(new Error('Falha após desmontagem.'))
+        await pending.promise.catch(() => undefined)
+      }
+    })
+
+    expect(toast).not.toHaveBeenCalled()
+    expect(onChanged).not.toHaveBeenCalled()
+    expect(listRevisions).toHaveBeenCalledTimes(reloadCalls)
+  })
 })
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((res) => { resolve = res })
-  return { promise, resolve }
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
 }
