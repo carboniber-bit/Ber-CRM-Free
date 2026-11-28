@@ -4415,7 +4415,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import type { DndContextProps, DragEndEvent } from '@dnd-kit/core'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { PROJECT_MOVE_STATUSES, type ProjectListItem } from '../types/project'
+import { PROJECT_MOVE_STATUSES, type ProjectFilters, type ProjectListItem } from '../types/project'
 
 const { listProjects, listProjectsForBoard, setProjectStatus } = vi.hoisted(() => ({
   listProjects: vi.fn(), listProjectsForBoard: vi.fn(), setProjectStatus: vi.fn(),
@@ -4610,6 +4610,58 @@ describe('ProjectsPage', () => {
     expect(screen.getByText('Site da Empresa')).toBeTruthy()
   })
 
+  it('adia a leitura do Kanban durante movimentação e aplica os filtros mais recentes', async () => {
+    const pendingMove = deferred<ProjectListItem>()
+    const pendingBoard = deferred<{ projects: ProjectListItem[]; partial: boolean }>()
+    let moveConfirmed = false
+    let filteredSnapshot: { projects: ProjectListItem[]; partial: boolean } | undefined
+    setProjectStatus.mockReturnValueOnce(pendingMove.promise)
+    listProjectsForBoard.mockImplementation((filters: ProjectFilters) => {
+      const snapshot: { projects: ProjectListItem[]; partial: boolean } = {
+        projects: [{ ...project, status: moveConfirmed ? 'in_review' : 'in_development' }],
+        partial: false,
+      }
+      if (filters.search === 'Site') {
+        filteredSnapshot = snapshot
+        return pendingBoard.promise
+      }
+      return Promise.resolve(snapshot)
+    })
+    render(<MemoryRouter><ProjectsPage /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: 'Kanban' }))
+    const selector = await screen.findByLabelText('Status do projeto Site da Empresa') as HTMLSelectElement
+    expect(selector.value).toBe('in_development')
+    fireEvent.change(selector, { target: { value: 'in_review' } })
+    await waitFor(() => expect(setProjectStatus).toHaveBeenCalledWith('p1', 'in_review'))
+    fireEvent.change(screen.getByLabelText('Buscar projetos'), { target: { value: 'Site' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Aplicar filtros' }))
+    expect(listProjectsForBoard).toHaveBeenCalledTimes(1)
+    expect(listProjectsForBoard).toHaveBeenLastCalledWith({})
+    const pendingSelector = screen.getByLabelText('Status do projeto Site da Empresa') as HTMLSelectElement
+    expect(pendingSelector.value).toBe('in_review')
+    expect(pendingSelector.disabled).toBe(true)
+
+    await act(async () => {
+      moveConfirmed = true
+      pendingMove.resolve({ ...project, status: 'in_review' })
+      await pendingMove.promise
+    })
+    await waitFor(() => expect(listProjectsForBoard).toHaveBeenCalledTimes(2))
+    expect(listProjectsForBoard).toHaveBeenLastCalledWith({ search: 'Site' })
+    expect(filteredSnapshot).toEqual({
+      projects: [expect.objectContaining({ status: 'in_review' })], partial: false,
+    })
+    await act(async () => {
+      pendingBoard.resolve(filteredSnapshot!)
+      await pendingBoard.promise
+    })
+    const liveSelector = screen.getByLabelText('Status do projeto Site da Empresa') as HTMLSelectElement
+    await waitFor(() => {
+      expect(liveSelector.disabled).toBe(false)
+      expect(liveSelector.value).toBe('in_review')
+    })
+  })
+
   it('seletor mobile usa exatamente PROJECT_MOVE_STATUSES e move otimisticamente', async () => {
     const pending = deferred<ProjectListItem>()
     setProjectStatus.mockReturnValueOnce(pending.promise)
@@ -4618,14 +4670,19 @@ describe('ProjectsPage', () => {
     const selector = await screen.findByLabelText('Status do projeto Site da Empresa') as HTMLSelectElement
     expect(Array.from(selector.options, (option) => option.value)).toEqual([...PROJECT_MOVE_STATUSES])
     fireEvent.change(selector, { target: { value: 'in_review' } })
-    expect(selector.value).toBe('in_review')
-    expect(selector.disabled).toBe(true)
+    const pendingSelector = await screen.findByLabelText('Status do projeto Site da Empresa') as HTMLSelectElement
+    expect(pendingSelector.value).toBe('in_review')
+    expect(pendingSelector.disabled).toBe(true)
     await waitFor(() => expect(setProjectStatus).toHaveBeenCalledWith('p1', 'in_review'))
     await act(async () => {
       pending.resolve({ ...project, status: 'in_review' })
       await pending.promise
     })
-    await waitFor(() => expect(selector.disabled).toBe(false))
+    await waitFor(() => {
+      const liveSelector = screen.getByLabelText('Status do projeto Site da Empresa') as HTMLSelectElement
+      expect(liveSelector.disabled).toBe(false)
+      expect(liveSelector.value).toBe('in_review')
+    })
   })
 
   it('drag fora do board não move e falha faz rollback com toast', async () => {
@@ -4895,7 +4952,7 @@ export function ProjectPriorityBadge({ priority }: { priority: ProjectPriority }
 Create `src/components/projects/ProjectCard.tsx`:
 
 ```tsx
-import { Link } from 'react-router-dom'
+import { Link, useInRouterContext } from 'react-router-dom'
 import { formatMoney } from '../../lib/money'
 import type { ProjectListItem } from '../../types/project'
 import { Card } from '../ui/Card'
@@ -4917,13 +4974,17 @@ export function formatProjectDate(value: string | null): string {
 }
 
 export function ProjectCard({ project, pending = false }: ProjectCardProps) {
+  const inRouter = useInRouterContext()
+  const titleClassName = 'font-display text-base font-bold text-ink hover:text-primary'
   return (
     <Card className={`flex h-full flex-col gap-4 ${pending ? 'border-lime/50' : ''}`} aria-busy={pending}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <Link className="font-display text-base font-bold text-ink hover:text-primary" to={`/projetos/${project.id}`}>
-            {project.name}
-          </Link>
+          {inRouter ? (
+            <Link className={titleClassName} to={`/projetos/${project.id}`}>{project.name}</Link>
+          ) : (
+            <a className={titleClassName} href={`/projetos/${project.id}`}>{project.name}</a>
+          )}
           <p className="mt-1 text-sm text-muted">
             {project.client_name ? `${project.client_name} · ` : ''}{project.service}
           </p>
@@ -5021,7 +5082,8 @@ function ProjectStatusControl({
       disabled={pending}
       onChange={(event) => {
         const next = event.target.value
-        if (!pending && isMoveStatus(next)) void onMove(project.id, next)
+        if (pending || !isMoveStatus(next)) return
+        void onMove(project.id, next)
       }}
     />
   )
@@ -5278,15 +5340,16 @@ export function ProjectsPage() {
     }
   }, [filters])
 
-  useEffect(() => {
-    if (view === 'kanban') void loadBoard()
-  }, [view, loadBoard])
-
   const queue = useProjectStatusQueue({
     projects: boardProjects,
     onChange: setBoardProjects,
     onRefresh: loadBoard,
   })
+
+  useEffect(() => {
+    if (view !== 'kanban') return
+    void queue.requestRefresh()
+  }, [view, filters, queue.requestRefresh])
 
   const changeView = (next: ViewMode) => {
     if (next === view) return
@@ -5370,41 +5433,39 @@ export function ProjectsPage() {
         )}
       </div>
 
-      {view !== 'kanban' && (
-        <Card>
-          <form className="flex flex-col gap-4" onSubmit={applyFilters}>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              <Input label="Buscar projetos" value={draftFilters.search} onChange={(event) => setDraftFilters((current) => ({ ...current, search: event.target.value }))} />
-              <Select
-                label="Cliente"
-                value={draftFilters.clientId}
-                options={[{ value: '', label: 'Todos os clientes' }, ...clientOptions]}
-                onChange={(event) => setDraftFilters((current) => ({ ...current, clientId: event.target.value }))}
-              />
-              <Select
-                label="Status"
-                value={draftFilters.status}
-                options={[{ value: '', label: 'Todos os status' }, ...PROJECT_STATUSES.map((status) => ({ value: status, label: PROJECT_STATUS_LABELS[status] }))]}
-                onChange={(event) => setDraftFilters((current) => ({ ...current, status: event.target.value }))}
-              />
-              <Select
-                label="Prioridade"
-                value={draftFilters.priority}
-                options={[{ value: '', label: 'Todas as prioridades' }, ...Object.entries(PROJECT_PRIORITY_LABELS).map(([value, label]) => ({ value, label }))]}
-                onChange={(event) => setDraftFilters((current) => ({ ...current, priority: event.target.value }))}
-              />
-              <Input label="Prazo inicial" type="date" value={draftFilters.dueFrom} onChange={(event) => setDraftFilters((current) => ({ ...current, dueFrom: event.target.value }))} />
-              <Input label="Prazo final" type="date" value={draftFilters.dueTo} onChange={(event) => setDraftFilters((current) => ({ ...current, dueTo: event.target.value }))} />
-              <Select label="Ordenação" value={sort} options={SORT_OPTIONS} onChange={(event) => { setSort(event.target.value as ProjectSort); setPage(0) }} />
-            </div>
-            {clientLoadError && <p className="text-sm text-danger">{clientLoadError}</p>}
-            <div className="flex flex-wrap gap-2">
-              <Button type="submit" variant="primary">Aplicar filtros</Button>
-              <Button type="button" variant="ghost" onClick={() => { setDraftFilters(EMPTY_FILTERS); setFilters({}); setPage(0) }}>Limpar filtros</Button>
-            </div>
-          </form>
-        </Card>
-      )}
+      <Card>
+        <form className="flex flex-col gap-4" onSubmit={applyFilters}>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <Input label="Buscar projetos" value={draftFilters.search} onChange={(event) => setDraftFilters((current) => ({ ...current, search: event.target.value }))} />
+            <Select
+              label="Cliente"
+              value={draftFilters.clientId}
+              options={[{ value: '', label: 'Todos os clientes' }, ...clientOptions]}
+              onChange={(event) => setDraftFilters((current) => ({ ...current, clientId: event.target.value }))}
+            />
+            <Select
+              label="Status"
+              value={draftFilters.status}
+              options={[{ value: '', label: 'Todos os status' }, ...PROJECT_STATUSES.map((status) => ({ value: status, label: PROJECT_STATUS_LABELS[status] }))]}
+              onChange={(event) => setDraftFilters((current) => ({ ...current, status: event.target.value }))}
+            />
+            <Select
+              label="Prioridade"
+              value={draftFilters.priority}
+              options={[{ value: '', label: 'Todas as prioridades' }, ...Object.entries(PROJECT_PRIORITY_LABELS).map(([value, label]) => ({ value, label }))]}
+              onChange={(event) => setDraftFilters((current) => ({ ...current, priority: event.target.value }))}
+            />
+            <Input label="Prazo inicial" type="date" value={draftFilters.dueFrom} onChange={(event) => setDraftFilters((current) => ({ ...current, dueFrom: event.target.value }))} />
+            <Input label="Prazo final" type="date" value={draftFilters.dueTo} onChange={(event) => setDraftFilters((current) => ({ ...current, dueTo: event.target.value }))} />
+            <Select label="Ordenação" value={sort} options={SORT_OPTIONS} onChange={(event) => { setSort(event.target.value as ProjectSort); setPage(0) }} />
+          </div>
+          {clientLoadError && <p className="text-sm text-danger">{clientLoadError}</p>}
+          <div className="flex flex-wrap gap-2">
+            <Button type="submit" variant="primary">Aplicar filtros</Button>
+            <Button type="button" variant="ghost" onClick={() => { setDraftFilters(EMPTY_FILTERS); setFilters({}); setPage(0) }}>Limpar filtros</Button>
+          </div>
+        </form>
+      </Card>
 
       {view === 'kanban' ? (
         <section className="flex flex-col gap-4" aria-label="Kanban de projetos">
@@ -5506,7 +5567,7 @@ export function ProjectsPage() {
 }
 ```
 
-Cards, lista e Kanban compartilham o mesmo `ProjectFilters`; `listProjectsForBoard(filters)` aplica busca, cliente, status, prioridade e prazo antes de anexar métricas. A fila é a única chamadora de `setProjectStatus`; retry e refresh manual passam por `requestRefresh` e preservam o recorte carregado.
+Cards, lista e Kanban compartilham o mesmo `ProjectFilters`; `listProjectsForBoard(filters)` aplica busca, cliente, status, prioridade e prazo antes de anexar métricas. A fila é a única chamadora de `setProjectStatus`; carregamento inicial, filtros/view, retry e refresh manual passam por `requestRefresh`. Durante uma mutação, a leitura é adiada e usa o callback com os filtros mais recentes após a fila esvaziar, evitando que um snapshot obsoleto reponha o status confirmado. O formulário de filtros permanece visível também no Kanban.
 
 - [ ] **Step 4: Run tests and build**
 
