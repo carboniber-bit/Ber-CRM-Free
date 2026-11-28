@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { MessageSquareText } from 'lucide-react'
 import { useToast } from '../../hooks/useToast'
 import {
@@ -61,6 +61,12 @@ function writeFromDraft(draft: RevisionDraft): ProjectRevisionWrite {
   }
 }
 
+function upsertRevision(revisions: ProjectRevision[], revision: ProjectRevision): ProjectRevision[] {
+  return revisions.some((current) => current.id === revision.id)
+    ? revisions.map((current) => current.id === revision.id ? revision : current)
+    : [revision, ...revisions]
+}
+
 function formatDateTime(value: string | null): string {
   if (!value) return 'Não definido'
   const date = new Date(value)
@@ -84,44 +90,45 @@ export function ProjectRevisionList({ projectId, onChanged, disabled = false }: 
   const [approving, setApproving] = useState<ProjectRevision | null>(null)
   const [saving, setSaving] = useState(false)
   const savingRef = useRef(false)
-  const mountedRef = useRef(true)
+  const mountedRef = useRef(false)
   const requestRef = useRef(0)
   const projectIdRef = useRef(projectId)
-  projectIdRef.current = projectId
-  const loadStateRef = useRef(loadState)
-  loadStateRef.current = loadState
 
-  const reload = useCallback(async (background = false): Promise<void> => {
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    projectIdRef.current = projectId
+    return () => { mountedRef.current = false }
+  }, [projectId])
+
+  const reload = useCallback(async (background = false, mutated?: ProjectRevision): Promise<void> => {
     const request = ++requestRef.current
-    const previous = loadStateRef.current
-    const retained = previous.projectId === projectId
-      ? previous.status === 'ready'
-        ? previous.revisions
-        : previous.status === 'error' ? previous.revisions : null
-      : null
-    if (!background) setLoadState({ status: 'loading', projectId })
+    if (!background) {
+      setLoadState((previous) => previous.projectId === projectId
+        ? { status: 'loading', projectId }
+        : previous)
+    }
     try {
       const revisions = await listRevisions(projectId)
       if (!mountedRef.current || projectIdRef.current !== projectId || request !== requestRef.current) return
       setLoadState({ status: 'ready', projectId, revisions })
     } catch (cause) {
       if (!mountedRef.current || projectIdRef.current !== projectId || request !== requestRef.current) return
-      setLoadState({
-        status: 'error',
-        projectId,
-        message: errorMessage(cause, 'Não foi possível carregar as revisões. Tente novamente.'),
-        revisions: retained,
+      const message = errorMessage(cause, 'Não foi possível carregar as revisões. Tente novamente.')
+      setLoadState((previous) => {
+        const retained = previous.projectId === projectId
+          ? previous.status === 'ready'
+            ? previous.revisions
+            : previous.status === 'error' ? previous.revisions : null
+          : null
+        return {
+          status: 'error', projectId, message,
+          revisions: mutated ? upsertRevision(retained ?? [], mutated) : retained,
+        }
       })
     }
   }, [projectId])
 
   useEffect(() => {
-    mountedRef.current = true
-    return () => { mountedRef.current = false }
-  }, [])
-
-  useEffect(() => {
-    setLoadState({ status: 'loading', projectId })
     setFormOpen(false)
     setEditing(null)
     setApproving(null)
@@ -138,15 +145,27 @@ export function ProjectRevisionList({ projectId, onChanged, disabled = false }: 
     : []
   const actionsDisabled = disabled || saving
 
-  const perform = async (action: () => Promise<void>, success: string) => {
+  const perform = async (
+    action: () => Promise<ProjectRevision>,
+    success: string,
+    onSuccess?: () => void,
+  ) => {
     if (savingRef.current || disabled) return
     savingRef.current = true
     setSaving(true)
     try {
-      await action()
+      const updated = await action()
       if (!mountedRef.current || projectIdRef.current !== projectId) return
+      setLoadState((previous) => {
+        if (previous.projectId !== projectId) return previous
+        const retained = previous.status === 'ready'
+          ? previous.revisions
+          : previous.status === 'error' ? previous.revisions ?? [] : []
+        return { status: 'ready', projectId, revisions: upsertRevision(retained, updated) }
+      })
+      onSuccess?.()
       toast(success)
-      await reload(true)
+      await reload(true, updated)
       if (mountedRef.current && projectIdRef.current === projectId) onChanged()
     } catch (cause) {
       if (mountedRef.current && projectIdRef.current === projectId) {
@@ -193,12 +212,13 @@ export function ProjectRevisionList({ projectId, onChanged, disabled = false }: 
     }
     setError(null)
     const payload = writeFromDraft(draft)
-    void perform(async () => {
-      if (editing) await updateRevision(editing.id, payload)
-      else await createRevision(projectId, payload)
-      setFormOpen(false)
-      setEditing(null)
-    }, editing ? 'Revisão atualizada.' : 'Revisão registrada.')
+    void perform(
+      async () => editing
+        ? updateRevision(editing.id, payload)
+        : createRevision(projectId, payload),
+      editing ? 'Revisão atualizada.' : 'Revisão registrada.',
+      () => { setFormOpen(false); setEditing(null) },
+    )
   }
 
   const changeStatus = (revision: ProjectRevision, value: string) => {
@@ -206,18 +226,20 @@ export function ProjectRevisionList({ projectId, onChanged, disabled = false }: 
       revision.project_id !== projectId || revision.status === 'approved'
       || !isRevisionStatus(value) || value === 'approved' || value === revision.status || actionsDisabled
     ) return
-    void perform(async () => {
-      await updateRevision(revision.id, writeFromRevision(revision, value))
-    }, 'Status da revisão atualizado.')
+    void perform(
+      async () => updateRevision(revision.id, writeFromRevision(revision, value)),
+      'Status da revisão atualizado.',
+    )
   }
 
   const approve = async () => {
     if (!approving || actionsDisabled || approving.project_id !== projectId || approving.status !== 'completed') return
     const revision = approving
-    await perform(async () => {
-      await updateRevision(revision.id, writeFromRevision(revision, 'approved'))
-      setApproving(null)
-    }, 'Revisão aprovada.')
+    await perform(
+      async () => updateRevision(revision.id, writeFromRevision(revision, 'approved')),
+      'Revisão aprovada.',
+      () => setApproving(null),
+    )
   }
 
   if (!stateBelongsToProject || loadState.status === 'loading') {

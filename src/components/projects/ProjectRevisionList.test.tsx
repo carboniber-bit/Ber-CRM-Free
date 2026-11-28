@@ -22,8 +22,10 @@ import { ProjectRevisionList } from './ProjectRevisionList'
 function makeRevision(status: ProjectRevision['status'] = 'completed'): ProjectRevision {
   return {
     id: 'r1', owner_id: 'owner-1', project_id: 'p1', requested_at: '2026-11-25T12:00:00Z',
-    description: 'Ajustar cores', responsible_name: null, status, completed_at: null,
-    approved_at: null, notes: null, created_at: '2026-11-25T12:00:00Z', updated_at: '2026-11-25T12:00:00Z',
+    description: 'Ajustar cores', responsible_name: null, status,
+    completed_at: status === 'completed' || status === 'approved' ? '2026-11-25T12:30:00Z' : null,
+    approved_at: status === 'approved' ? '2026-11-25T13:00:00Z' : null,
+    notes: null, created_at: '2026-11-25T12:00:00Z', updated_at: '2026-11-25T12:00:00Z',
   }
 }
 
@@ -38,7 +40,7 @@ describe('ProjectRevisionList', () => {
   })
 
   it('mostra vazio e permite registrar revisão', async () => {
-    createRevision.mockResolvedValue({ id: 'r1' })
+    createRevision.mockResolvedValue(makeRevision('requested'))
     render(<ProjectRevisionList projectId="p1" onChanged={vi.fn()} />)
     await screen.findByText('Nenhuma revisão registrada.')
     fireEvent.click(screen.getByRole('button', { name: 'Nova revisão' }))
@@ -49,7 +51,7 @@ describe('ProjectRevisionList', () => {
 
   it('aprovação exige confirmação e não oferece delete', async () => {
     listRevisions.mockResolvedValue([makeRevision('completed')])
-    updateRevision.mockResolvedValue({ id: 'r1', status: 'approved' })
+    updateRevision.mockResolvedValue({ ...makeRevision('completed'), status: 'approved', approved_at: '2026-11-25T13:00:00Z' })
     render(<ProjectRevisionList projectId="p1" onChanged={vi.fn()} />)
     fireEvent.click(await screen.findByRole('button', { name: 'Aprovar revisão' }))
     expect(updateRevision).not.toHaveBeenCalled()
@@ -59,6 +61,30 @@ describe('ProjectRevisionList', () => {
     expect(screen.queryByRole('button', { name: /Excluir revisão/ })).toBeNull()
     expect(updateRevision.mock.calls[0][1]).not.toHaveProperty('approved_at')
     expect(updateRevision.mock.calls[0][1]).not.toHaveProperty('completed_at')
+  })
+
+  it('preserva a aprovação local quando o refresh em background falha', async () => {
+    const completed = makeRevision('completed')
+    const approved = {
+      ...completed, status: 'approved' as const,
+      approved_at: '2026-11-25T13:00:00Z', updated_at: '2026-11-25T13:00:00Z',
+    }
+    listRevisions
+      .mockResolvedValueOnce([completed])
+      .mockRejectedValueOnce(new Error('Falha ao atualizar revisões.'))
+    updateRevision.mockResolvedValue(approved)
+    render(<ProjectRevisionList projectId="p1" onChanged={vi.fn()} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Aprovar revisão' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar aprovação' }))
+
+    expect((await screen.findByText('Falha ao atualizar revisões.')).textContent).toBe('Falha ao atualizar revisões.')
+    expect(screen.getByText('Aprovada')).toBeTruthy()
+    expect(screen.getByText(/Aprovada em/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Editar revisão' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Aprovar revisão' })).toBeNull()
+    expect(screen.queryByLabelText('Status da revisão')).toBeNull()
+    expect(updateRevision).toHaveBeenCalledTimes(1)
   })
 
   it('revisão aprovada permanece read-only e edição não oferece approved', async () => {
