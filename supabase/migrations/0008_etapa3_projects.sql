@@ -710,7 +710,7 @@ as $$
 declare
   v_owner uuid := auth.uid();
 begin
-  if v_owner is null then raise exception 'Sessão autenticada necessária.' using errcode = '42501'; end if;
+  if v_owner is null then return null; end if;
   perform pg_catalog.pg_advisory_xact_lock(
     pg_catalog.hashtextextended(v_owner::text || ':project_tasks', 0)
   );

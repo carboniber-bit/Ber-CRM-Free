@@ -21,6 +21,10 @@ declare
   v_deleted_task_id uuid;
   v_cascade_project_id uuid;
   v_cascade_task_id uuid;
+  v_cascade_revision_id uuid;
+  v_cascade_owner uuid := gen_random_uuid();
+  v_cascade_client_id uuid;
+  v_cascade_contract_id uuid;
   v_task_completed_at timestamptz;
   v_revision_approved_at timestamptz;
   v_archived_at timestamptz := '2026-02-03T04:05:06Z';
@@ -535,15 +539,75 @@ begin
   insert into public.project_tasks (owner_id, project_id, title)
   values (v_owner, v_cascade_project_id, 'Tarefa removida pela cascata')
   returning id into v_cascade_task_id;
+  insert into public.project_revisions (owner_id, project_id, description)
+  values (v_owner, v_cascade_project_id, 'Revisão removida pela cascata')
+  returning id into v_cascade_revision_id;
+
+  perform set_config('request.jwt.claim.sub', '', true);
+  if auth.uid() is not null then
+    raise exception 'A claim JWT não foi removida antes da cascata privilegiada.';
+  end if;
   delete from public.projects where id = v_cascade_project_id and owner_id = v_owner;
   if exists (select 1 from public.project_tasks where id = v_cascade_task_id) then
-    raise exception 'Cascata do projeto não removeu a tarefa.';
+    raise exception 'Cascata do projeto sem claim não removeu a tarefa.';
+  end if;
+  if exists (select 1 from public.project_revisions where id = v_cascade_revision_id) then
+    raise exception 'Cascata do projeto sem claim não removeu a revisão.';
   end if;
   if exists (
     select 1 from public.client_activities
-    where project_id = v_cascade_project_id or metadata ->> 'task_id' = v_cascade_task_id::text
+    where project_id = v_cascade_project_id
+      or metadata ->> 'task_id' = v_cascade_task_id::text
+      or metadata ->> 'revision_id' = v_cascade_revision_id::text
   ) then
-    raise exception 'Cascata do projeto tentou criar histórico para uma tarefa sem projeto.';
+    raise exception 'Cascata do projeto sem claim deixou histórico órfão.';
+  end if;
+
+  insert into auth.users (id, email)
+  values (v_cascade_owner, 'etapa3-projects-cascade-' || v_cascade_owner::text || '@example.test');
+  insert into public.clients (owner_id, creation_key, name)
+  values (v_cascade_owner, gen_random_uuid(), 'Cliente para cascata de usuário')
+  returning id into v_cascade_client_id;
+  insert into public.contracts (owner_id, client_id, service, total_value, contracted_at)
+  values (v_cascade_owner, v_cascade_client_id, 'Site', 0, v_today)
+  returning id into v_cascade_contract_id;
+  insert into public.projects (
+    owner_id, client_id, contract_id, name, service, contracted_value
+  ) values (
+    v_cascade_owner, v_cascade_client_id, v_cascade_contract_id,
+    'Projeto para cascata de usuário', 'Site', 0
+  ) returning id into v_cascade_project_id;
+  perform set_config('request.jwt.claim.sub', v_cascade_owner::text, true);
+  insert into public.project_tasks (owner_id, project_id, title)
+  values (v_cascade_owner, v_cascade_project_id, 'Tarefa removida pela cascata de usuário')
+  returning id into v_cascade_task_id;
+  insert into public.project_revisions (owner_id, project_id, description)
+  values (v_cascade_owner, v_cascade_project_id, 'Revisão removida pela cascata de usuário')
+  returning id into v_cascade_revision_id;
+
+  perform set_config('request.jwt.claim.sub', '', true);
+  if auth.uid() is not null then
+    raise exception 'A claim JWT não foi removida antes da cascata de usuário.';
+  end if;
+  delete from auth.users where id = v_cascade_owner;
+  if exists (select 1 from auth.users where id = v_cascade_owner)
+    or exists (select 1 from public.projects where id = v_cascade_project_id) then
+    raise exception 'Cascata de usuário sem claim não removeu o projeto.';
+  end if;
+  if exists (select 1 from public.project_tasks where id = v_cascade_task_id) then
+    raise exception 'Cascata de usuário sem claim não removeu a tarefa.';
+  end if;
+  if exists (select 1 from public.project_revisions where id = v_cascade_revision_id) then
+    raise exception 'Cascata de usuário sem claim não removeu a revisão.';
+  end if;
+  if exists (
+    select 1 from public.client_activities
+    where owner_id = v_cascade_owner
+      or project_id = v_cascade_project_id
+      or metadata ->> 'task_id' = v_cascade_task_id::text
+      or metadata ->> 'revision_id' = v_cascade_revision_id::text
+  ) then
+    raise exception 'Cascata de usuário sem claim deixou histórico órfão.';
   end if;
 
   raise notice 'Contrato SQL de projetos aprovado.';
