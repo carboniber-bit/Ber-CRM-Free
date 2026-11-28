@@ -1,0 +1,359 @@
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { ArrowDown, ArrowUp, ListTodo } from 'lucide-react'
+import { calculateProjectProgress } from '../../lib/projectProgress'
+import { useToast } from '../../hooks/useToast'
+import {
+  createTask, deleteTask, listTasks, reorderTasks, updateTask,
+} from '../../services/projectTaskService'
+import {
+  TASK_STATUSES, type ProjectPriority, type ProjectTask, type ProjectTaskWrite, type TaskStatus,
+} from '../../types/project'
+import { Button } from '../ui/Button'
+import { ConfirmDialog } from '../ui/ConfirmDialog'
+import { EmptyState } from '../ui/EmptyState'
+import { Input } from '../ui/Input'
+import { Modal } from '../ui/Modal'
+import { Select } from '../ui/Select'
+import { Skeleton } from '../ui/Skeleton'
+import { Textarea } from '../ui/Textarea'
+import { formatProjectDate } from './ProjectCard'
+import { PROJECT_PRIORITY_LABELS } from './ProjectPriorityBadge'
+
+interface ProjectTaskListProps {
+  projectId: string
+  onChanged: () => void
+  disabled?: boolean
+}
+
+interface TaskDraft {
+  title: string
+  description: string
+  status: TaskStatus
+  responsibleName: string
+  startDate: string
+  dueDate: string
+  priority: ProjectPriority
+  notes: string
+}
+
+type TaskDraftErrors = Partial<Record<keyof TaskDraft, string>>
+type TaskLoadState =
+  | { status: 'loading' }
+  | { status: 'ready'; tasks: ProjectTask[] }
+  | { status: 'error'; message: string; tasks: ProjectTask[] | null }
+
+const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
+  pending: 'Pendente', in_progress: 'Em andamento', completed: 'Concluída', cancelled: 'Cancelada',
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
+}
+
+function emptyDraft(): TaskDraft {
+  return {
+    title: '', description: '', status: 'pending', responsibleName: '',
+    startDate: '', dueDate: '', priority: 'medium', notes: '',
+  }
+}
+
+function draftFromTask(task: ProjectTask): TaskDraft {
+  return {
+    title: task.title, description: task.description ?? '', status: task.status,
+    responsibleName: task.responsible_name ?? '', startDate: task.start_date ?? '',
+    dueDate: task.due_date ?? '', priority: task.priority, notes: task.notes ?? '',
+  }
+}
+
+function writeFromDraft(draft: TaskDraft): ProjectTaskWrite {
+  return {
+    title: draft.title.trim(), description: draft.description.trim(), status: draft.status,
+    responsibleName: draft.responsibleName.trim(), startDate: draft.startDate || null,
+    dueDate: draft.dueDate || null, priority: draft.priority, notes: draft.notes.trim(),
+  }
+}
+
+function writeFromTask(task: ProjectTask, status = task.status): ProjectTaskWrite {
+  return {
+    title: task.title, description: task.description ?? '', status,
+    responsibleName: task.responsible_name ?? '', startDate: task.start_date,
+    dueDate: task.due_date, priority: task.priority, notes: task.notes ?? '',
+  }
+}
+
+function isTaskStatus(value: string): value is TaskStatus {
+  return (TASK_STATUSES as readonly string[]).includes(value)
+}
+
+export function ProjectTaskList({ projectId, onChanged, disabled = false }: ProjectTaskListProps) {
+  const { toast } = useToast()
+  const [loadState, setLoadState] = useState<TaskLoadState>({ status: 'loading' })
+  const [formOpen, setFormOpen] = useState(false)
+  const [editingTask, setEditingTask] = useState<ProjectTask | null>(null)
+  const [draft, setDraft] = useState<TaskDraft>(emptyDraft)
+  const [errors, setErrors] = useState<TaskDraftErrors>({})
+  const [deleteCandidate, setDeleteCandidate] = useState<ProjectTask | null>(null)
+  const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
+  const mountedRef = useRef(true)
+  const requestRef = useRef(0)
+  const projectIdRef = useRef(projectId)
+  projectIdRef.current = projectId
+  const loadStateRef = useRef(loadState)
+  loadStateRef.current = loadState
+
+  const reload = useCallback(async (background = false): Promise<void> => {
+    const request = ++requestRef.current
+    const previous = loadStateRef.current
+    const retained = previous.status === 'ready'
+      ? previous.tasks
+      : previous.status === 'error' ? previous.tasks : null
+    if (!background) setLoadState({ status: 'loading' })
+    try {
+      const tasks = await listTasks(projectId)
+      if (!mountedRef.current || request !== requestRef.current) return
+      setLoadState({ status: 'ready', tasks })
+    } catch (error) {
+      if (!mountedRef.current || request !== requestRef.current) return
+      setLoadState({
+        status: 'error',
+        message: errorMessage(error, 'Não foi possível carregar as tarefas. Tente novamente.'),
+        tasks: retained,
+      })
+    }
+  }, [projectId])
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
+  useEffect(() => {
+    setLoadState({ status: 'loading' })
+    void reload()
+  }, [reload])
+
+  const currentTasks = loadState.status === 'ready'
+    ? loadState.tasks
+    : loadState.status === 'error' ? loadState.tasks ?? [] : []
+  const metrics = calculateProjectProgress(currentTasks)
+  const actionsDisabled = disabled || saving
+
+  const setField = <K extends keyof TaskDraft,>(key: K, value: TaskDraft[K]) => {
+    setDraft((current) => ({ ...current, [key]: value }))
+    setErrors((current) => ({ ...current, [key]: undefined }))
+  }
+
+  const perform = async (action: () => Promise<void>, success: string) => {
+    if (savingRef.current || disabled) return
+    savingRef.current = true
+    setSaving(true)
+    try {
+      await action()
+      if (!mountedRef.current || projectIdRef.current !== projectId) return
+      toast(success)
+      await reload(true)
+      if (mountedRef.current && projectIdRef.current === projectId) onChanged()
+    } catch (error) {
+      if (mountedRef.current && projectIdRef.current === projectId) {
+        toast(errorMessage(error, 'Não foi possível concluir a operação. Tente novamente.'), 'error')
+      }
+    } finally {
+      savingRef.current = false
+      if (mountedRef.current) setSaving(false)
+    }
+  }
+
+  const openCreate = () => {
+    setEditingTask(null)
+    setDraft(emptyDraft())
+    setErrors({})
+    setFormOpen(true)
+  }
+
+  const openEdit = (task: ProjectTask) => {
+    setEditingTask(task)
+    setDraft(draftFromTask(task))
+    setErrors({})
+    setFormOpen(true)
+  }
+
+  const submitTask = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (actionsDisabled) return
+    const nextErrors: TaskDraftErrors = {}
+    if (!draft.title.trim()) nextErrors.title = 'Informe o título da tarefa.'
+    if (draft.startDate && draft.dueDate && draft.dueDate < draft.startDate) {
+      nextErrors.dueDate = 'O prazo não pode anteceder o início.'
+    }
+    setErrors(nextErrors)
+    if (Object.values(nextErrors).some(Boolean)) return
+    const payload = writeFromDraft(draft)
+    void perform(async () => {
+      if (editingTask) await updateTask(editingTask.id, payload)
+      else await createTask(projectId, payload)
+      setFormOpen(false)
+      setEditingTask(null)
+    }, editingTask ? 'Tarefa atualizada.' : 'Tarefa criada.')
+  }
+
+  const changeStatus = (task: ProjectTask, value: string) => {
+    if (!isTaskStatus(value) || value === task.status || actionsDisabled) return
+    void perform(
+      async () => { await updateTask(task.id, writeFromTask(task, value)) },
+      'Status da tarefa atualizado.',
+    )
+  }
+
+  const removeTask = async () => {
+    if (!deleteCandidate || actionsDisabled) return
+    const id = deleteCandidate.id
+    await perform(async () => {
+      await deleteTask(id)
+      setDeleteCandidate(null)
+    }, 'Tarefa excluída.')
+  }
+
+  const moveTask = async (task: ProjectTask, direction: -1 | 1) => {
+    if (actionsDisabled) return
+    const index = currentTasks.findIndex((item) => item.id === task.id)
+    const target = index + direction
+    if (index < 0 || target < 0 || target >= currentTasks.length) return
+    const orderedIds = currentTasks.map((item) => item.id)
+    const original = orderedIds[index]
+    orderedIds[index] = orderedIds[target]
+    orderedIds[target] = original
+    await perform(async () => { await reorderTasks(projectId, orderedIds) }, 'Ordem das tarefas atualizada.')
+  }
+
+  if (loadState.status === 'loading') {
+    return (
+      <div className="flex flex-col gap-3" aria-busy="true">
+        <Skeleton className="h-24" />
+        <Skeleton className="h-32" />
+        <Skeleton className="h-32" />
+        <span className="sr-only">Carregando tarefas…</span>
+      </div>
+    )
+  }
+
+  return (
+    <section className="flex flex-col gap-4" aria-label="Tarefas do projeto">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="font-display text-lg font-bold text-ink">Tarefas</h2>
+          {loadState.status === 'ready' && (
+            metrics.progressPercent === null
+              ? <p className="text-sm text-muted">Sem tarefas ativas</p>
+              : (
+                <div className="mt-2 flex items-center gap-3">
+                  <div
+                    className="h-2 w-40 overflow-hidden rounded-full bg-elevated"
+                    role="progressbar"
+                    aria-label="Progresso de tarefas"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={metrics.progressPercent}
+                  >
+                    <div className="h-full bg-primary" style={{ width: `${metrics.progressPercent}%` }} />
+                  </div>
+                  <span className="text-sm font-semibold text-ink">{metrics.progressPercent}%</span>
+                </div>
+              )
+          )}
+        </div>
+        <div className="flex gap-2">
+          <Button type="button" variant="outline" loading={saving} onClick={() => void reload(true)}>Atualizar tarefas</Button>
+          <Button type="button" variant="mint" disabled={actionsDisabled} onClick={openCreate}>Nova tarefa</Button>
+        </div>
+      </div>
+
+      {disabled && (
+        <p className="rounded-xl border border-line bg-elevated p-3 text-sm text-muted">
+          Projeto cancelado: o histórico de tarefas permanece visível, mas as mutações estão desabilitadas.
+        </p>
+      )}
+      {loadState.status === 'error' && (
+        <div className="rounded-xl border border-danger/40 bg-danger/5 p-4" role="alert">
+          <p className="text-sm text-danger">{loadState.message}</p>
+          <Button type="button" variant="outline" className="mt-3" onClick={() => void reload(true)}>Tentar novamente</Button>
+        </div>
+      )}
+      {loadState.status === 'ready' && currentTasks.length === 0 ? (
+        <EmptyState
+          icon={ListTodo}
+          title="Nenhuma tarefa cadastrada."
+          description="Crie tarefas para acompanhar a execução e calcular o progresso automaticamente."
+        />
+      ) : currentTasks.length > 0 && (
+        <ol className="flex flex-col gap-3">
+          {currentTasks.map((task, index) => (
+            <li key={task.id} className="rounded-xl border border-line bg-surface p-4" aria-busy={saving}>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-semibold text-ink">{task.title}</h3>
+                  <p className="mt-1 text-sm text-muted">
+                    {PROJECT_PRIORITY_LABELS[task.priority]} · Início {formatProjectDate(task.start_date)} · Prazo {formatProjectDate(task.due_date)}
+                  </p>
+                  {task.description && <p className="mt-2 text-sm text-ink">{task.description}</p>}
+                  {task.notes && <p className="mt-2 text-sm text-muted">{task.notes}</p>}
+                </div>
+                <Select
+                  label={`Status da tarefa ${task.title}`}
+                  value={task.status}
+                  options={TASK_STATUSES.map((status) => ({ value: status, label: TASK_STATUS_LABELS[status] }))}
+                  disabled={actionsDisabled}
+                  onChange={(event) => changeStatus(task, event.target.value)}
+                />
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button type="button" variant="ghost" disabled={actionsDisabled || index === 0} aria-label={`Mover tarefa ${task.title} para cima`} onClick={() => void moveTask(task, -1)}>
+                  <ArrowUp className="h-4 w-4" aria-hidden="true" />
+                </Button>
+                <Button type="button" variant="ghost" disabled={actionsDisabled || index === currentTasks.length - 1} aria-label={`Mover tarefa ${task.title} para baixo`} onClick={() => void moveTask(task, 1)}>
+                  <ArrowDown className="h-4 w-4" aria-hidden="true" />
+                </Button>
+                <Button type="button" variant="outline" disabled={actionsDisabled} onClick={() => openEdit(task)}>Editar tarefa</Button>
+                <Button type="button" variant="danger" disabled={actionsDisabled} aria-label={`Excluir tarefa ${task.title}`} onClick={() => setDeleteCandidate(task)}>Excluir</Button>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+
+      <Modal
+        open={formOpen}
+        onClose={() => { if (!saving) { setFormOpen(false); setEditingTask(null) } }}
+        title={editingTask ? 'Editar tarefa' : 'Nova tarefa'}
+        dismissible={!saving}
+      >
+        <form className="flex flex-col gap-4" onSubmit={submitTask} noValidate>
+          <Input label="Título *" value={draft.title} error={errors.title} disabled={actionsDisabled} onChange={(event) => setField('title', event.target.value)} required />
+          <Select label="Status" value={draft.status} options={TASK_STATUSES.map((status) => ({ value: status, label: TASK_STATUS_LABELS[status] }))} disabled={actionsDisabled} onChange={(event) => setField('status', event.target.value as TaskStatus)} />
+          <Input label="Responsável" value={draft.responsibleName} disabled={actionsDisabled} onChange={(event) => setField('responsibleName', event.target.value)} />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Input label="Início" type="date" value={draft.startDate} disabled={actionsDisabled} onChange={(event) => setField('startDate', event.target.value)} />
+            <Input label="Prazo" type="date" value={draft.dueDate} error={errors.dueDate} disabled={actionsDisabled} onChange={(event) => setField('dueDate', event.target.value)} />
+          </div>
+          <Select label="Prioridade" value={draft.priority} options={Object.entries(PROJECT_PRIORITY_LABELS).map(([value, label]) => ({ value, label }))} disabled={actionsDisabled} onChange={(event) => setField('priority', event.target.value as ProjectPriority)} />
+          <Textarea label="Descrição" value={draft.description} disabled={actionsDisabled} onChange={(event) => setField('description', event.target.value)} rows={3} />
+          <Textarea label="Notas" value={draft.notes} disabled={actionsDisabled} onChange={(event) => setField('notes', event.target.value)} rows={3} />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" disabled={actionsDisabled} onClick={() => { setFormOpen(false); setEditingTask(null) }}>Cancelar</Button>
+            <Button type="submit" variant="mint" loading={saving}>{editingTask ? 'Salvar tarefa' : 'Adicionar tarefa'}</Button>
+          </div>
+        </form>
+      </Modal>
+
+      <ConfirmDialog
+        open={Boolean(deleteCandidate)}
+        title="Excluir tarefa"
+        description={`Excluir tarefa ${deleteCandidate?.title ?? ''}? Esta ação não exclui o projeto.`}
+        confirmLabel="Confirmar exclusão"
+        loading={saving}
+        onConfirm={() => void removeTask()}
+        onCancel={() => { if (!saving) setDeleteCandidate(null) }}
+      />
+    </section>
+  )
+}
