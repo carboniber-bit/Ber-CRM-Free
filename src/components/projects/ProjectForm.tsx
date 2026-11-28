@@ -85,9 +85,11 @@ export function ProjectForm({ project, onCancel, onSaved }: ProjectFormProps) {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [reloadKey, setReloadKey] = useState(0)
   const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const dueDateEditedRef = useRef(Boolean(project?.due_date))
   const savingRef = useRef(false)
+  const savedRef = useRef(false)
   const mountedRef = useRef(true)
 
   useEffect(() => {
@@ -123,7 +125,9 @@ export function ProjectForm({ project, onCancel, onSaved }: ProjectFormProps) {
   const selectedContract = options?.contracts.find((contract) =>
     contract.id === draft.contractId && contract.client_id === draft.clientId,
   )
-  const availableContracts = (options?.contracts ?? []).filter((contract) => contract.client_id === draft.clientId)
+  const availableContracts = (options?.contracts ?? []).filter((contract) =>
+    contract.client_id === draft.clientId && (!project || contract.id === project.contract_id),
+  )
   const currentContractMissing = Boolean(options && project
     && !availableContracts.some((contract) => contract.id === project.contract_id))
   const editBlockedMessage = project?.status === 'cancelled'
@@ -232,7 +236,7 @@ export function ProjectForm({ project, onCancel, onSaved }: ProjectFormProps) {
   }
 
   const save = async () => {
-    if (savingRef.current || !options || editBlockedMessage) return
+    if (savingRef.current || savedRef.current || !options || editBlockedMessage) return
 
     const nextErrors = validate()
     setErrors(nextErrors)
@@ -257,20 +261,32 @@ export function ProjectForm({ project, onCancel, onSaved }: ProjectFormProps) {
 
     savingRef.current = true
     setSaving(true)
+    let savedProject: Project
     try {
-      const saved = project
+      savedProject = project
         ? await updateProject(project.id, payload)
         : await createProject(payload)
-      if (!mountedRef.current) return
-      onSaved(saved)
     } catch (error) {
       if (!mountedRef.current) return
       const message = errorMessage(error, 'Não foi possível salvar o projeto. Tente novamente.')
       setSaveError(message)
       toast(message, 'error')
+      return
     } finally {
       savingRef.current = false
       if (mountedRef.current) setSaving(false)
+    }
+
+    if (!mountedRef.current) return
+    savedRef.current = true
+    setSaved(true)
+    try {
+      onSaved(savedProject)
+    } catch {
+      if (!mountedRef.current) return
+      const message = 'Projeto salvo, mas não foi possível concluir a próxima ação.'
+      setSaveError(message)
+      toast(message, 'error')
     }
   }
 
@@ -441,21 +457,23 @@ export function ProjectForm({ project, onCancel, onSaved }: ProjectFormProps) {
       {saveError && (
         <div className="rounded-xl border border-danger/40 bg-danger/5 p-4" role="alert">
           <p className="text-sm text-danger">{saveError}</p>
-          <Button
-            type="button"
-            variant="outline"
-            className="mt-3"
-            disabled={busy}
-            onClick={() => void save()}
-          >
-            Tentar novamente
-          </Button>
+          {!saved && (
+            <Button
+              type="button"
+              variant="outline"
+              className="mt-3"
+              disabled={busy}
+              onClick={() => void save()}
+            >
+              Tentar novamente
+            </Button>
+          )}
         </div>
       )}
 
       <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" onClick={onCancel} disabled={busy}>Cancelar</Button>
-        <Button type="submit" variant="mint" loading={busy}>
+        <Button type="submit" variant="mint" loading={busy} disabled={saved}>
           {project ? 'Salvar alterações' : 'Criar projeto'}
         </Button>
       </div>
