@@ -7505,6 +7505,15 @@ git commit -m "feat: adicionar revisoes e entrega de projeto"
 - Consumes: `getProject`, `ProjectForm`, `ProjectTaskList`, `ProjectRevisionList`, `ProjectDeliveryPanel`, `ProjectStatusBadge`.
 - Produces: tabs “Visão”, “Tarefas”, “Revisões”, “Entrega” and “Histórico”.
 
+**Controller addendum — prioridade sobre o trecho literal:**
+
+- O escopo continua restrito a `src/pages/ProjectDetailPage.tsx` e `src/pages/ProjectDetailPage.test.tsx`.
+- Preserve os testes e os comportamentos canônicos abaixo, mas implemente a página externa com `ProjectDetailContent key={id}`.
+- Não escreva refs durante render. Prefira `useLayoutEffect` para identidade de montagem e atualização funcional para reter o último projeto válido em erro de refresh.
+- A resposta de status e o `finally` da mutação continuam vinculados à instância/request da rota.
+- Mantenha os textos, labels, tabs, campos, confirmações e chamadas de serviço do brief.
+- Escreva os testes primeiro, execute o RED esperado, implemente o mínimo para GREEN e registre os comandos/resultados no relatório. Não faça push nem dispare subagentes.
+
 - [ ] **Step 1: Write failing tests**
 
 ```tsx
@@ -7552,6 +7561,16 @@ const project: ProjectDetail = {
 
 function renderPage() {
   return render(<MemoryRouter initialEntries={['/projetos/p1']}><Routes><Route path="/projetos/:id" element={<ProjectDetailPage />} /></Routes></MemoryRouter>)
+}
+
+function renderNavigablePage() {
+  return render(
+    <MemoryRouter initialEntries={['/projetos/p1']}>
+      <Routes>
+        <Route path="/projetos/:id" element={<><ProjectDetailPage /><RouteNavigator /></>} />
+      </Routes>
+    </MemoryRouter>,
+  )
 }
 
 function RouteNavigator() {
@@ -7689,13 +7708,7 @@ describe('ProjectDetailPage', () => {
 
     const old = deferred<ProjectDetail | null>()
     getProject.mockReset().mockReturnValueOnce(old.promise).mockResolvedValueOnce({ ...project, id: 'p2', name: 'Projeto p2' })
-    render(
-      <MemoryRouter initialEntries={['/projetos/p1']}>
-        <Routes>
-          <Route path="/projetos/:id" element={<><ProjectDetailPage /><RouteNavigator /></>} />
-        </Routes>
-      </MemoryRouter>,
-    )
+    renderNavigablePage()
     fireEvent.click(screen.getByRole('button', { name: 'Abrir p2' }))
     expect((await screen.findByRole('heading', { name: 'Projeto p2' })).textContent).toBe('Projeto p2')
     expect(screen.queryByText('Carregando projeto…')).toBeNull()
@@ -7709,13 +7722,7 @@ describe('ProjectDetailPage', () => {
 
   it('não preserva snapshot de outro ID quando o carregamento da nova rota falha', async () => {
     getProject.mockResolvedValueOnce(project).mockRejectedValueOnce(new Error('Falha ao carregar p2.'))
-    render(
-      <MemoryRouter initialEntries={['/projetos/p1']}>
-        <Routes>
-          <Route path="/projetos/:id" element={<><ProjectDetailPage /><RouteNavigator /></>} />
-        </Routes>
-      </MemoryRouter>,
-    )
+    renderNavigablePage()
     await screen.findByRole('heading', { name: 'Site da Empresa' })
     fireEvent.click(screen.getByRole('button', { name: 'Abrir p2' }))
     expect((await screen.findByText('Falha ao carregar p2.')).textContent).toBe('Falha ao carregar p2.')
@@ -7727,13 +7734,7 @@ describe('ProjectDetailPage', () => {
     const status = deferred<ProjectDetail>()
     getProject.mockResolvedValueOnce(project).mockResolvedValueOnce({ ...project, id: 'p2', name: 'Projeto p2' })
     setProjectStatus.mockReturnValueOnce(status.promise)
-    render(
-      <MemoryRouter initialEntries={['/projetos/p1']}>
-        <Routes>
-          <Route path="/projetos/:id" element={<><ProjectDetailPage /><RouteNavigator /></>} />
-        </Routes>
-      </MemoryRouter>,
-    )
+    renderNavigablePage()
     fireEvent.change(await screen.findByLabelText('Status do projeto'), { target: { value: 'completed' } })
     fireEvent.click(screen.getByRole('button', { name: 'Confirmar status' }))
     await waitFor(() => expect(setProjectStatus).toHaveBeenCalledWith('p1', 'completed'))
@@ -7747,6 +7748,64 @@ describe('ProjectDetailPage', () => {
     expect(screen.queryByRole('heading', { name: 'Site da Empresa' })).toBeNull()
     expect(toast).not.toHaveBeenCalledWith('Status do projeto atualizado.')
     expect(screen.queryByText('Carregando projeto…')).toBeNull()
+  })
+
+  it('descarta aba, edição e confirmação de status sincronicamente na troca de rota', async () => {
+    getProject.mockResolvedValueOnce(project).mockResolvedValueOnce({ ...project, id: 'p2', name: 'Projeto p2' })
+    renderNavigablePage()
+    await screen.findByRole('heading', { name: 'Site da Empresa' })
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Tarefas' }))
+    await screen.findByText('Nenhuma tarefa cadastrada.')
+    fireEvent.click(screen.getByRole('button', { name: 'Editar projeto' }))
+    expect(screen.getByRole('dialog', { name: 'Editar projeto' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Fechar' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Visão' }))
+    fireEvent.change(screen.getByLabelText('Status do projeto'), { target: { value: 'completed' } })
+    expect(screen.getByRole('dialog', { name: 'Confirmar status' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Abrir p2' }))
+
+    expect((await screen.findByRole('heading', { name: 'Projeto p2' })).textContent).toBe('Projeto p2')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByRole('tab', { name: 'Visão' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('tab', { name: 'Tarefas' }).getAttribute('aria-selected')).toBe('false')
+    expect(screen.queryByText('Nenhuma tarefa cadastrada.')).toBeNull()
+  })
+
+  it('não libera o saving da rota nova quando o finally de uma mutação antiga termina', async () => {
+    const oldStatus = deferred<ProjectDetail>()
+    const newStatus = deferred<ProjectDetail>()
+    const projectP2: ProjectDetail = { ...project, id: 'p2', name: 'Projeto p2' }
+    getProject.mockResolvedValueOnce(project).mockResolvedValueOnce(projectP2).mockResolvedValue(projectP2)
+    setProjectStatus.mockReturnValueOnce(oldStatus.promise).mockReturnValueOnce(newStatus.promise)
+    renderNavigablePage()
+
+    fireEvent.change(await screen.findByLabelText('Status do projeto'), { target: { value: 'completed' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar status' }))
+    await waitFor(() => expect(setProjectStatus).toHaveBeenCalledWith('p1', 'completed'))
+    fireEvent.click(screen.getByRole('button', { name: 'Abrir p2' }))
+    await screen.findByRole('heading', { name: 'Projeto p2' })
+
+    fireEvent.change(screen.getByLabelText('Status do projeto'), { target: { value: 'completed' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar status' }))
+    await waitFor(() => expect(setProjectStatus).toHaveBeenCalledWith('p2', 'completed'))
+    expect((screen.getByLabelText('Status do projeto') as HTMLSelectElement).disabled).toBe(true)
+
+    await act(async () => {
+      oldStatus.resolve({ ...project, status: 'completed' })
+      await oldStatus.promise
+    })
+    expect((screen.getByLabelText('Status do projeto') as HTMLSelectElement).disabled).toBe(true)
+    expect(toast).not.toHaveBeenCalledWith('Status do projeto atualizado.')
+
+    await act(async () => {
+      newStatus.resolve({ ...projectP2, status: 'completed' })
+      await newStatus.promise
+    })
+    await waitFor(() => expect((screen.getByLabelText('Status do projeto') as HTMLSelectElement).disabled).toBe(false))
+    expect(screen.getByRole('heading', { name: 'Projeto p2' })).toBeTruthy()
+    expect(toast).toHaveBeenCalledWith('Status do projeto atualizado.')
   })
 })
 
@@ -7767,7 +7826,7 @@ Expected: FAIL with module not found.
 Create `src/pages/ProjectDetailPage.tsx`:
 
 ```tsx
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ArrowLeft, FolderKanban } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 import { ProjectDeliveryPanel } from '../components/projects/ProjectDeliveryPanel'
@@ -7825,8 +7884,31 @@ function isMoveStatus(value: string): value is ProjectMoveStatus {
   return (PROJECT_MOVE_STATUSES as readonly string[]).includes(value)
 }
 
+function ProjectNotFound() {
+  return (
+    <EmptyState
+      icon={FolderKanban}
+      title="Projeto não encontrado."
+      description="O projeto pode ter sido removido ou você não tem acesso a ele."
+      action={(
+        <Link
+          to="/projetos"
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-line bg-surface px-4 text-sm font-medium text-ink transition-colors hover:bg-elevated focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          Voltar para projetos
+        </Link>
+      )}
+    />
+  )
+}
+
 export function ProjectDetailPage() {
-  const { id = '' } = useParams()
+  const { id } = useParams<{ id: string }>()
+  if (!id) return <ProjectNotFound />
+  return <ProjectDetailContent key={id} projectId={id} />
+}
+
+function ProjectDetailContent({ projectId }: { projectId: string }) {
   const { toast } = useToast()
   const [loadState, setLoadState] = useState<ProjectLoadState>({ status: 'loading' })
   const [loading, setLoading] = useState(true)
@@ -7834,102 +7916,107 @@ export function ProjectDetailPage() {
   const [editOpen, setEditOpen] = useState(false)
   const [pendingStatus, setPendingStatus] = useState<ProjectMoveStatus | null>(null)
   const [savingStatus, setSavingStatus] = useState(false)
+  const mountedRef = useRef(false)
   const requestRef = useRef(0)
   const statusMutationRef = useRef(0)
-  const mountedRef = useRef(true)
   const savingStatusRef = useRef(false)
-  const idRef = useRef(id)
-  idRef.current = id
-  const loadStateRef = useRef(loadState)
-  loadStateRef.current = loadState
 
-  const loadProject = useCallback(async (background = false): Promise<void> => {
+  useLayoutEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      requestRef.current += 1
+      statusMutationRef.current += 1
+    }
+  }, [])
+
+  const loadProject = useCallback(async (): Promise<void> => {
     const request = ++requestRef.current
-    if (!id) {
-      if (mountedRef.current && idRef.current === id) {
-        setLoadState({ status: 'empty' })
-        setLoading(false)
-      }
-      return
-    }
-    const candidate = loadStateRef.current.status === 'ready' || loadStateRef.current.status === 'error'
-      ? loadStateRef.current.project
-      : null
-    const previous = candidate?.id === id ? candidate : null
-    setLoading(true)
-    if (!background) {
-      setLoadState((current) => (
-        current.status === 'ready' || current.status === 'error' ? current : { status: 'loading' }
-      ))
-    }
     try {
-      const project = await getProject(id)
-      if (!mountedRef.current || idRef.current !== id || request !== requestRef.current) return
+      const project = await getProject(projectId)
+      if (!mountedRef.current || request !== requestRef.current) return
       if (!project) setLoadState({ status: 'empty' })
       else setLoadState({ status: 'ready', project })
     } catch (error) {
-      if (!mountedRef.current || idRef.current !== id || request !== requestRef.current) return
-      setLoadState({
-        status: 'error',
-        message: errorMessage(error, 'Não foi possível carregar o projeto. Tente novamente.'),
-        project: previous ?? null,
+      if (!mountedRef.current || request !== requestRef.current) return
+      const message = errorMessage(error, 'Não foi possível carregar o projeto. Tente novamente.')
+      setLoadState((current) => {
+        const retained = current.status === 'ready' || current.status === 'error'
+          ? current.project
+          : null
+        return {
+          status: 'error', message,
+          project: retained?.id === projectId ? retained : null,
+        }
       })
     } finally {
-      if (mountedRef.current && idRef.current === id && request === requestRef.current) setLoading(false)
+      if (mountedRef.current && request === requestRef.current) setLoading(false)
     }
-  }, [id])
+  }, [projectId])
 
   useEffect(() => {
-    mountedRef.current = true
-    return () => { mountedRef.current = false }
-  }, [])
-
-  useEffect(() => {
-    statusMutationRef.current += 1
-    savingStatusRef.current = false
-    setSavingStatus(false)
-    setLoadState({ status: 'loading' })
-    setTab('overview')
-    setEditOpen(false)
-    setPendingStatus(null)
     void loadProject()
   }, [loadProject])
 
   const currentProject = (loadState.status === 'ready' || loadState.status === 'error')
-    && loadState.project?.id === id ? loadState.project : null
-  const routeMismatch = (loadState.status === 'ready' || loadState.status === 'error')
-    && loadState.project !== null && loadState.project.id !== id
-  const refresh = () => { void loadProject(true) }
-  const childChanged = () => { void loadProject(true) }
+    && loadState.project?.id === projectId ? loadState.project : null
+  const refresh = () => {
+    setLoading(true)
+    void loadProject()
+  }
+  const retry = () => {
+    setLoading(true)
+    setLoadState({ status: 'loading' })
+    void loadProject()
+  }
+  const childChanged = refresh
 
   const confirmStatus = async () => {
-    if (!currentProject || !pendingStatus || savingStatusRef.current) return
-    const projectId = currentProject.id
+    const project = currentProject
+    const status = pendingStatus
+    if (!project || !status || savingStatusRef.current) return
+    const mutationProjectId = project.id
     const request = requestRef.current
     const mutation = ++statusMutationRef.current
-    const status = pendingStatus
     savingStatusRef.current = true
     setSavingStatus(true)
+    let confirmed = false
     try {
-      const updated = await setProjectStatus(projectId, status)
-      if (!mountedRef.current || idRef.current !== projectId || request !== requestRef.current) return
-      setLoadState({ status: 'ready', project: { ...currentProject, ...updated } })
+      const updated = await setProjectStatus(mutationProjectId, status)
+      if (
+        !mountedRef.current || request !== requestRef.current
+        || mutation !== statusMutationRef.current
+      ) return
+      setLoadState((current) => {
+        if (
+          (current.status !== 'ready' && current.status !== 'error')
+          || current.project?.id !== mutationProjectId
+        ) return current
+        return { status: 'ready', project: { ...current.project, ...updated } }
+      })
       setPendingStatus(null)
       toast('Status do projeto atualizado.')
-      await loadProject(true)
+      confirmed = true
     } catch (error) {
-      if (mountedRef.current && idRef.current === projectId && request === requestRef.current) {
+      if (
+        mountedRef.current && request === requestRef.current
+        && mutation === statusMutationRef.current
+      ) {
         toast(errorMessage(error, 'Não foi possível atualizar o status.'), 'error')
       }
     } finally {
-      if (statusMutationRef.current === mutation) {
+      if (mountedRef.current && mutation === statusMutationRef.current) {
         savingStatusRef.current = false
-        if (mountedRef.current) setSavingStatus(false)
+        setSavingStatus(false)
       }
+    }
+    if (confirmed && mountedRef.current && request === requestRef.current) {
+      setLoading(true)
+      await loadProject()
     }
   }
 
-  if (loadState.status === 'loading' || routeMismatch || (loading && !currentProject)) {
+  if (loadState.status === 'loading' || (loading && !currentProject)) {
     return (
       <div className="flex flex-col gap-4" aria-busy="true">
         <Skeleton className="h-10 w-64" /><Skeleton className="h-40" /><Skeleton className="h-64" />
@@ -7939,21 +8026,7 @@ export function ProjectDetailPage() {
   }
 
   if (loadState.status === 'empty' || (!currentProject && loadState.status !== 'error')) {
-    return (
-      <EmptyState
-        icon={FolderKanban}
-        title="Projeto não encontrado."
-        description="O projeto pode ter sido removido ou você não tem acesso a ele."
-        action={(
-          <Link
-            to="/projetos"
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-xl border border-line bg-surface px-4 text-sm font-medium text-ink transition-colors hover:bg-elevated focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-          >
-            Voltar para projetos
-          </Link>
-        )}
-      />
-    )
+    return <ProjectNotFound />
   }
 
   if (!currentProject) {
@@ -7961,7 +8034,7 @@ export function ProjectDetailPage() {
       <div className="rounded-xl border border-danger/40 bg-danger/5 p-4" role="alert">
         <p className="text-sm text-danger">{loadState.status === 'error' ? loadState.message : 'Projeto indisponível.'}</p>
         <div className="mt-3 flex gap-2">
-          <Button variant="outline" onClick={refresh}>Tentar novamente</Button>
+          <Button type="button" variant="outline" onClick={retry}>Tentar novamente</Button>
           <Link
             to="/projetos"
             className="inline-flex h-10 items-center justify-center gap-2 rounded-xl px-4 text-sm font-medium text-muted transition-colors hover:bg-elevated hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
@@ -7977,7 +8050,7 @@ export function ProjectDetailPage() {
   const activities = [...project.activities].sort((a, b) => b.created_at.localeCompare(a.created_at))
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-5" aria-busy={loading}>
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <Link className="mb-3 inline-flex items-center gap-1 text-sm text-muted hover:text-primary" to="/projetos">
@@ -7990,9 +8063,9 @@ export function ProjectDetailPage() {
           </div>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" loading={loading} onClick={refresh}>Atualizar</Button>
+          <Button type="button" variant="outline" loading={loading} onClick={refresh}>Atualizar</Button>
           {project.status !== 'cancelled' && (
-            <Button variant="mint" onClick={() => setEditOpen(true)}>Editar projeto</Button>
+            <Button type="button" variant="mint" onClick={() => setEditOpen(true)}>Editar projeto</Button>
           )}
         </div>
       </header>
@@ -8037,7 +8110,9 @@ export function ProjectDetailPage() {
                     options={PROJECT_MOVE_STATUSES.map((status) => ({ value: status, label: PROJECT_STATUS_LABELS[status] }))}
                     disabled={savingStatus}
                     onChange={(event) => {
-                      if (isMoveStatus(event.target.value)) setPendingStatus(event.target.value)
+                      if (isMoveStatus(event.target.value) && event.target.value !== project.status) {
+                        setPendingStatus(event.target.value)
+                      }
                     }}
                   />
                 )}
@@ -8072,7 +8147,14 @@ export function ProjectDetailPage() {
         )}
         {tab === 'tasks' && <ProjectTaskList projectId={project.id} onChanged={childChanged} disabled={project.status === 'cancelled'} />}
         {tab === 'revisions' && <ProjectRevisionList projectId={project.id} onChanged={childChanged} disabled={project.status === 'cancelled'} />}
-        {tab === 'delivery' && <ProjectDeliveryPanel project={project} onDelivered={childChanged} />}
+        {tab === 'delivery' && (
+          <ProjectDeliveryPanel
+            project={project}
+            onDelivered={(delivered) => {
+              if (delivered.id === projectId) childChanged()
+            }}
+          />
+        )}
         {tab === 'history' && (
           activities.length === 0 ? (
             <EmptyState icon={FolderKanban} title="Nenhuma atividade registrada." description="As mudanças confirmadas do projeto aparecerão aqui." />
@@ -8096,7 +8178,8 @@ export function ProjectDetailPage() {
         <ProjectForm
           project={project}
           onCancel={() => setEditOpen(false)}
-          onSaved={() => {
+          onSaved={(saved) => {
+            if (!mountedRef.current || saved.id !== projectId) return
             setEditOpen(false)
             toast('Projeto atualizado.')
             refresh()
@@ -8111,16 +8194,16 @@ export function ProjectDetailPage() {
         confirmLabel="Confirmar status"
         loading={savingStatus}
         onConfirm={() => void confirmStatus()}
-        onCancel={() => { if (!savingStatus) setPendingStatus(null) }}
+        onCancel={() => { if (!savingStatusRef.current) setPendingStatus(null) }}
       />
     </div>
   )
 }
 ```
 
-O retorno de `setProjectStatus` só atualiza o estado visível; métricas, tarefas, revisões e histórico sempre vêm do refresh completo de `getProject`. Nenhuma aba importa serviços financeiros.
+O wrapper `ProjectDetailContent key={id}` descarta sincronicamente abas, diálogos e identidade de requests/mutações na troca de projeto. O retorno de `setProjectStatus` só atualiza o estado visível; métricas, tarefas, revisões e histórico sempre vêm do refresh completo de `getProject`. Nenhuma aba importa serviços financeiros.
 
-O snapshot de atualização só é preservado quando `previous?.id === id`; respostas de load e status são ignoradas se o ID ou o request mudou. O token de mutação impede que o `finally` de uma operação antiga libere o estado de outra após a troca de rota, e o novo request sempre encerra o loading da rota atual. Projetos cancelados não exibem “Editar projeto”; a reativação continua disponível pelo seletor de status.
+O snapshot de atualização só é preservado quando pertence ao `projectId` atual; respostas de load e status são ignoradas se montagem, request ou mutação mudaram. O token de mutação impede que o `finally` de uma operação antiga libere o estado de saving da rota nova. Projetos cancelados não exibem “Editar projeto”; a reativação continua disponível pelo seletor de status.
 
 - [ ] **Step 4: Run tests and build**
 
