@@ -148,6 +148,57 @@ describe('ProjectTaskList', () => {
     expect((screen.getByLabelText('Status da tarefa Layout') as HTMLSelectElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: 'Excluir tarefa Layout' }) as HTMLButtonElement).disabled).toBe(true)
   })
+
+  it('exige título antes de criar tarefa', async () => {
+    render(<ProjectTaskList projectId="p1" onChanged={vi.fn()} />)
+    await screen.findByText('Nenhuma tarefa cadastrada.')
+    fireEvent.click(screen.getByRole('button', { name: 'Nova tarefa' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Adicionar tarefa' }))
+    expect((await screen.findByText('Informe o título da tarefa.')).textContent)
+      .toBe('Informe o título da tarefa.')
+    expect(createTask).not.toHaveBeenCalled()
+  })
+
+  it('não preserva tarefas do projeto anterior quando a carga do novo projeto falha', async () => {
+    listTasks
+      .mockResolvedValueOnce([makeTask('t1', 'Tarefa antiga')])
+      .mockRejectedValueOnce(new Error('Falha ao carregar tarefas do novo projeto.'))
+    const { rerender } = render(<ProjectTaskList projectId="p1" onChanged={vi.fn()} />)
+    await screen.findByText('Tarefa antiga')
+    rerender(<ProjectTaskList projectId="p2" onChanged={vi.fn()} />)
+    expect((await screen.findByText('Falha ao carregar tarefas do novo projeto.')).textContent)
+      .toBe('Falha ao carregar tarefas do novo projeto.')
+    expect(screen.queryByText('Tarefa antiga')).toBeNull()
+    expect(screen.queryByLabelText('Status da tarefa Tarefa antiga')).toBeNull()
+  })
+
+  it('fecha o editor e não atualiza tarefa do projeto anterior após a troca', async () => {
+    listTasks.mockResolvedValueOnce([makeTask('t1', 'Layout')]).mockResolvedValueOnce([])
+    const { rerender } = render(<ProjectTaskList projectId="p1" onChanged={vi.fn()} />)
+    fireEvent.click(await screen.findByText('Editar tarefa'))
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    rerender(<ProjectTaskList projectId="p2" onChanged={vi.fn()} />)
+    await screen.findByText('Nenhuma tarefa cadastrada.')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(updateTask).not.toHaveBeenCalled()
+  })
+
+  it('fecha a confirmação de exclusão do projeto anterior após a troca', async () => {
+    listTasks.mockResolvedValueOnce([makeTask('t1', 'Layout')]).mockResolvedValueOnce([])
+    const { rerender } = render(<ProjectTaskList projectId="p1" onChanged={vi.fn()} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Excluir tarefa Layout' }))
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    rerender(<ProjectTaskList projectId="p2" onChanged={vi.fn()} />)
+    await screen.findByText('Nenhuma tarefa cadastrada.')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(deleteTask).not.toHaveBeenCalled()
+  })
+
+  it('identifica o controle de edição pela tarefa', async () => {
+    listTasks.mockResolvedValue([makeTask('t1', 'Layout')])
+    render(<ProjectTaskList projectId="p1" onChanged={vi.fn()} />)
+    expect(await screen.findByRole('button', { name: 'Editar tarefa Layout' })).toBeTruthy()
+  })
 })
 
 function deferred<T>() {

@@ -38,9 +38,9 @@ interface TaskDraft {
 
 type TaskDraftErrors = Partial<Record<keyof TaskDraft, string>>
 type TaskLoadState =
-  | { status: 'loading' }
-  | { status: 'ready'; tasks: ProjectTask[] }
-  | { status: 'error'; message: string; tasks: ProjectTask[] | null }
+  | { status: 'loading'; projectId: string }
+  | { status: 'ready'; projectId: string; tasks: ProjectTask[] }
+  | { status: 'error'; projectId: string; message: string; tasks: ProjectTask[] | null }
 
 const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
   pending: 'Pendente', in_progress: 'Em andamento', completed: 'Concluída', cancelled: 'Cancelada',
@@ -87,7 +87,7 @@ function isTaskStatus(value: string): value is TaskStatus {
 
 export function ProjectTaskList({ projectId, onChanged, disabled = false }: ProjectTaskListProps) {
   const { toast } = useToast()
-  const [loadState, setLoadState] = useState<TaskLoadState>({ status: 'loading' })
+  const [loadState, setLoadState] = useState<TaskLoadState>({ status: 'loading', projectId })
   const [formOpen, setFormOpen] = useState(false)
   const [editingTask, setEditingTask] = useState<ProjectTask | null>(null)
   const [draft, setDraft] = useState<TaskDraft>(emptyDraft)
@@ -105,18 +105,21 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
   const reload = useCallback(async (background = false): Promise<void> => {
     const request = ++requestRef.current
     const previous = loadStateRef.current
-    const retained = previous.status === 'ready'
-      ? previous.tasks
-      : previous.status === 'error' ? previous.tasks : null
-    if (!background) setLoadState({ status: 'loading' })
+    const retained = previous.projectId === projectId
+      ? previous.status === 'ready'
+        ? previous.tasks
+        : previous.status === 'error' ? previous.tasks : null
+      : null
+    if (!background) setLoadState({ status: 'loading', projectId })
     try {
       const tasks = await listTasks(projectId)
       if (!mountedRef.current || request !== requestRef.current) return
-      setLoadState({ status: 'ready', tasks })
+      setLoadState({ status: 'ready', projectId, tasks })
     } catch (error) {
       if (!mountedRef.current || request !== requestRef.current) return
       setLoadState({
         status: 'error',
+        projectId,
         message: errorMessage(error, 'Não foi possível carregar as tarefas. Tente novamente.'),
         tasks: retained,
       })
@@ -129,13 +132,21 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
   }, [])
 
   useEffect(() => {
-    setLoadState({ status: 'loading' })
+    setLoadState({ status: 'loading', projectId })
+    setFormOpen(false)
+    setEditingTask(null)
+    setDeleteCandidate(null)
+    setDraft(emptyDraft())
+    setErrors({})
     void reload()
   }, [reload])
 
-  const currentTasks = loadState.status === 'ready'
-    ? loadState.tasks
-    : loadState.status === 'error' ? loadState.tasks ?? [] : []
+  const stateBelongsToProject = loadState.projectId === projectId
+  const currentTasks = stateBelongsToProject
+    ? loadState.status === 'ready'
+      ? loadState.tasks
+      : loadState.status === 'error' ? loadState.tasks ?? [] : []
+    : []
   const metrics = calculateProjectProgress(currentTasks)
   const actionsDisabled = disabled || saving
 
@@ -172,6 +183,7 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
   }
 
   const openEdit = (task: ProjectTask) => {
+    if (task.project_id !== projectId) return
     setEditingTask(task)
     setDraft(draftFromTask(task))
     setErrors({})
@@ -180,7 +192,7 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
 
   const submitTask = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (actionsDisabled) return
+    if (actionsDisabled || (editingTask && editingTask.project_id !== projectId)) return
     const nextErrors: TaskDraftErrors = {}
     if (!draft.title.trim()) nextErrors.title = 'Informe o título da tarefa.'
     if (draft.startDate && draft.dueDate && draft.dueDate < draft.startDate) {
@@ -198,7 +210,7 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
   }
 
   const changeStatus = (task: ProjectTask, value: string) => {
-    if (!isTaskStatus(value) || value === task.status || actionsDisabled) return
+    if (task.project_id !== projectId || !isTaskStatus(value) || value === task.status || actionsDisabled) return
     void perform(
       async () => { await updateTask(task.id, writeFromTask(task, value)) },
       'Status da tarefa atualizado.',
@@ -206,7 +218,7 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
   }
 
   const removeTask = async () => {
-    if (!deleteCandidate || actionsDisabled) return
+    if (!deleteCandidate || deleteCandidate.project_id !== projectId || actionsDisabled) return
     const id = deleteCandidate.id
     await perform(async () => {
       await deleteTask(id)
@@ -215,7 +227,7 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
   }
 
   const moveTask = async (task: ProjectTask, direction: -1 | 1) => {
-    if (actionsDisabled) return
+    if (task.project_id !== projectId || actionsDisabled) return
     const index = currentTasks.findIndex((item) => item.id === task.id)
     const target = index + direction
     if (index < 0 || target < 0 || target >= currentTasks.length) return
@@ -226,7 +238,7 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
     await perform(async () => { await reorderTasks(projectId, orderedIds) }, 'Ordem das tarefas atualizada.')
   }
 
-  if (loadState.status === 'loading') {
+  if (!stateBelongsToProject || loadState.status === 'loading') {
     return (
       <div className="flex flex-col gap-3" aria-busy="true">
         <Skeleton className="h-24" />
@@ -302,19 +314,19 @@ export function ProjectTaskList({ projectId, onChanged, disabled = false }: Proj
                   label={`Status da tarefa ${task.title}`}
                   value={task.status}
                   options={TASK_STATUSES.map((status) => ({ value: status, label: TASK_STATUS_LABELS[status] }))}
-                  disabled={actionsDisabled}
+                  disabled={actionsDisabled || task.project_id !== projectId}
                   onChange={(event) => changeStatus(task, event.target.value)}
                 />
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
-                <Button type="button" variant="ghost" disabled={actionsDisabled || index === 0} aria-label={`Mover tarefa ${task.title} para cima`} onClick={() => void moveTask(task, -1)}>
+                <Button type="button" variant="ghost" disabled={actionsDisabled || task.project_id !== projectId || index === 0} aria-label={`Mover tarefa ${task.title} para cima`} onClick={() => void moveTask(task, -1)}>
                   <ArrowUp className="h-4 w-4" aria-hidden="true" />
                 </Button>
-                <Button type="button" variant="ghost" disabled={actionsDisabled || index === currentTasks.length - 1} aria-label={`Mover tarefa ${task.title} para baixo`} onClick={() => void moveTask(task, 1)}>
+                <Button type="button" variant="ghost" disabled={actionsDisabled || task.project_id !== projectId || index === currentTasks.length - 1} aria-label={`Mover tarefa ${task.title} para baixo`} onClick={() => void moveTask(task, 1)}>
                   <ArrowDown className="h-4 w-4" aria-hidden="true" />
                 </Button>
-                <Button type="button" variant="outline" disabled={actionsDisabled} onClick={() => openEdit(task)}>Editar tarefa</Button>
-                <Button type="button" variant="danger" disabled={actionsDisabled} aria-label={`Excluir tarefa ${task.title}`} onClick={() => setDeleteCandidate(task)}>Excluir</Button>
+                <Button type="button" variant="outline" disabled={actionsDisabled || task.project_id !== projectId} aria-label={`Editar tarefa ${task.title}`} onClick={() => openEdit(task)}>Editar tarefa</Button>
+                <Button type="button" variant="danger" disabled={actionsDisabled || task.project_id !== projectId} aria-label={`Excluir tarefa ${task.title}`} onClick={() => setDeleteCandidate(task)}>Excluir</Button>
               </div>
             </li>
           ))}
